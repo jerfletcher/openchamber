@@ -43,6 +43,7 @@ import {
 } from './lib/tunnels/types.js';
 import { prepareNotificationLastMessage } from './lib/notifications/index.js';
 import { registerTtsRoutes } from './lib/tts/routes.js';
+import { registerAcpRoutes } from './lib/acp/acp-routes.js';
 import { detectSayTtsCapability } from './lib/tts/capability-runtime.js';
 import { createTerminalRuntime } from './lib/terminal/runtime.js';
 import { createDictationRuntime } from './lib/dictation/runtime.js';
@@ -1666,6 +1667,7 @@ const bootstrapRuntime = createBootstrapRuntime({
   registerCommonRequestMiddleware,
   registerAuthAndAccessRoutes,
   registerTtsRoutes,
+  registerAcpRoutes,
   registerNotificationRoutes,
   registerOpenChamberRoutes,
   registerAgentToolRoutes: (app, options) => options.agentToolRuntime.registerRoutes(app, options.express),
