@@ -1,8 +1,29 @@
+import fs from 'fs';
+import path from 'path';
 import { execSync } from 'child_process';
 import EventEmitter from 'events';
 import { AcpConnection } from './acp-connection.js';
 
+export function resolveBinaryPath(command) {
+  if (path.isAbsolute(command) && fs.existsSync(command)) return command;
+  const commonPaths = [
+    path.join(process.env.HOME || '/home/jeremy', '.local', 'bin', command),
+    path.join('/usr/local/bin', command),
+    path.join('/usr/bin', command),
+  ];
+  for (const p of commonPaths) {
+    if (fs.existsSync(p)) return p;
+  }
+  try {
+    const stdout = execSync(`which ${command}`, { encoding: 'utf8' }).trim();
+    if (stdout && fs.existsSync(stdout)) return stdout;
+  } catch {}
+  return command;
+}
+
 export function checkBinaryExists(command) {
+  const resolved = resolveBinaryPath(command);
+  if (fs.existsSync(resolved)) return true;
   try {
     execSync(`which ${command}`, { stdio: 'ignore' });
     return true;
@@ -56,7 +77,15 @@ export class AcpRuntime extends EventEmitter {
       throw new Error(`ACP agent '${agentId}' is not installed or available on this machine.`);
     }
 
-    const conn = new AcpConnection(agent.command, agent.args, { cwd });
+    let effectiveCwd = cwd;
+    if (!effectiveCwd || !fs.existsSync(effectiveCwd)) {
+      effectiveCwd = process.env.HOME || '/home/jeremy';
+    }
+    const resolvedCommand = resolveBinaryPath(agent.command);
+    const conn = new AcpConnection(resolvedCommand, agent.args, { cwd: effectiveCwd });
+    conn.on('error', (err) => {
+      console.error(`[AcpRuntime] Connection error for ${agentId}:`, err.message);
+    });
     conn.start();
 
     // 1. Initialize
@@ -66,7 +95,7 @@ export class AcpRuntime extends EventEmitter {
     });
 
     // 2. session/new
-    const sessionResult = await conn.request('session/new', { cwd });
+    const sessionResult = await conn.request('session/new', { cwd: effectiveCwd });
     const sessionId = sessionResult.sessionId;
 
     const availableModels = sessionResult.models?.availableModels || [];

@@ -37,7 +37,11 @@ export class AcpConnection extends EventEmitter {
     });
 
     this.proc.on('error', (err) => {
-      this.emit('error', err);
+      if (this.listenerCount('error') > 0) {
+        this.emit('error', err);
+      } else {
+        console.error('[AcpConnection] Unhandled process error:', err.message);
+      }
     });
 
     this.proc.on('close', (code, signal) => {

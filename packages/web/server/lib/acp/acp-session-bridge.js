@@ -4,20 +4,16 @@ import EventEmitter from 'events';
 import { AcpRuntime } from './acp-runtime.js';
 
 const ACP_MODEL_NORM = {
-  'gemini-3.8-flash': 'gemini-3.8-flash-medium',
-  'gemini-3.8-flash-medium': 'gemini-3.8-flash-medium',
-  'gemini-3.8-flash-high': 'gemini-3.8-flash-high',
-  'gemini-3.8-flash-low': 'gemini-3.8-flash-low',
-  'gemini-4-argon': 'gemini-4-argon-medium',
-  'gemini-4-argon-medium': 'gemini-4-argon-medium',
-  'gemini-4-argon-high': 'gemini-4-argon-high',
-  'gemini-4-argon-low': 'gemini-4-argon-low',
-  'claude-opus-5-5': 'claude-opus-5-5-medium',
-  'claude-opus-5-5-medium': 'claude-opus-5-5-medium',
-  'claude-opus-5-5-high': 'claude-opus-5-5-high',
-  'claude-sonnet-5-5': 'claude-sonnet-5-5-medium',
-  'claude-sonnet-5-5-medium': 'claude-sonnet-5-5-medium',
-  'claude-sonnet-5-5-high': 'claude-sonnet-5-5-high',
+  'gemini-3.8-flash': 'gemini-3.8-flash',
+  'gemini-3.8-flash-medium': 'gemini-3.8-flash',
+  'gemini-3.8-flash-high': 'gemini-3.8-flash',
+  'gemini-3.8-flash-low': 'gemini-3.8-flash',
+  'gemini-4-argon': 'gemini-4-argon',
+  'gemini-4-argon-medium': 'gemini-4-argon',
+  'gemini-4-argon-high': 'gemini-4-argon',
+  'gemini-4-argon-low': 'gemini-4-argon',
+  'claude-opus-5-5': 'claude-opus-5-5',
+  'claude-sonnet-5-5': 'claude-sonnet-5-5',
 };
 
 export class AcpSessionBridge extends EventEmitter {
@@ -87,10 +83,10 @@ export class AcpSessionBridge extends EventEmitter {
     return { data: msgs.slice().reverse() };
   }
 
-  createSession({ id = null, title, directory = process.cwd(), agent = 'antigravity', model = 'gemini-3.8-flash-medium' } = {}) {
+  createSession({ id = null, title, directory = process.cwd(), agent = 'antigravity', model = 'gemini-3.8-flash' } = {}) {
     const sessionId = id || `ses_agy_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
     const now = Date.now();
-    const resolvedModel = ACP_MODEL_NORM[model] || model || 'gemini-3.8-flash-medium';
+    const resolvedModel = ACP_MODEL_NORM[model] || model || 'gemini-3.8-flash';
     const session = {
       id: sessionId,
       title: title || 'New Antigravity Session',
@@ -134,7 +130,7 @@ export class AcpSessionBridge extends EventEmitter {
   switchModel(sessionId, model) {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
-    const modelId = typeof model === 'string' ? model : (model?.id || 'gemini-3.8-flash-medium');
+    const modelId = typeof model === 'string' ? model : (model?.id || 'gemini-3.8-flash');
     const resolvedModel = ACP_MODEL_NORM[modelId] || modelId;
     session.model = { id: resolvedModel, providerID: 'antigravity' };
     session.time = session.time || {};
@@ -319,9 +315,12 @@ export class AcpSessionBridge extends EventEmitter {
 
       if (abortCtrl.signal.aborted) return;
 
-      const rawModelId = session.model?.id || 'gemini-3.8-flash-medium';
-      const modelId = ACP_MODEL_NORM[rawModelId] || rawModelId;
-      await this.runtime.setModel(acpSession.sessionId, modelId).catch(() => {});
+      const rawModelId = session.model?.id || 'gemini-3.8-flash';
+      const baseModelId = ACP_MODEL_NORM[rawModelId] || rawModelId;
+      const acpTargetModel = `${baseModelId}-medium`;
+      await this.runtime.setModel(acpSession.sessionId, acpTargetModel).catch(async () => {
+        await this.runtime.setModel(acpSession.sessionId, baseModelId).catch(() => {});
+      });
 
       await this.runtime.prompt(acpSession.sessionId, text, (chunk) => {
         if (abortCtrl.signal.aborted) return;
