@@ -1376,6 +1376,20 @@ export const Header: React.FC = () => {
               </TooltipContent>
             </Tooltip>
           ) : null}
+          {!isVSCode ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span
+                  data-fork-badge="jerfletcher"
+                  className="app-region-no-drag inline-flex h-5 items-center gap-1 rounded-full border border-primary/30 bg-primary/10 px-2 font-mono text-[0.65rem] font-medium leading-none tracking-tight text-primary select-none"
+                >
+                  <span className="size-1.5 rounded-full bg-primary" aria-hidden />
+                  jerfletcher
+                </span>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">jerfletcher/openchamber fork</TooltipContent>
+            </Tooltip>
+          ) : null}
 
           <WindowsWindowControls visible={endEdgeOwnedByInWindowControls} position={windowControlsSide} />
         </div>
