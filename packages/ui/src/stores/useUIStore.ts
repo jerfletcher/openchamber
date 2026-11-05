@@ -1032,6 +1032,7 @@ interface UIStore {
   activityRenderMode: ActivityRenderMode;
   tiledSwarmViewEnabled: boolean;
   tiledSwarmLayout: 'grid-4' | 'columns-3' | 'split-2';
+  antigravityAcpViewOpen: boolean;
   expandCommandsByDefault: boolean;
   expandSubagentsByDefault: boolean;
   expandSearchesByDefault: boolean;
@@ -1369,6 +1370,8 @@ interface UIStore {
   setTiledSwarmViewEnabled: (value: boolean) => void;
   setTiledSwarmLayout: (value: 'grid-4' | 'columns-3' | 'split-2') => void;
   toggleTiledSwarmView: () => void;
+  setAntigravityAcpViewOpen: (value: boolean) => void;
+  toggleAntigravityAcpView: () => void;
   setExpandCommandsByDefault: (value: boolean) => void;
   setExpandSubagentsByDefault: (value: boolean) => void;
   setExpandSearchesByDefault: (value: boolean) => void;
@@ -1640,6 +1643,7 @@ export const useUIStore = create<UIStore>()(
         activityRenderMode: 'summary',
         tiledSwarmViewEnabled: false,
         tiledSwarmLayout: 'grid-4',
+        antigravityAcpViewOpen: false,
         expandCommandsByDefault: true,
         expandSubagentsByDefault: false,
         expandSearchesByDefault: false,
@@ -2791,6 +2795,14 @@ export const useUIStore = create<UIStore>()(
 
         toggleTiledSwarmView: () => {
           set((state) => ({ tiledSwarmViewEnabled: !state.tiledSwarmViewEnabled }));
+        },
+
+        setAntigravityAcpViewOpen: (value) => {
+          set({ antigravityAcpViewOpen: value });
+        },
+
+        toggleAntigravityAcpView: () => {
+          set((state) => ({ antigravityAcpViewOpen: !state.antigravityAcpViewOpen }));
         },
 
         setShowDeletionDialog: (value) => {

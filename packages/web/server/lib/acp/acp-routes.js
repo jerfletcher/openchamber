@@ -1,7 +1,11 @@
+import express from 'express';
 import { AcpRuntime } from './acp-runtime.js';
 
 export function registerAcpRoutes(app, options = {}) {
   const runtime = options.runtime || new AcpRuntime(options);
+
+  // Ensure JSON body parsing is enabled for all /api/acp endpoints
+  app.use('/api/acp', express.json());
 
   // List all detected and configured ACP agents
   app.get('/api/acp/agents', (req, res) => {

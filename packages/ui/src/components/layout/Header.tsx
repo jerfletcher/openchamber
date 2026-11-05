@@ -222,6 +222,8 @@ export const Header: React.FC = () => {
   const setWorkStatusOverlayOpen = useUIStore((state) => state.setWorkStatusOverlayOpen);
   const tiledSwarmViewEnabled = useUIStore((state) => state.tiledSwarmViewEnabled);
   const toggleTiledSwarmView = useUIStore((state) => state.toggleTiledSwarmView);
+  const antigravityAcpViewOpen = useUIStore((state) => state.antigravityAcpViewOpen);
+  const toggleAntigravityAcpView = useUIStore((state) => state.toggleAntigravityAcpView);
 
   // Two meanings for one button. With room beside the chat it switches the
   // panel on and off. Without room it cannot be shown inline at all, so it
@@ -1351,6 +1353,28 @@ export const Header: React.FC = () => {
                   : workStatusPanelEnabled
                     ? t('header.workStatusPanel.hide')
                     : t('header.workStatusPanel.show')}
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
+          {!isVSCode ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  data-acp-toggle="true"
+                  aria-pressed={antigravityAcpViewOpen}
+                  aria-label="Toggle Antigravity ACP Session"
+                  onClick={toggleAntigravityAcpView}
+                  className={cn(
+                    DESKTOP_HEADER_ICON_BUTTON_CLASS,
+                    antigravityAcpViewOpen && 'text-foreground bg-accent/60',
+                  )}
+                >
+                  <Icon name="sparkling-2" className="h-4 w-4" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {antigravityAcpViewOpen ? 'Exit Antigravity ACP View' : 'Open Antigravity ACP (Direct CLI)'}
               </TooltipContent>
             </Tooltip>
           ) : null}
