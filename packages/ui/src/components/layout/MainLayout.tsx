@@ -34,7 +34,6 @@ import { useOnDemandComponent } from '@/hooks/useOnDemandComponent';
 import { useSessionListSync } from '@/components/session/sidebar/list/useSessionListSync';
 import { setChatCovered } from './rightSlot';
 import { TiledSwarmView } from '@/components/chat/swarm/TiledSwarmView';
-import { AntigravityAcpView } from '@/components/chat/acp/AntigravityAcpView';
 
 import { ChatView } from '@/components/views/ChatView';
 import { DiagnosticDialogAvailableContext } from '@/lib/diagnostics/dialog-availability';
@@ -112,7 +111,6 @@ export const MainLayout: React.FC = () => {
     // The grant dialog of isolated spaces; the main layout is never VS Code's (decision 16).
     const isolatedSpacesEnabled = useUIStore((state) => state.isolatedSpacesEnabled);
     const isTiledSwarmActive = useUIStore((state) => state.tiledSwarmViewEnabled);
-    const isAntigravityAcpActive = useUIStore((state) => state.antigravityAcpViewOpen);
     const setIsMobile = useUIStore((state) => state.setIsMobile);
     const isSettingsDialogOpen = useUIStore((state) => state.isSettingsDialogOpen);
     const setSettingsDialogOpen = useUIStore((state) => state.setSettingsDialogOpen);
@@ -229,9 +227,7 @@ export const MainLayout: React.FC = () => {
                                         <main className="min-h-0 flex-1 overflow-hidden bg-background relative" data-page-scroll-lock="true">
                                             <div className={cn('absolute inset-0', isSurfacePageOpen && 'invisible')}>
                                                 <ErrorBoundary>
-                                                    {isAntigravityAcpActive ? (
-                                                        <AntigravityAcpView active={!isSettingsDialogOpen && !isSurfacePageOpen} />
-                                                    ) : isTiledSwarmActive ? (
+                                                    {isTiledSwarmActive ? (
                                                         <TiledSwarmView active={!isSettingsDialogOpen && !isSurfacePageOpen} />
                                                     ) : (
                                                         <ChatView active={!isSettingsDialogOpen && !isSurfacePageOpen} />

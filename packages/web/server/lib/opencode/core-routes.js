@@ -701,7 +701,7 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
 
   const requireApiAuth = async (req, res, next) => {
     const pathname = (req.originalUrl || '').split('?')[0];
-    if (selfAuthenticatedApiPaths.has(pathname)) return next();
+    if (selfAuthenticatedApiPaths.has(pathname) || pathname.startsWith('/api/acp/v1')) return next();
     if (isGuestOauthCallback(req) || isFilePreviewRead(req) || isGuestFrameFileRead(req)) {
       return next();
     }
