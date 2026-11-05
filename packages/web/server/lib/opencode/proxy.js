@@ -414,6 +414,7 @@ export const registerOpenCodeProxy = (app, deps) => {
     // The folder trust check (`../opencode-trust`): requests for a folder
     // whose configuration runs code wait for the user's trust.
     openCodeTrust = null,
+    acpSessionBridge = null,
   } = deps;
 
   /**
@@ -724,6 +725,7 @@ export const registerOpenCodeProxy = (app, deps) => {
     let upstreamStallTimer = null;
     let didUpstreamStall = false;
     let unsubscribeSpaceEvents = null;
+    let unsubscribeAcpEvents = null;
     let writeQueue = Promise.resolve(true);
     const sseBoundary = createSseBoundaryTracker();
 
@@ -839,6 +841,12 @@ export const registerOpenCodeProxy = (app, deps) => {
           void flushSpaceBlocks();
         }, { spaces: true });
       }
+      if (acpSessionBridge) {
+        unsubscribeAcpEvents = acpSessionBridge.subscribeEvent((payload) => {
+          pendingSpaceBlocks.push(`data: ${JSON.stringify(payload)}\n\n`);
+          void flushSpaceBlocks();
+        });
+      }
 
       scheduleHeartbeat();
       resetUpstreamStallTimer();
@@ -879,6 +887,7 @@ export const registerOpenCodeProxy = (app, deps) => {
       }
     } finally {
       unsubscribeSpaceEvents?.();
+      unsubscribeAcpEvents?.();
       if (heartbeatTimer) {
         clearTimeout(heartbeatTimer);
         heartbeatTimer = null;
@@ -973,7 +982,19 @@ export const registerOpenCodeProxy = (app, deps) => {
       const listQuery = new URL(upstreamPath, 'http://localhost').searchParams;
       const scopedToDirectory = Boolean(listQuery.get('directory') || req.get('x-opencode-directory'));
       const wantsSpaces = typeof mergeSpaceSessionList === 'function' && !listQuery.get('cursor') && !scopedToDirectory;
-      res.json(wantsSpaces ? await mergeSpaceSessionList(hostList) : hostList);
+      let finalResult = wantsSpaces ? await mergeSpaceSessionList(hostList) : hostList;
+
+      if (acpSessionBridge) {
+        const filterDir = scopedToDirectory ? (listQuery.get('directory') || req.get('x-opencode-directory')) : null;
+        const acpList = acpSessionBridge.listSessions(filterDir);
+        if (Array.isArray(finalResult)) {
+          finalResult = [...acpList, ...finalResult];
+        } else if (finalResult && Array.isArray(finalResult.data)) {
+          finalResult = { ...finalResult, data: [...acpList, ...finalResult.data] };
+        }
+      }
+
+      res.json(finalResult);
     } catch (error) {
       const status = sessionRouteErrorStatus(error);
       if (status === null) {
@@ -1187,6 +1208,63 @@ export const registerOpenCodeProxy = (app, deps) => {
     });
   }
 
+  // ACP / Antigravity Autonomous Session routes
+  app.post('/api/session', parseJsonBody, (req, res, next) => {
+    if (
+      acpSessionBridge &&
+      (req.body?.agent === 'antigravity' ||
+        req.body?.engine === 'acp' ||
+        req.body?.model?.providerID === 'antigravity' ||
+        req.query?.agent === 'antigravity' ||
+        req.query?.engine === 'acp')
+    ) {
+      const directory = req.body?.location?.directory || req.get('x-opencode-directory') || process.cwd();
+      const session = acpSessionBridge.createSession({
+        id: req.body?.id,
+        title: req.body?.title,
+        directory,
+        agent: 'antigravity',
+        model: req.body?.model?.id || 'gemini-4-argon',
+      });
+      return res.json({ data: session });
+    }
+    next();
+  });
+
+  app.post(['/api/session/:sessionID/prompt', '/api/session/:sessionID/message'], (req, res, next) => {
+    const { sessionID } = req.params;
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      return parseJsonBody(req, res, async () => {
+        const promptData = {
+          id: req.body?.id,
+          text: req.body?.text || req.body?.prompt || '',
+          directory: req.body?.directory || req.get('x-opencode-directory'),
+        };
+        const userMsg = await acpSessionBridge.startTurn(sessionID, promptData);
+        return res.json({ data: userMsg });
+      });
+    }
+    next();
+  });
+
+  app.post(['/api/session/:sessionID/abort', '/api/session/:sessionID/interrupt'], (req, res, next) => {
+    const { sessionID } = req.params;
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      const interrupted = acpSessionBridge.abortTurn(sessionID);
+      return res.json({ interrupted: Boolean(interrupted), ok: true });
+    }
+    next();
+  });
+
+  app.delete('/api/session/:sessionID', (req, res, next) => {
+    const { sessionID } = req.params;
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      const ok = acpSessionBridge.deleteSession(sessionID);
+      return res.json({ ok });
+    }
+    next();
+  });
+
   // V2 lists sessions across directories on every platform and owns pagination.
   app.get('/api/session', (req, res, next) => {
     return forwardSanitizedSessionListRequest(req, res, next);
@@ -1195,6 +1273,14 @@ export const registerOpenCodeProxy = (app, deps) => {
   // One session: the same overlay, so a detail read agrees with the list it
   // came from. Everything else about the record is forwarded untouched.
   app.get('/api/session/:sessionID', async function forwardSessionGetRequest(req, res, next) {
+    const { sessionID } = req.params;
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      const session = acpSessionBridge.getSession(sessionID);
+      if (session) {
+        return res.json({ data: session });
+      }
+      return res.status(404).json({ error: 'Session not found' });
+    }
     if (
       typeof getArchivedSessions !== 'function'
       && typeof getStoredSessionMetadata !== 'function'
@@ -1244,6 +1330,10 @@ export const registerOpenCodeProxy = (app, deps) => {
   // A client that asks for it gets message pages with finished tool results
   // shelled (see message-shells.js); anyone else reaches OpenCode untouched.
   app.get('/api/session/:sessionID/message', async function forwardMessageListRequest(req, res, next) {
+    const { sessionID } = req.params;
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      return res.json(acpSessionBridge.getMessages(sessionID));
+    }
     const keepWhole = parsePartShellsHeader(req.get(PART_SHELLS_HEADER));
     if (!keepWhole) return next();
     try {

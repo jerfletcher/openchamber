@@ -1,5 +1,6 @@
 import { registerOpenCodeProxy } from './proxy.js';
 import { pathLooksUserConfigured, mergePathValues } from './path-utils.js';
+import { getAcpSessionBridge } from '../acp/acp-session-bridge.js';
 
 export const createServerUtilsRuntime = (dependencies) => {
   const {
@@ -203,6 +204,7 @@ export const createServerUtilsRuntime = (dependencies) => {
       // Read when the proxy is set up, after `main` decided whether the spaces host exists.
       mergeSpaceSessionList: typeof getMergeSpaceSessionList === 'function' ? getMergeSpaceSessionList() : null,
       spaceEventHub: typeof getSpaceEventHub === 'function' ? getSpaceEventHub() : null,
+      acpSessionBridge: getAcpSessionBridge(),
       openCodeTrust,
       readWorktreeBootstrapStatus,
     });
