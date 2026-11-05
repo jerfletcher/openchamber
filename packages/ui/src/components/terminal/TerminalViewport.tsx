@@ -507,10 +507,6 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
       }}
     >
       <ContextMenuTrigger
-        onContextMenu={(event) => {
-          if (event.nativeEvent !== allowedContextEventRef.current) event.preventBaseUIHandler();
-          allowedContextEventRef.current = null;
-        }}
         render={<div
           ref={containerRef}
           data-terminal-owner="main"

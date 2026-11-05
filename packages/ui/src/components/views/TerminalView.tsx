@@ -907,7 +907,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible, directory, 
 
     // Touch hosts have no keyboard shortcut for copy, so the toolbar offers the
     // same action the desktop gets from Cmd/Ctrl+C on a selection.
-    const [isSelectMode, setIsSelectMode] = React.useState(false);
+    const [isSelectMode, setIsSelectMode] = React.useState(true);
     const handleToggleSelectMode = React.useCallback(() => {
         const next = !isSelectMode;
         setIsSelectMode(next);

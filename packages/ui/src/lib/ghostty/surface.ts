@@ -796,7 +796,7 @@ export class GhosttyTerminalSurface {
   private inputLeft = -1;
   private inputTop = -1;
   private lastTouchPointerAt = Number.NEGATIVE_INFINITY;
-  private bypassMouseReporting = false;
+  private bypassMouseReporting = true;
 
   setBypassMouseReporting(bypass: boolean): void {
     this.bypassMouseReporting = bypass;
@@ -1336,56 +1336,20 @@ export class GhosttyTerminalSurface {
       return;
     }
     if (isTerminalCopyShortcut(event) && this.hasSelection()) {
-      // A plain Ctrl+C/Cmd+C fires the browser's native copy event, caught in
-      // onCopyEvent; not preventing the default keeps that path alive. WebKit
-      // omits the keyboard copy event without a DOM selection, so race the
-      // clipboard write against it the same way paste races its read. The
-      // Shift variant has no native event (Chrome binds Ctrl+Shift+C to
-      // inspect), so synthesize one with execCommand("copy").
       const selection = this.getSelection();
       this.primeCopy(selection);
-      if (event.shiftKey) {
-        event.preventDefault();
-        document.execCommand('copy');
+      event.preventDefault();
+      if (typeof navigator !== 'undefined' && navigator.clipboard?.writeText) {
+        navigator.clipboard.writeText(selection).catch(() => {
+          document.execCommand('copy');
+        });
       } else {
-        // A plain Ctrl+C is also SIGINT on non-mac: clear the selection once
-        // it copies so the next Ctrl+C reaches the shell. The Shift chord and
-        // Cmd+C are copy-only, so they keep the selection; resetting the flag
-        // up front also drops any clear owed by an earlier gesture that never
-        // completed.
-        this.clearSelectionAfterCopy = !event.shiftKey && !isMacPlatform(navigator.platform);
-        const clipboard = navigator.clipboard;
-        if (clipboard) {
-          // Defer the write past the default action: the native copy event
-          // (dispatched synchronously with the default action) claims the
-          // token first when it actually writes, and the write covers browsers
-          // whose shortcut produces no copy event. The primed textarea is what
-          // Electron's edit-menu Copy reads if it runs after this handler.
-          const token = ++this.copyShortcutToken;
-          void Promise.resolve().then(() => {
-            if (this.disposed || this.copyShortcutToken !== token) return;
-            void clipboard.writeText(selection).then(
-              () => {
-                // The write may have been superseded while in flight; only
-                // touch the selection if this gesture still owns the token.
-                if (this.disposed || this.copyShortcutToken !== token) return;
-                if (this.clearSelectionAfterCopy) {
-                  this.clearSelectionAfterCopy = false;
-                  this.clearSelection();
-                }
-              },
-              () => {
-                // The write failed and the native event has already had its
-                // chance, so nothing copied and no clear is owed by this
-                // gesture; a newer one may have just set the flag, so only
-                // drop it if this gesture still owns the token.
-                if (this.copyShortcutToken === token) {
-                  this.clearSelectionAfterCopy = false;
-                }
-              },
-            );
-          });
-        }
+        document.execCommand('copy');
+      }
+      this.clearSelectionAfterCopy = !event.shiftKey && !isMacPlatform(navigator.platform);
+      if (this.clearSelectionAfterCopy) {
+        this.clearSelectionAfterCopy = false;
+        this.clearSelection();
       }
       this.suppressedKeyCodes.add(event.code);
       return;
@@ -1985,9 +1949,6 @@ export class GhosttyTerminalSurface {
 
   private readonly onContextMenu = (event: MouseEvent) => {
     event.preventDefault();
-    if (!this.bypassMouseReporting && !event.shiftKey && shouldReportTerminalMouse(this.core.isMouseTracking(), event)) {
-      return;
-    }
     this.options.onContextMenu?.(event);
   };
 
