@@ -220,6 +220,8 @@ export const Header: React.FC = () => {
   const workStatusPanelFits = useUIStore((state) => state.workStatusPanelFits);
   const workStatusOverlayOpen = useUIStore((state) => state.workStatusOverlayOpen);
   const setWorkStatusOverlayOpen = useUIStore((state) => state.setWorkStatusOverlayOpen);
+  const tiledSwarmViewEnabled = useUIStore((state) => state.tiledSwarmViewEnabled);
+  const toggleTiledSwarmView = useUIStore((state) => state.toggleTiledSwarmView);
 
   // Two meanings for one button. With room beside the chat it switches the
   // panel on and off. Without room it cannot be shown inline at all, so it
@@ -1349,6 +1351,28 @@ export const Header: React.FC = () => {
                   : workStatusPanelEnabled
                     ? t('header.workStatusPanel.hide')
                     : t('header.workStatusPanel.show')}
+              </TooltipContent>
+            </Tooltip>
+          ) : null}
+          {!isVSCode ? (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  data-tiled-swarm-toggle="true"
+                  aria-pressed={tiledSwarmViewEnabled}
+                  aria-label="Toggle 4-Way Tiled Swarm View"
+                  onClick={toggleTiledSwarmView}
+                  className={cn(
+                    DESKTOP_HEADER_ICON_BUTTON_CLASS,
+                    tiledSwarmViewEnabled && 'text-foreground bg-accent/60',
+                  )}
+                >
+                  <Icon name="layout" className="h-4 w-4" />
+                </button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {tiledSwarmViewEnabled ? 'Exit Tiled Swarm View' : 'Toggle 4-Way Tiled Swarm View'}
               </TooltipContent>
             </Tooltip>
           ) : null}

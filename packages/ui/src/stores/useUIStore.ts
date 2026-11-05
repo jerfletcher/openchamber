@@ -1030,6 +1030,8 @@ interface UIStore {
   /** A collapsible reasoning block opens while its model thinks. Off: it stays folded to its header. */
   expandReasoningWhileStreaming: boolean;
   activityRenderMode: ActivityRenderMode;
+  tiledSwarmViewEnabled: boolean;
+  tiledSwarmLayout: 'grid-4' | 'columns-3' | 'split-2';
   showDeletionDialog: boolean;
   autoDeleteEnabled: boolean;
   /** Global file-editor autosave. Default true for backward compatibility. */
@@ -1361,6 +1363,9 @@ interface UIStore {
   setCollapsibleThinkingBlocks: (value: boolean) => void;
   setExpandReasoningWhileStreaming: (value: boolean) => void;
   setActivityRenderMode: (value: ActivityRenderMode) => void;
+  setTiledSwarmViewEnabled: (value: boolean) => void;
+  setTiledSwarmLayout: (value: 'grid-4' | 'columns-3' | 'split-2') => void;
+  toggleTiledSwarmView: () => void;
   setShowDeletionDialog: (value: boolean) => void;
   setAutoDeleteEnabled: (value: boolean) => void;
   setMergedWorktreeCleanupEnabled: (value: boolean) => void;
@@ -1627,6 +1632,8 @@ export const useUIStore = create<UIStore>()(
         collapsibleThinkingBlocks: true,
         expandReasoningWhileStreaming: false,
         activityRenderMode: 'summary',
+        tiledSwarmViewEnabled: false,
+        tiledSwarmLayout: 'grid-4',
         showDeletionDialog: true,
         autoDeleteEnabled: false,
         autoSaveEnabled: true,
@@ -2751,6 +2758,18 @@ export const useUIStore = create<UIStore>()(
 
         setActivityRenderMode: (value) => {
           set({ activityRenderMode: value });
+        },
+
+        setTiledSwarmViewEnabled: (value) => {
+          set({ tiledSwarmViewEnabled: value });
+        },
+
+        setTiledSwarmLayout: (value) => {
+          set({ tiledSwarmLayout: value });
+        },
+
+        toggleTiledSwarmView: () => {
+          set((state) => ({ tiledSwarmViewEnabled: !state.tiledSwarmViewEnabled }));
         },
 
         setShowDeletionDialog: (value) => {
@@ -3889,6 +3908,8 @@ export const useUIStore = create<UIStore>()(
           collapsibleThinkingBlocks: state.collapsibleThinkingBlocks,
           expandReasoningWhileStreaming: state.expandReasoningWhileStreaming,
           activityRenderMode: state.activityRenderMode,
+          tiledSwarmViewEnabled: state.tiledSwarmViewEnabled,
+          tiledSwarmLayout: state.tiledSwarmLayout,
           showDeletionDialog: state.showDeletionDialog,
           autoDeleteEnabled: state.autoDeleteEnabled,
           autoSaveEnabled: state.autoSaveEnabled,

@@ -33,6 +33,7 @@ import { cn } from '@/lib/utils';
 import { useOnDemandComponent } from '@/hooks/useOnDemandComponent';
 import { useSessionListSync } from '@/components/session/sidebar/list/useSessionListSync';
 import { setChatCovered } from './rightSlot';
+import { TiledSwarmView } from '@/components/chat/swarm/TiledSwarmView';
 
 import { ChatView } from '@/components/views/ChatView';
 import { DiagnosticDialogAvailableContext } from '@/lib/diagnostics/dialog-availability';
@@ -109,6 +110,7 @@ export const MainLayout: React.FC = () => {
     useTerminalSessionKeepalive();
     // The grant dialog of isolated spaces; the main layout is never VS Code's (decision 16).
     const isolatedSpacesEnabled = useUIStore((state) => state.isolatedSpacesEnabled);
+    const isTiledSwarmActive = useUIStore((state) => state.tiledSwarmViewEnabled);
     const setIsMobile = useUIStore((state) => state.setIsMobile);
     const isSettingsDialogOpen = useUIStore((state) => state.isSettingsDialogOpen);
     const setSettingsDialogOpen = useUIStore((state) => state.setSettingsDialogOpen);
@@ -224,7 +226,13 @@ export const MainLayout: React.FC = () => {
                                         <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden" data-workspace-chat="true">
                                         <main className="min-h-0 flex-1 overflow-hidden bg-background relative" data-page-scroll-lock="true">
                                             <div className={cn('absolute inset-0', isSurfacePageOpen && 'invisible')}>
-                                                <ErrorBoundary><ChatView active={!isSettingsDialogOpen && !isSurfacePageOpen} /></ErrorBoundary>
+                                                <ErrorBoundary>
+                                                    {isTiledSwarmActive ? (
+                                                        <TiledSwarmView active={!isSettingsDialogOpen && !isSurfacePageOpen} />
+                                                    ) : (
+                                                        <ChatView active={!isSettingsDialogOpen && !isSurfacePageOpen} />
+                                                    )}
+                                                </ErrorBoundary>
                                             </div>
                                             <ErrorBoundary><OnDemand needed={isRunOverviewOpen} load={loadRunOverview} onFailure={closeMainSurfaces} /></ErrorBoundary>
                                             <ErrorBoundary><OnDemand needed={isScheduledTasksPageOpen} load={loadScheduledTasksDialog} onFailure={closeMainSurfaces} /></ErrorBoundary>
