@@ -99,6 +99,8 @@ export type TerminalController = {
   focus: () => void;
   fit: () => void;
   getSelection: () => { text: string; startLine: number; endLine: number } | null;
+  getSelectionText: () => string;
+  getScreenText: () => string;
   /** Reads the clipboard and sends it to the shell as a paste. Call it from the click itself. */
   pasteClipboard: () => Promise<void>;
   selectAll: () => void;
@@ -268,7 +270,8 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
             // Only the surface can decide whether a terminal application owns
             // this click. The React trigger must ignore all other events.
             allowedContextEventRef.current = event;
-            setMenuSelection(surface?.getSelection() ?? '');
+            const text = surface?.getSelection() || surface?.getScreenText() || '';
+            setMenuSelection(text);
           },
         });
       } catch (error) {
@@ -331,10 +334,15 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
   }, [sessionKey, isVisible, ready]);
 
   const copySelection = async () => {
-    if (!menuSelection) return;
+    const textToCopy = menuSelection || surfaceRef.current?.getSelection() || surfaceRef.current?.getScreenText() || '';
+    if (!textToCopy) return;
     try {
-      const result = await copyTextToClipboard(menuSelection);
-      if (!result.ok) toast.error(t('terminalView.toast.copyFailed'));
+      const result = await copyTextToClipboard(textToCopy);
+      if (!result.ok) {
+        toast.error(t('terminalView.toast.copyFailed'));
+      } else {
+        toast.success(t('terminalView.toast.selectionCopied') || 'Copied to clipboard');
+      }
     } catch {
       toast.error(t('terminalView.toast.copyFailed'));
     }
@@ -470,9 +478,16 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
     getSelection: () => {
       const surface = surfaceRef.current;
       const range = surface?.getSelectionPosition();
-      const text = surface?.getSelection() ?? '';
-      if (!range || !text.trim()) return null;
-      return { text, startLine: range.start.y + 1, endLine: range.end.y + 1 };
+      const text = surface?.getSelection() || surface?.getScreenText() || '';
+      if (!text.trim()) return null;
+      return { text, startLine: range ? range.start.y + 1 : 1, endLine: range ? range.end.y + 1 : 1 };
+    },
+    getSelectionText: () => {
+      const surface = surfaceRef.current;
+      return surface?.getSelection() || surface?.getScreenText() || '';
+    },
+    getScreenText: () => {
+      return surfaceRef.current?.getScreenText() || '';
     },
     // Touch hosts have no paste shortcut to fall back on, so their failure names none.
     pasteClipboard: () => pasteClipboard(t('terminalView.toast.pasteFailedTouch')),
@@ -496,7 +511,6 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
           if (event.nativeEvent !== allowedContextEventRef.current) event.preventBaseUIHandler();
           allowedContextEventRef.current = null;
         }}
-        onTouchStart={(event) => event.preventBaseUIHandler()}
         render={<div
           ref={containerRef}
           data-terminal-owner="main"
@@ -507,8 +521,8 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
         if (restoreMenuFocusRef.current && visibleRef.current) surfaceRef.current?.focus();
         return false;
       }}>
-        <ContextMenuItem disabled={!menuSelection} onClick={() => { void copySelection(); }}>
-          {t('terminalView.actions.copy')}
+        <ContextMenuItem onClick={() => { void copySelection(); }}>
+          {menuSelection ? t('terminalView.actions.copy') : 'Copy Text'}
         </ContextMenuItem>
         <ContextMenuItem onClick={() => { void pasteClipboard(t('terminalView.toast.pasteFailed')); }}>
           {t('terminalView.actions.paste')}

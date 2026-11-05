@@ -1169,6 +1169,10 @@ export class GhosttyTerminalSurface {
     return this.core.selectionText();
   }
 
+  getScreenText(): string {
+    return this.core.getScreenText();
+  }
+
   getSelectionPosition(): GhosttySelectionPosition | null {
     if (!this.selectionAnchorScreen || !this.selectionEndScreen || !this.hasSelection())
       return null;
@@ -1980,8 +1984,8 @@ export class GhosttyTerminalSurface {
   };
 
   private readonly onContextMenu = (event: MouseEvent) => {
+    event.preventDefault();
     if (!this.bypassMouseReporting && !event.shiftKey && shouldReportTerminalMouse(this.core.isMouseTracking(), event)) {
-      event.preventDefault();
       return;
     }
     this.options.onContextMenu?.(event);

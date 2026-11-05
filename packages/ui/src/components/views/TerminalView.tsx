@@ -916,17 +916,20 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible, directory, 
     }, [isSelectMode]);
 
     const handleCopySelection = React.useCallback(() => {
-        let text = terminalControllerRef.current?.getSelection()?.text;
+        let text = terminalControllerRef.current?.getSelectionText() || terminalControllerRef.current?.getSelection()?.text;
         let isScreenCopy = false;
         if (!text) {
             terminalControllerRef.current?.selectAll();
-            text = terminalControllerRef.current?.getSelection()?.text;
+            text = terminalControllerRef.current?.getSelectionText() || terminalControllerRef.current?.getSelection()?.text;
             isScreenCopy = true;
         }
-        if (!text) return;
+        if (!text) {
+            toast.error(t('terminalView.toast.copyFailed') || 'No text to copy');
+            return;
+        }
         void copyTextToClipboard(text).then((result) => {
-            if (result.ok) toast.success(isScreenCopy ? 'Terminal screen copied to clipboard' : t('terminalView.toast.selectionCopied'));
-            else toast.error(t('terminalView.toast.copyFailed'));
+            if (result.ok) toast.success(isScreenCopy ? 'Terminal text copied to clipboard' : (t('terminalView.toast.selectionCopied') || 'Copied to clipboard'));
+            else toast.error(t('terminalView.toast.copyFailed') || 'Copy failed');
         });
     }, [t]);
 

@@ -906,6 +906,10 @@ export class GhosttyTerminalCore {
     return text;
   }
 
+  getScreenText(): string {
+    return this.rows.map((row) => row.text).join('\n').trimEnd();
+  }
+
   viewportPointToScreen(col: number, row: number): { x: number; y: number } | null {
     return this.convertPoint(col, row, 1, 2);
   }
