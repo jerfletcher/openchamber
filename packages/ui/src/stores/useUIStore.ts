@@ -1032,6 +1032,9 @@ interface UIStore {
   activityRenderMode: ActivityRenderMode;
   tiledSwarmViewEnabled: boolean;
   tiledSwarmLayout: 'grid-4' | 'columns-3' | 'split-2';
+  expandCommandsByDefault: boolean;
+  expandSubagentsByDefault: boolean;
+  expandSearchesByDefault: boolean;
   showDeletionDialog: boolean;
   autoDeleteEnabled: boolean;
   /** Global file-editor autosave. Default true for backward compatibility. */
@@ -1366,6 +1369,9 @@ interface UIStore {
   setTiledSwarmViewEnabled: (value: boolean) => void;
   setTiledSwarmLayout: (value: 'grid-4' | 'columns-3' | 'split-2') => void;
   toggleTiledSwarmView: () => void;
+  setExpandCommandsByDefault: (value: boolean) => void;
+  setExpandSubagentsByDefault: (value: boolean) => void;
+  setExpandSearchesByDefault: (value: boolean) => void;
   setShowDeletionDialog: (value: boolean) => void;
   setAutoDeleteEnabled: (value: boolean) => void;
   setMergedWorktreeCleanupEnabled: (value: boolean) => void;
@@ -1634,6 +1640,9 @@ export const useUIStore = create<UIStore>()(
         activityRenderMode: 'summary',
         tiledSwarmViewEnabled: false,
         tiledSwarmLayout: 'grid-4',
+        expandCommandsByDefault: true,
+        expandSubagentsByDefault: false,
+        expandSearchesByDefault: false,
         showDeletionDialog: true,
         autoDeleteEnabled: false,
         autoSaveEnabled: true,
@@ -2754,6 +2763,18 @@ export const useUIStore = create<UIStore>()(
 
         setExpandReasoningWhileStreaming: (value) => {
           set({ expandReasoningWhileStreaming: value });
+        },
+
+        setExpandCommandsByDefault: (value) => {
+          set({ expandCommandsByDefault: value });
+        },
+
+        setExpandSubagentsByDefault: (value) => {
+          set({ expandSubagentsByDefault: value });
+        },
+
+        setExpandSearchesByDefault: (value) => {
+          set({ expandSearchesByDefault: value });
         },
 
         setActivityRenderMode: (value) => {
@@ -3910,6 +3931,9 @@ export const useUIStore = create<UIStore>()(
           activityRenderMode: state.activityRenderMode,
           tiledSwarmViewEnabled: state.tiledSwarmViewEnabled,
           tiledSwarmLayout: state.tiledSwarmLayout,
+          expandCommandsByDefault: state.expandCommandsByDefault,
+          expandSubagentsByDefault: state.expandSubagentsByDefault,
+          expandSearchesByDefault: state.expandSearchesByDefault,
           showDeletionDialog: state.showDeletionDialog,
           autoDeleteEnabled: state.autoDeleteEnabled,
           autoSaveEnabled: state.autoSaveEnabled,

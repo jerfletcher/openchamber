@@ -125,6 +125,12 @@ const MessagesTab: React.FC = () => {
   const setShowToolFileIcons = useUIStore((state) => state.setShowToolFileIcons);
   const showTurnChangedFiles = useUIStore((state) => state.showTurnChangedFiles);
   const setShowTurnChangedFiles = useUIStore((state) => state.setShowTurnChangedFiles);
+  const expandCommandsByDefault = useUIStore((state) => state.expandCommandsByDefault);
+  const setExpandCommandsByDefault = useUIStore((state) => state.setExpandCommandsByDefault);
+  const expandSubagentsByDefault = useUIStore((state) => state.expandSubagentsByDefault);
+  const setExpandSubagentsByDefault = useUIStore((state) => state.setExpandSubagentsByDefault);
+  const expandSearchesByDefault = useUIStore((state) => state.expandSearchesByDefault);
+  const setExpandSearchesByDefault = useUIStore((state) => state.setExpandSearchesByDefault);
   const streamingAutoFollowEnabled = useUIStore((state) => state.streamingAutoFollowEnabled);
   const setStreamingAutoFollowEnabled = useUIStore((state) => state.setStreamingAutoFollowEnabled);
   const wideChatLayoutEnabled = useUIStore((state) => state.wideChatLayoutEnabled);
@@ -219,6 +225,27 @@ const MessagesTab: React.FC = () => {
             label={t('settings.openchamber.visual.field.showTurnChangedFiles')}
             ariaLabel={t('settings.openchamber.visual.field.showTurnChangedFilesAria')}
             settingsItem="chat.changed-files"
+          />
+          <SettingsCheckboxRow
+            checked={expandCommandsByDefault}
+            onChange={(enabled) => setExpandCommandsByDefault(enabled)}
+            label="Expand shell commands & edits by default"
+            ariaLabel="Expand shell commands and file edits by default"
+            info="Keep bash commands, tool executions, and file edits open in the activity stream."
+          />
+          <SettingsCheckboxRow
+            checked={expandSubagentsByDefault}
+            onChange={(enabled) => setExpandSubagentsByDefault(enabled)}
+            label="Expand subagent task rows by default"
+            ariaLabel="Expand subagent task rows by default"
+            info="Off: subagent dispatch stays folded to its header row and hides the sent prompt."
+          />
+          <SettingsCheckboxRow
+            checked={expandSearchesByDefault}
+            onChange={(enabled) => setExpandSearchesByDefault(enabled)}
+            label="Expand file searches by default"
+            ariaLabel="Expand file searches by default"
+            info="Off: glob and grep file exploration rows stay folded to their pattern headers."
           />
         </div>
       </SettingsSection>
