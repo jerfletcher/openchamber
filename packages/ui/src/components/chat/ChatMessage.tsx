@@ -47,6 +47,7 @@ import { getContextObligatoryMessages } from '@/lib/contextObligatoryMessages';
 import { setContextObligatoryMessage } from '@/sync/session-actions';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { useChatColumnActions } from './chatColumnSession';
+import { normalizeToolName } from '@/lib/opencode/tools';
 
 const ToolOutputDialog = lazyWithChunkRecovery(() => import('./message/ToolOutputDialog'));
 
@@ -150,16 +151,14 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
 
     const providers = useConfigStore((state) => state.providers);
     const showReasoningTraces = useUIStore((state) => state.showReasoningTraces);
+    const expandCommandsByDefault = useUIStore((state) => state.expandCommandsByDefault);
+    const expandSubagentsByDefault = useUIStore((state) => state.expandSubagentsByDefault);
+    const expandSearchesByDefault = useUIStore((state) => state.expandSearchesByDefault);
 
     const [copiedCode, setCopiedCode] = React.useState<string | null>(null);
     const [copiedMessage, setCopiedMessage] = React.useState(false);
     const handleCopyLink = useCopyMessageLink(message.info.sessionID, message.info.id);
-    const [collapsedTools, setCollapsedTools] = React.useState<Set<string>>(() => readCollapsedToolsCache(message.info.id));
-    const expandedTools = React.useMemo(() => {
-        return {
-            has: (toolId: string) => !collapsedTools.has(toolId),
-        } as Set<string>;
-    }, [collapsedTools]);
+    const [userToggledTools, setUserToggledTools] = React.useState<Set<string>>(() => readCollapsedToolsCache(message.info.id));
     const [popupContent, setPopupContent] = React.useState<ToolPopupContent>({
         open: false,
         title: '',
@@ -167,7 +166,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     });
 
     React.useEffect(() => {
-        setCollapsedTools(readCollapsedToolsCache(message.info.id));
+        setUserToggledTools(readCollapsedToolsCache(message.info.id));
     }, [message.info.id]);
 
 
@@ -196,6 +195,37 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
 
         return normalizeUserDisplayParts(safeParts, descriptorOf);
     }, [descriptorOf, isUser, message.parts]);
+
+    const toolPartMap = React.useMemo(() => {
+        const map = new Map<string, string>();
+        for (const part of normalizedParts) {
+            if (part && typeof part === 'object' && 'tool' in part && typeof part.tool === 'string' && 'id' in part && typeof part.id === 'string') {
+                map.set(part.id, normalizeToolName(part.tool));
+            }
+        }
+        return map;
+    }, [normalizedParts]);
+
+    const isToolDefaultExpanded = React.useCallback((toolName: string): boolean => {
+        if (toolName === 'subagent' || toolName === 'task' || toolName === 'agent') {
+            return expandSubagentsByDefault;
+        }
+        if (toolName === 'glob' || toolName === 'grep' || toolName === 'read' || toolName === 'file_search' || toolName === 'search') {
+            return expandSearchesByDefault;
+        }
+        return expandCommandsByDefault;
+    }, [expandSubagentsByDefault, expandSearchesByDefault, expandCommandsByDefault]);
+
+    const expandedTools = React.useMemo(() => {
+        return {
+            has: (toolId: string) => {
+                const toolName = toolPartMap.get(toolId) ?? '';
+                const defaultExpanded = isToolDefaultExpanded(toolName);
+                const toggled = userToggledTools.has(toolId);
+                return toggled ? !defaultExpanded : defaultExpanded;
+            },
+        } as Set<string>;
+    }, [toolPartMap, isToolDefaultExpanded, userToggledTools]);
 
     const agentName = React.useMemo(() => {
         if (isUser) return undefined;
@@ -574,7 +604,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     }, [sessionId, message.info.id]);
 
     const handleToggleTool = React.useCallback((toolId: string) => {
-        setCollapsedTools((prev) => {
+        setUserToggledTools((prev) => {
             const next = new Set(prev);
             if (next.has(toolId)) {
                 next.delete(toolId);
