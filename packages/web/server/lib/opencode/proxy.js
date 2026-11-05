@@ -1251,6 +1251,79 @@ export const registerOpenCodeProxy = (app, deps) => {
     next();
   });
 
+  app.post('/api/session/:sessionID/model', (req, res, next) => {
+    const { sessionID } = req.params;
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      return parseJsonBody(req, res, () => {
+        acpSessionBridge.switchModel(sessionID, req.body?.model);
+        return res.status(204).end();
+      });
+    }
+    next();
+  });
+
+  app.post('/api/session/:sessionID/agent', (req, res, next) => {
+    const { sessionID } = req.params;
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      return parseJsonBody(req, res, () => {
+        acpSessionBridge.switchAgent(sessionID, req.body?.agent);
+        return res.status(204).end();
+      });
+    }
+    next();
+  });
+
+  app.patch('/api/session/:sessionID', (req, res, next) => {
+    const { sessionID } = req.params;
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      return parseJsonBody(req, res, () => {
+        acpSessionBridge.updateSession(sessionID, req.body || {});
+        return res.status(204).end();
+      });
+    }
+    next();
+  });
+
+  app.get('/api/session/:sessionID/inbox', (req, res, next) => {
+    const { sessionID } = req.params;
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      return res.json({ data: [] });
+    }
+    next();
+  });
+
+  app.get('/api/session/:sessionID/context', (req, res, next) => {
+    const { sessionID } = req.params;
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      return res.json({ data: {} });
+    }
+    next();
+  });
+
+  app.get('/api/session/:sessionID/diff', (req, res, next) => {
+    const { sessionID } = req.params;
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      return res.json({ data: [] });
+    }
+    next();
+  });
+
+  app.post('/api/session/:sessionID/move', (req, res, next) => {
+    const { sessionID } = req.params;
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      return res.status(204).end();
+    }
+    next();
+  });
+
+  app.post('/api/session/:sessionID/command', (req, res, next) => {
+    const { sessionID } = req.params;
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      return res.status(204).end();
+    }
+    next();
+  });
+
   app.post(['/api/session/:sessionID/abort', '/api/session/:sessionID/interrupt'], (req, res, next) => {
     const { sessionID } = req.params;
     if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
@@ -1263,8 +1336,8 @@ export const registerOpenCodeProxy = (app, deps) => {
   app.delete('/api/session/:sessionID', (req, res, next) => {
     const { sessionID } = req.params;
     if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
-      const ok = acpSessionBridge.deleteSession(sessionID);
-      return res.json({ ok });
+      acpSessionBridge.deleteSession(sessionID);
+      return res.status(204).end();
     }
     next();
   });

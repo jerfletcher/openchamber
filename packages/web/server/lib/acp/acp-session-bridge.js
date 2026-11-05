@@ -131,6 +131,41 @@ export class AcpSessionBridge extends EventEmitter {
     return false;
   }
 
+  switchModel(sessionId, model) {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    const modelId = typeof model === 'string' ? model : (model?.id || 'gemini-3.8-flash-medium');
+    const resolvedModel = ACP_MODEL_NORM[modelId] || modelId;
+    session.model = { id: resolvedModel, providerID: 'antigravity' };
+    session.time = session.time || {};
+    session.time.updated = Date.now();
+    this.saveToDisk();
+    return true;
+  }
+
+  switchAgent(sessionId, agent) {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    session.agent = agent || 'antigravity';
+    session.time = session.time || {};
+    session.time.updated = Date.now();
+    this.saveToDisk();
+    return true;
+  }
+
+  updateSession(sessionId, updates = {}) {
+    const session = this.sessions.get(sessionId);
+    if (!session) return false;
+    if (updates.title !== undefined) session.title = updates.title;
+    if (updates.metadata !== undefined) session.metadata = updates.metadata;
+    if (updates.permissions !== undefined) session.permissions = updates.permissions;
+    if (updates.archived !== undefined) session.archived = updates.archived;
+    session.time = session.time || {};
+    session.time.updated = Date.now();
+    this.saveToDisk();
+    return true;
+  }
+
   abortTurn(sessionId) {
     const abortCtrl = this.activeTurns.get(sessionId);
     if (abortCtrl) {
