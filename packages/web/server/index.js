@@ -44,6 +44,7 @@ import {
 import { prepareNotificationLastMessage } from './lib/notifications/index.js';
 import { registerTtsRoutes } from './lib/tts/routes.js';
 import { registerAcpRoutes } from './lib/acp/acp-routes.js';
+import { getAcpSessionBridge } from './lib/acp/acp-session-bridge.js';
 import { detectSayTtsCapability } from './lib/tts/capability-runtime.js';
 import { createTerminalRuntime } from './lib/terminal/runtime.js';
 import { createDictationRuntime } from './lib/dictation/runtime.js';
@@ -1244,6 +1245,7 @@ const globalMessageStreamHub = createGlobalMessageStreamHub({
   upstreamStallTimeoutMs: getUpstreamStallTimeoutMs,
   deltaCoalesceWindowMs: resolveDeltaCoalesceWindowMs(),
 });
+getAcpSessionBridge().setEventHub(globalMessageStreamHub);
 
 // Jev model routing and the permission safety net. Every failure keeps the
 // user's own model or the auto-accept reply it was asked about.

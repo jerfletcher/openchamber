@@ -72,10 +72,11 @@ describe('AcpSessionBridge', () => {
 
     // Verify events were emitted
     const types = events.map((e) => e.type);
-    expect(types).toContain('message.updated');
-    expect(types).toContain('message.part.updated');
-    expect(types).toContain('message.part.delta');
-    expect(types).toContain('session.idle');
+    expect(types).toContain('session.execution.started');
+    expect(types).toContain('session.step.started');
+    expect(types).toContain('session.text.started');
+    expect(types).toContain('session.text.delta');
+    expect(types).toContain('session.execution.succeeded');
 
     // Verify message list retrieval
     const messages = bridge.getMessages(session.id);

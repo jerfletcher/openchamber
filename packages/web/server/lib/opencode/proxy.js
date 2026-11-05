@@ -417,6 +417,10 @@ export const registerOpenCodeProxy = (app, deps) => {
     acpSessionBridge = null,
   } = deps;
 
+  if (acpSessionBridge && spaceEventHub) {
+    acpSessionBridge.setEventHub(spaceEventHub);
+  }
+
   /**
    * `{ [sessionID]: archivedAt }` for the current instance, or `null` when the
    * store cannot answer. `null` means "unknown", and an unknown answer leaves
@@ -1224,7 +1228,7 @@ export const registerOpenCodeProxy = (app, deps) => {
         title: req.body?.title,
         directory,
         agent: 'antigravity',
-        model: req.body?.model?.id || 'gemini-4-argon',
+        model: req.body?.model?.id || 'gemini-3.8-flash-medium',
       });
       return res.json({ data: session });
     }
