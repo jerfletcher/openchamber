@@ -20,6 +20,8 @@ import { formatCost } from './subagentCost';
 import { computeRollup } from './useSubagentCostRollup';
 import type { State } from '@/sync/types';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
+import { Button } from '@/components/ui/button';
+import { SubagentsTiledModal } from './SubagentsTiledModal';
 
 type Props = {
   sessionId: string | null;
@@ -143,15 +145,33 @@ export const WorkStatusSubagentsSection: React.FC<Props> = ({ sessionId, directo
     || ((right.child.time?.created ?? 0) - (left.child.time?.created ?? 0)));
 
   const busyChildren = rows.filter((row) => row.busy).length;
+  const [deckOpen, setDeckOpen] = React.useState(false);
 
   return (
-    <WorkStatusCollapsibleSection
-      id={SECTION_ID}
-      title={t('chat.workStatus.section.subagents')}
-      icon="ai-agent"
-      defaultExpanded
-      summary={busyChildren > 0 ? `${busyChildren}/${children.length}` : children.length}
-    >
+    <>
+      <WorkStatusCollapsibleSection
+        id={SECTION_ID}
+        title={t('chat.workStatus.section.subagents')}
+        icon="ai-agent"
+        defaultExpanded
+        summary={busyChildren > 0 ? `${busyChildren}/${children.length}` : children.length}
+        action={
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            className="h-5 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+            onClick={(e) => {
+              e.stopPropagation();
+              setDeckOpen(true);
+            }}
+            title="Open Subagent Swarm Deck (Tiled Live View)"
+          >
+            <Icon name="layout" className="size-3 text-primary" />
+            <span>Tile View</span>
+          </Button>
+        }
+      >
       <ScrollableOverlay outerClassName="max-h-56" disableHorizontal>
         {rows.map(({ child, blocked, asked, busy, failed, done }) => {
           const label = child.title?.trim() || t('chat.workStatus.subagent.untitled');
@@ -210,5 +230,17 @@ export const WorkStatusSubagentsSection: React.FC<Props> = ({ sessionId, directo
         })}
       </ScrollableOverlay>
     </WorkStatusCollapsibleSection>
+    <SubagentsTiledModal
+      open={deckOpen}
+      onOpenChange={setDeckOpen}
+      childrenSessions={children}
+      statuses={statuses}
+      observedById={observedById}
+      permissions={permissions}
+      forms={forms}
+      directory={directory}
+      onOpenChild={openChildSession}
+    />
+  </>
   );
 };

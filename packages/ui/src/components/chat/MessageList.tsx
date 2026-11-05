@@ -446,7 +446,9 @@ const TurnRow = React.memo(({
         isLastTurn: entry.isLastTurn,
         nextEntryFirstMessage: entry.nextEntryFirstMessage,
     });
-    const isActivityExpanded = turnExpansion.get(turn.turnId) === true;
+    const isActivityExpanded = turnExpansion.has(turn.turnId)
+        ? turnExpansion.get(turn.turnId) === true
+        : true;
     const hasLaterAssistant = entry.hasLaterAssistant === true;
     const foldContexts = useTurnFoldContexts(turn, hasLaterAssistant, isActivityExpanded, row.finalMessageId);
     const handleToggleActivity = React.useCallback(() => {

@@ -51,21 +51,21 @@ import { useChatColumnActions } from './chatColumnSession';
 const ToolOutputDialog = lazyWithChunkRecovery(() => import('./message/ToolOutputDialog'));
 
 const EXPANDED_TOOLS_CACHE_MAX = 4000;
-const expandedToolsStateCache = new Map<string, Set<string>>();
+const collapsedToolsStateCache = new Map<string, Set<string>>();
 
-const readExpandedToolsCache = (messageId: string): Set<string> => {
-    const cached = expandedToolsStateCache.get(messageId);
+const readCollapsedToolsCache = (messageId: string): Set<string> => {
+    const cached = collapsedToolsStateCache.get(messageId);
     return cached ? new Set(cached) : new Set();
 };
 
-const writeExpandedToolsCache = (messageId: string, value: Set<string>): void => {
-    if (expandedToolsStateCache.size >= EXPANDED_TOOLS_CACHE_MAX && !expandedToolsStateCache.has(messageId)) {
-        const oldest = expandedToolsStateCache.keys().next().value;
+const writeCollapsedToolsCache = (messageId: string, value: Set<string>): void => {
+    if (collapsedToolsStateCache.size >= EXPANDED_TOOLS_CACHE_MAX && !collapsedToolsStateCache.has(messageId)) {
+        const oldest = collapsedToolsStateCache.keys().next().value;
         if (typeof oldest === 'string') {
-            expandedToolsStateCache.delete(oldest);
+            collapsedToolsStateCache.delete(oldest);
         }
     }
-    expandedToolsStateCache.set(messageId, new Set(value));
+    collapsedToolsStateCache.set(messageId, new Set(value));
 };
 
 function useStickyDisplayValue<T>(value: T | null | undefined): T | null | undefined {
@@ -154,7 +154,12 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     const [copiedCode, setCopiedCode] = React.useState<string | null>(null);
     const [copiedMessage, setCopiedMessage] = React.useState(false);
     const handleCopyLink = useCopyMessageLink(message.info.sessionID, message.info.id);
-    const [expandedTools, setExpandedTools] = React.useState<Set<string>>(() => readExpandedToolsCache(message.info.id));
+    const [collapsedTools, setCollapsedTools] = React.useState<Set<string>>(() => readCollapsedToolsCache(message.info.id));
+    const expandedTools = React.useMemo(() => {
+        return {
+            has: (toolId: string) => !collapsedTools.has(toolId),
+        } as Set<string>;
+    }, [collapsedTools]);
     const [popupContent, setPopupContent] = React.useState<ToolPopupContent>({
         open: false,
         title: '',
@@ -162,7 +167,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     });
 
     React.useEffect(() => {
-        setExpandedTools(readExpandedToolsCache(message.info.id));
+        setCollapsedTools(readCollapsedToolsCache(message.info.id));
     }, [message.info.id]);
 
 
@@ -569,14 +574,14 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     }, [sessionId, message.info.id]);
 
     const handleToggleTool = React.useCallback((toolId: string) => {
-        setExpandedTools((prev) => {
+        setCollapsedTools((prev) => {
             const next = new Set(prev);
             if (next.has(toolId)) {
                 next.delete(toolId);
             } else {
                 next.add(toolId);
             }
-            writeExpandedToolsCache(message.info.id, next);
+            writeCollapsedToolsCache(message.info.id, next);
             return next;
         });
     }, [message.info.id]);

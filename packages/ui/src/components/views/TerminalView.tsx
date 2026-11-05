@@ -907,11 +907,25 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible, directory, 
 
     // Touch hosts have no keyboard shortcut for copy, so the toolbar offers the
     // same action the desktop gets from Cmd/Ctrl+C on a selection.
+    const [isSelectMode, setIsSelectMode] = React.useState(false);
+    const handleToggleSelectMode = React.useCallback(() => {
+        const next = !isSelectMode;
+        setIsSelectMode(next);
+        terminalControllerRef.current?.setBypassMouseReporting(next);
+        toast.info(next ? 'Text selection mode enabled' : 'Terminal mouse mode enabled');
+    }, [isSelectMode]);
+
     const handleCopySelection = React.useCallback(() => {
-        const selection = terminalControllerRef.current?.getSelection();
-        if (!selection?.text) return;
-        void copyTextToClipboard(selection.text).then((result) => {
-            if (result.ok) toast.success(t('terminalView.toast.selectionCopied'));
+        let text = terminalControllerRef.current?.getSelection()?.text;
+        let isScreenCopy = false;
+        if (!text) {
+            terminalControllerRef.current?.selectAll();
+            text = terminalControllerRef.current?.getSelection()?.text;
+            isScreenCopy = true;
+        }
+        if (!text) return;
+        void copyTextToClipboard(text).then((result) => {
+            if (result.ok) toast.success(isScreenCopy ? 'Terminal screen copied to clipboard' : t('terminalView.toast.selectionCopied'));
             else toast.error(t('terminalView.toast.copyFailed'));
         });
     }, [t]);
@@ -1448,6 +1462,18 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible, directory, 
                                     <Icon name="attachment-2" className="h-4 w-4" />
                                 </Button>
                             </ButtonTooltip>
+                            <ButtonTooltip label={isSelectMode ? 'Switch to Terminal Mouse Mode' : 'Switch to Text Select Mode'} side="bottom">
+                                <Button
+                                    type="button"
+                                    size="xs"
+                                    variant={isSelectMode ? 'secondary' : 'ghost'}
+                                    className="h-7 w-7 p-0"
+                                    onClick={handleToggleSelectMode}
+                                    aria-label="Toggle text selection mode"
+                                >
+                                    <Icon name={isSelectMode ? 'cursor' : 'text'} className="h-4 w-4" />
+                                </Button>
+                            </ButtonTooltip>
                             <ButtonTooltip label={t('terminalView.actions.copySelection')} side="bottom">
                                 <Button
                                     type="button"
@@ -1460,20 +1486,18 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible, directory, 
                                     <Icon name="file-copy" className="h-4 w-4" />
                                 </Button>
                             </ButtonTooltip>
-                            {useTouchTerminalInput ? (
-                                <ButtonTooltip label={t('terminalView.actions.paste')} side="bottom">
-                                    <Button
-                                        type="button"
-                                        size="xs"
-                                        variant="ghost"
-                                        className="h-7 w-7 p-0"
-                                        onClick={handlePasteClipboard}
-                                        aria-label={t('terminalView.actions.paste')}
-                                    >
-                                        <Icon name="clipboard" className="h-4 w-4" />
-                                    </Button>
-                                </ButtonTooltip>
-                            ) : null}
+                            <ButtonTooltip label={t('terminalView.actions.paste')} side="bottom">
+                                <Button
+                                    type="button"
+                                    size="xs"
+                                    variant="ghost"
+                                    className="h-7 w-7 p-0"
+                                    onClick={handlePasteClipboard}
+                                    aria-label={t('terminalView.actions.paste')}
+                                >
+                                    <Icon name="clipboard" className="h-4 w-4" />
+                                </Button>
+                            </ButtonTooltip>
                             {previewUrl ? (
                                 <ButtonTooltip label={t('terminalView.preview.openTitle')} side="bottom" className="shrink-0">
                                     <Button

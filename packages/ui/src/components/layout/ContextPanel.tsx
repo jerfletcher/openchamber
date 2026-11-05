@@ -491,12 +491,15 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
   // it folds away (ZoneFitArbiter), never under the minimum, so the chat
   // stays on screen beside it. The chat's size is kept, not the zone's, so a
   // window resize goes to the zone the user expanded.
+  const isTerminalSurface = activeTab?.mode === 'terminal';
   const sidebarWidth = useUIStore((state) => (isVertical ? 0 : state.sidebarWidth));
   const expandedChatManual = useUIStore((state) => state.contextZoneExpandedChatSizes[zone]);
-  const expandedChatSize = Math.max(
-    chatMinimum,
-    expandedChatManual ?? (isVertical ? CONTEXT_CHAT_MIN_HEIGHT : sidebarWidth),
-  );
+  const expandedChatSize = isTerminalSurface
+    ? 0
+    : Math.max(
+        chatMinimum,
+        expandedChatManual ?? (isVertical ? CONTEXT_CHAT_MIN_HEIGHT : sidebarWidth),
+      );
 
   // The area the zone shares with the chat, as state only while it decides
   // something: the zone is expanded across it, or the ceiling binds (the zone
@@ -560,7 +563,9 @@ export const ContextPanel: React.FC<{ zone?: ContextZone }> = ({ zone = 'right' 
   const size = isTreeOnly
     ? desiredSize
     : isExpanded && areaSize !== null
-      ? (isVertical ? Math.max(CONTEXT_PANEL_MIN_HEIGHT, areaSize - expandedChatSize) : Math.max(CONTEXT_PANEL_MIN_WIDTH, areaSize - expandedChatSize))
+      ? (isTerminalSurface
+          ? areaSize
+          : (isVertical ? Math.max(CONTEXT_PANEL_MIN_HEIGHT, areaSize - expandedChatSize) : Math.max(CONTEXT_PANEL_MIN_WIDTH, areaSize - expandedChatSize)))
       : clampSize(desiredSize, areaSize);
   // Titles are for this zone's chat tab strip only; a zone that is closed or
   // shows another surface subscribes to none.

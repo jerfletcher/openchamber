@@ -389,7 +389,7 @@ export function isTerminalPasteShortcut(
     return event.shiftKey && !event.ctrlKey && !event.metaKey;
   }
   if (key !== 'v') return false;
-  return isMacPlatform(platform) ? event.metaKey : event.ctrlKey && event.shiftKey;
+  return isMacPlatform(platform) ? event.metaKey : event.ctrlKey;
 }
 
 /**
@@ -796,6 +796,15 @@ export class GhosttyTerminalSurface {
   private inputLeft = -1;
   private inputTop = -1;
   private lastTouchPointerAt = Number.NEGATIVE_INFINITY;
+  private bypassMouseReporting = false;
+
+  setBypassMouseReporting(bypass: boolean): void {
+    this.bypassMouseReporting = bypass;
+  }
+
+  isBypassMouseReporting(): boolean {
+    return this.bypassMouseReporting;
+  }
 
   private constructor(
     mount: HTMLElement,
@@ -1197,6 +1206,24 @@ export class GhosttyTerminalSurface {
     // Selection highlights span rows Ghostty may not mark dirty for this change.
     this.forceFullRender = true;
     this.requestRender();
+  }
+
+  selectAll(): void {
+    this.selectionMode = 'cell';
+    this.selectionBase = null;
+    const cols = Math.max(1, this.cols);
+    const rows = Math.max(1, this.rows);
+    const start = { x: 0, y: 0, tag: 1 as const };
+    const end = { x: cols - 1, y: rows - 1, tag: 1 as const };
+    const screenStart = this.core.viewportPointToScreen(0, 0);
+    const screenEnd = this.core.viewportPointToScreen(cols - 1, rows - 1);
+    this.selectionAnchorScreen = screenStart ?? { x: 0, y: 0 };
+    this.selectionEndScreen = screenEnd ?? { x: cols - 1, y: rows - 1 };
+    this.selectionEnd = { x: cols - 1, y: rows - 1 };
+    this.core.setSelection(start, end);
+    this.forceFullRender = true;
+    this.requestRender();
+    this.options.onSelectionChange?.();
   }
 
   scrollToBottom(): void {
@@ -1657,7 +1684,7 @@ export class GhosttyTerminalSurface {
     // host reads PRIMARY directly; a terminal without the bridge keeps the
     // browser's own middle-click paste.
     const shiftBypassesMouse = middleClick && event.shiftKey;
-    const reportsMouse = shouldReportTerminalMouse(mouseTracking, event);
+    const reportsMouse = !this.bypassMouseReporting && shouldReportTerminalMouse(mouseTracking, event);
     // A middle click pastes PRIMARY only when the application is not taking
     // mouse events: tracking is off, or Shift bypassed it. While an
     // application tracks the mouse, the click belongs to it.
@@ -1745,7 +1772,7 @@ export class GhosttyTerminalSurface {
     const anyEventTracking = this.synchronizeMouseTrackingState();
     if (
       this.mouseReportingPointerId === event.pointerId ||
-      shouldReportTerminalMouse(anyEventTracking, event)
+      (!this.bypassMouseReporting && shouldReportTerminalMouse(anyEventTracking, event))
     ) {
       event.preventDefault();
       this.hoverPointer = { x: event.clientX, y: event.clientY };
@@ -1930,7 +1957,7 @@ export class GhosttyTerminalSurface {
     this.wheelRemainder = delta.remainder;
     if (delta.rows === 0) return;
     const magnitude = Math.abs(delta.rows);
-    if (shouldReportTerminalMouse(this.core.isMouseTracking(), event)) {
+    if (!this.bypassMouseReporting && shouldReportTerminalMouse(this.core.isMouseTracking(), event)) {
       const button = delta.rows < 0 ? 4 : 5;
       for (let index = 0; index < magnitude; index += 1) {
         this.sendMouse('press', button, event);
@@ -1953,7 +1980,7 @@ export class GhosttyTerminalSurface {
   };
 
   private readonly onContextMenu = (event: MouseEvent) => {
-    if (shouldReportTerminalMouse(this.core.isMouseTracking(), event)) {
+    if (!this.bypassMouseReporting && !event.shiftKey && shouldReportTerminalMouse(this.core.isMouseTracking(), event)) {
       event.preventDefault();
       return;
     }

@@ -38,7 +38,11 @@ export type TerminalSurface = Pick<
   | 'scrollLines'
   | 'selectWordAt'
   | 'extendSelectionTo'
+  | 'selectAll'
+  | 'setBypassMouseReporting'
+  | 'isBypassMouseReporting'
   | 'dispose'
+  | 'core'
 >;
 
 export type TerminalSurfaceFactory = (
@@ -97,6 +101,9 @@ export type TerminalController = {
   getSelection: () => { text: string; startLine: number; endLine: number } | null;
   /** Reads the clipboard and sends it to the shell as a paste. Call it from the click itself. */
   pasteClipboard: () => Promise<void>;
+  selectAll: () => void;
+  setBypassMouseReporting: (bypass: boolean) => void;
+  isBypassMouseReporting: () => boolean;
 };
 
 type Props = {
@@ -192,9 +199,20 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
     try {
       await surface.pasteFromClipboard(readText, isCurrent);
     } catch {
-      if (isCurrent()) toast.error(failedMessage);
+      if (isCurrent()) {
+        try {
+          const text = window.prompt(t('terminalView.actions.pastePrompt') || 'Paste text into terminal:');
+          if (text !== null && text.length > 0) {
+            surface.write(surface.core.encodePaste(text));
+            return;
+          }
+        } catch {
+          // ignore prompt error
+        }
+        toast.error(failedMessage);
+      }
     }
-  }, []);
+  }, [t]);
 
   const pasteSelectionClipboard = React.useCallback(() => {
     const selectionClipboard = clipboardRef.current?.selection;
@@ -458,6 +476,9 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
     },
     // Touch hosts have no paste shortcut to fall back on, so their failure names none.
     pasteClipboard: () => pasteClipboard(t('terminalView.toast.pasteFailedTouch')),
+    selectAll: () => surfaceRef.current?.selectAll(),
+    setBypassMouseReporting: (bypass: boolean) => surfaceRef.current?.setBypassMouseReporting(bypass),
+    isBypassMouseReporting: () => surfaceRef.current?.isBypassMouseReporting() ?? false,
   }), [pasteClipboard, t]);
 
   return (

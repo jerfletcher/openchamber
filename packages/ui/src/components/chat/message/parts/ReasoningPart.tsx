@@ -136,15 +136,15 @@ export const ReasoningTimelineBlock: React.FC<ReasoningTimelineBlockProps> = ({
     const hasEnded = typeof time?.end === 'number';
     const canAutoExpand = expandWhileStreaming && isStreaming && !hasEnded;
     const [expansion, setExpansion] = React.useState<ExpansionState>(() => {
-        if (defaultExpanded === true) {
-            return { expanded: true, source: 'user' };
+        if (defaultExpanded === false) {
+            return { expanded: false, source: 'user' };
         }
-        return { expanded: canAutoExpand, source: 'auto' };
+        return { expanded: true, source: 'user' };
     });
     const isExpanded = expansion.source === 'auto'
         ? canAutoExpand && expansion.expanded
         : expansion.expanded;
-    const [shouldRenderExpandedContent, setShouldRenderExpandedContent] = React.useState(defaultExpanded === true || canAutoExpand);
+    const [shouldRenderExpandedContent, setShouldRenderExpandedContent] = React.useState(defaultExpanded !== false);
     // Adjusted during render so the opened body is in the DOM on the first
     // commit, where the search highlight looks for it.
     const [handledReveal, setHandledReveal] = React.useState(0);
