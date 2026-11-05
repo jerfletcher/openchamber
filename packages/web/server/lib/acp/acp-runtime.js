@@ -80,6 +80,10 @@ export class AcpRuntime extends EventEmitter {
       conn,
       availableModels,
       currentModelId,
+      title: 'New Session',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      messages: [],
       emitter: new EventEmitter(),
     };
 
@@ -126,15 +130,68 @@ export class AcpRuntime extends EventEmitter {
     }
   }
 
+  listSessions() {
+    return Array.from(this.activeSessions.values()).map((s) => ({
+      sessionId: s.sessionId,
+      agentId: s.agentId,
+      agentName: s.agentInfo?.name || s.agentId,
+      title: s.title || 'New Session',
+      createdAt: s.createdAt,
+      updatedAt: s.updatedAt,
+      currentModelId: s.currentModelId,
+      availableModels: s.availableModels,
+      messageCount: s.messages?.length || 0,
+      tier: s.tier,
+    }));
+  }
+
+  getSession(sessionId) {
+    const session = this.activeSessions.get(sessionId);
+    if (!session) return null;
+    return {
+      sessionId: session.sessionId,
+      agentId: session.agentId,
+      agentName: session.agentInfo?.name || session.agentId,
+      title: session.title,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      currentModelId: session.currentModelId,
+      availableModels: session.availableModels,
+      messages: session.messages,
+      tier: session.tier,
+    };
+  }
+
   async prompt(sessionId, text, onChunk = null) {
     const session = this.activeSessions.get(sessionId);
     if (!session) throw new Error(`Session '${sessionId}' not found.`);
 
+    if (!session.title || session.title === 'New Session') {
+      session.title = text.trim().slice(0, 40) || 'New Session';
+    }
+    session.updatedAt = Date.now();
+
+    const userMsg = { id: `msg_${Date.now()}_u`, role: 'user', text, createdAt: Date.now() };
+    session.messages.push(userMsg);
+
+    let assistantText = '';
+    let assistantThought = '';
+    const assistantTools = [];
+
     let unsub = null;
     if (onChunk) {
-      const handler = (delta) => onChunk({ type: 'text', delta });
-      const thoughtHandler = (delta) => onChunk({ type: 'thought', delta });
-      const toolHandler = (tool) => onChunk({ type: 'tool', tool });
+      const handler = (delta) => {
+        assistantText += delta;
+        onChunk({ type: 'text', delta });
+      };
+      const thoughtHandler = (delta) => {
+        assistantThought += delta;
+        onChunk({ type: 'thought', delta });
+      };
+      const toolHandler = (tool) => {
+        assistantTools.push(tool);
+        onChunk({ type: 'tool', tool });
+      };
 
       session.emitter.on('text_delta', handler);
       session.emitter.on('thought_delta', thoughtHandler);
@@ -152,6 +209,17 @@ export class AcpRuntime extends EventEmitter {
         sessionId,
         prompt: [{ type: 'text', text }],
       });
+
+      const assistantMsg = {
+        id: `msg_${Date.now()}_a`,
+        role: 'assistant',
+        text: assistantText,
+        thought: assistantThought,
+        tools: assistantTools,
+        createdAt: Date.now(),
+      };
+      session.messages.push(assistantMsg);
+
       return result;
     } finally {
       if (unsub) unsub();

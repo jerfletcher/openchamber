@@ -17,6 +17,27 @@ export function registerAcpRoutes(app, options = {}) {
     }
   });
 
+  // List all active ACP sessions
+  app.get('/api/acp/sessions', (req, res) => {
+    try {
+      const sessions = runtime.listSessions();
+      res.json({ sessions });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Get specific ACP session details and messages
+  app.get('/api/acp/sessions/:sessionId', (req, res) => {
+    try {
+      const session = runtime.getSession(req.params.sessionId);
+      if (!session) return res.status(404).json({ error: 'Session not found' });
+      res.json(session);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // Create a new ACP session
   app.post('/api/acp/sessions', async (req, res) => {
     try {
