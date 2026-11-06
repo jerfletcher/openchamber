@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
-import { AcpSessionBridge } from './acp-session-bridge.js';
+import { AcpSessionBridge, buildPromptBlocks } from './acp-session-bridge.js';
 import EventEmitter from 'events';
 
 class MockRuntime extends EventEmitter {
@@ -8,8 +8,10 @@ class MockRuntime extends EventEmitter {
     this.sessions = new Map();
     this.createCallCount = 0;
   }
-  async createSession({ agentId, cwd }) {
+  async createSession({ agentId, cwd, resumeSessionId }) {
     this.createCallCount++;
+    this.lastResume = resumeSessionId;
+    this.models = [];
     const id = `mock_acp_${Math.random().toString(36).slice(2, 6)}`;
     this.sessions.set(id, { agentId, cwd });
     return { sessionId: id, agentId };
@@ -23,15 +25,18 @@ class MockRuntime extends EventEmitter {
   }
   async cancel(sessionId) {}
   async setModel(sessionId, modelId) {
+    (this.models ||= []).push(modelId);
     return { sessionId, modelId };
   }
-  async prompt(sessionId, text, onChunk) {
+  async prompt(sessionId, blocks, onChunk) {
+    this.lastBlocks = blocks;
+    const text = blocks.map((b) => b.text || '').join('');
     onChunk({ type: 'thought', delta: 'Thinking about the problem...' });
     if (text.includes('use tool')) {
       onChunk({ type: 'tool', tool: { name: 'read_file', input: { Path: '/test.txt' } } });
     }
     onChunk({ type: 'text', delta: 'Here is the answer.' });
-    return { status: 'ok' };
+    return { status: 'ok', usage: { inputTokens: 100, outputTokens: 7, thoughtTokens: 3, cachedReadTokens: 50, cachedWriteTokens: 0 } };
   }
   closeSession(sessionId) {
     this.sessions.delete(sessionId);
@@ -264,5 +269,40 @@ describe('AcpSessionBridge', () => {
       expect(item.message.id).toBeDefined();
       expect(Array.isArray(item.parts)).toBe(true);
     }
+  });
+
+  it('records real token usage from the prompt result', async () => {
+    const session = bridge.createSession({ title: 'Usage' });
+    await bridge.startTurn(session.id, { text: 'hi' });
+    await new Promise((r) => setTimeout(r, 80));
+    const asst = session.messages.find((m) => m.type === 'assistant');
+    expect(asst.tokens).toEqual({ input: 100, output: 7, reasoning: 3, cache: { read: 50, write: 0 } });
+    expect(session.tokens.input).toBe(100);
+  });
+
+  it('maps the reasoning variant to the agy model tier', async () => {
+    const session = bridge.createSession({ title: 'Variant' });
+    bridge.switchModel(session.id, { id: 'gemini-4-argon', providerID: 'antigravity', variant: 'high' });
+    await bridge.startTurn(session.id, { text: 'hi' });
+    await new Promise((r) => setTimeout(r, 80));
+    expect(mockRuntime.models).toContain('gemini-4-argon-high');
+  });
+
+  it('resumes historical sessions natively via the conversation id', async () => {
+    const session = bridge.createSession({ title: 'Resume' });
+    session.geminiConvId = 'conv-123';
+    await bridge.startTurn(session.id, { text: 'hi' });
+    await new Promise((r) => setTimeout(r, 80));
+    expect(mockRuntime.lastResume).toBe('conv-123');
+  });
+
+  it('builds ACP blocks for image and text attachments', () => {
+    const blocks = buildPromptBlocks('see', [
+      { mime: 'image/png', url: 'data:image/png;base64,AAAA' },
+      { mime: 'text/plain', filename: 'a.txt', url: `data:text/plain;base64,${Buffer.from('hello').toString('base64')}` },
+    ]);
+    expect(blocks[0]).toEqual({ type: 'text', text: 'see' });
+    expect(blocks[1]).toEqual({ type: 'image', data: 'AAAA', mimeType: 'image/png' });
+    expect(blocks[2].resource.text).toBe('hello');
   });
 });

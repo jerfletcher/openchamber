@@ -17,6 +17,29 @@ const ACP_MODEL_NORM = {
   'claude-sonnet-5-5': 'claude-sonnet-5-5',
 };
 
+const ACP_VARIANTS = new Set(['low', 'medium', 'high']);
+const IDLE_PROCESS_TTL_MS = 20 * 60 * 1000;
+
+/** Translate OpenChamber prompt attachments into ACP content blocks (image / embedded resource). */
+export function buildPromptBlocks(text, files) {
+  const blocks = [{ type: 'text', text }];
+  for (const file of Array.isArray(files) ? files : []) {
+    const url = typeof file?.url === 'string' ? file.url : (typeof file?.uri === 'string' ? file.uri : '');
+    const m = /^data:([^;,]+);base64,(.*)$/s.exec(url);
+    const mime = file?.mime || file?.mimeType || m?.[1] || '';
+    const data = file?.data || m?.[2];
+    if (!data || !mime) continue;
+    if (mime.startsWith('image/')) {
+      blocks.push({ type: 'image', data, mimeType: mime });
+    } else {
+      let body = '';
+      try { body = Buffer.from(data, 'base64').toString('utf8'); } catch { continue; }
+      blocks.push({ type: 'resource', resource: { uri: `attachment://${file?.filename || file?.name || 'file'}`, mimeType: mime, text: body } });
+    }
+  }
+  return blocks;
+}
+
 export class AcpSessionBridge extends EventEmitter {
   constructor(options = {}) {
     super();
@@ -513,11 +536,13 @@ export class AcpSessionBridge extends EventEmitter {
   }
 
   switchModel(sessionId, model) {
-    const session = this.sessions.get(sessionId);
+    const session = this.sessions.get(sessionId) || this.getSession(sessionId);
     if (!session) return false;
     const modelId = typeof model === 'string' ? model : (model?.id || 'gemini-3.8-flash');
     const resolvedModel = ACP_MODEL_NORM[modelId] || modelId;
-    session.model = { id: resolvedModel, providerID: 'antigravity' };
+    const rawVariant = typeof model === 'object' ? model?.variant : null;
+    const variant = ACP_VARIANTS.has(rawVariant) ? rawVariant : null;
+    session.model = { id: resolvedModel, providerID: 'antigravity', ...(variant ? { variant } : {}) };
     session.time = session.time || {};
     session.time.updated = Date.now();
     this.saveToDisk();
@@ -692,12 +717,12 @@ export class AcpSessionBridge extends EventEmitter {
     this.activeTurns.set(sessionId, abortCtrl);
 
     // Launch background turn execution
-    void this.executeTurn(sessionId, session, assistantMsg, text, abortCtrl, directory);
+    void this.executeTurn(sessionId, session, assistantMsg, text, abortCtrl, directory, promptData.files);
 
     return userMsg;
   }
 
-  async executeTurn(sessionId, session, assistantMsg, text, abortCtrl, directory) {
+  async executeTurn(sessionId, session, assistantMsg, text, abortCtrl, directory, files = []) {
     let acpSession = null;
     const assistantMsgId = assistantMsg.id;
     const reasoningPartId = `${assistantMsgId}:reasoning:0`;
@@ -717,9 +742,12 @@ export class AcpSessionBridge extends EventEmitter {
       if (isAlive) {
         acpSession = this.runtime.getSession(existingAcpId) || { sessionId: existingAcpId };
       } else {
+        // Resume natively when agy already knows this conversation (history or restart).
+        const resumeId = session.geminiConvId || existingAcpId || null;
         acpSession = await this.runtime.createSession({
           agentId: 'antigravity',
           cwd: directory || session.location?.directory || process.cwd(),
+          resumeSessionId: resumeId,
         });
         session.acpSessionId = acpSession.sessionId;
         this.saveToDisk();
@@ -729,7 +757,8 @@ export class AcpSessionBridge extends EventEmitter {
 
       const rawModelId = session.model?.id || 'gemini-3.8-flash';
       const baseModelId = ACP_MODEL_NORM[rawModelId] || rawModelId;
-      const acpTargetModel = `${baseModelId}-medium`;
+      const variant = ACP_VARIANTS.has(session.model?.variant) ? session.model.variant : 'medium';
+      const acpTargetModel = `${baseModelId}-${variant}`;
       await this.runtime.setModel(acpSession.sessionId, acpTargetModel).catch(async () => {
         await this.runtime.setModel(acpSession.sessionId, baseModelId).catch(() => {});
       });
@@ -741,7 +770,7 @@ export class AcpSessionBridge extends EventEmitter {
       };
       abortCtrl.signal.addEventListener('abort', onAbort, { once: true });
 
-      await this.runtime.prompt(acpSession.sessionId, text, (chunk) => {
+      const promptResult = await this.runtime.prompt(acpSession.sessionId, buildPromptBlocks(text, files), (chunk) => {
         if (abortCtrl.signal.aborted) return;
 
         if (chunk.type === 'thought' && chunk.delta) {
@@ -928,6 +957,25 @@ export class AcpSessionBridge extends EventEmitter {
       }
       assistantMsg.time.completed = completedTime;
       assistantMsg.finish = 'stop';
+      const usage = promptResult?.usage;
+      if (usage) {
+        const tokens = {
+          input: usage.inputTokens || 0,
+          output: usage.outputTokens || 0,
+          reasoning: usage.thoughtTokens || 0,
+          cache: { read: usage.cachedReadTokens || 0, write: usage.cachedWriteTokens || 0 },
+        };
+        assistantMsg.tokens = tokens;
+        session.tokens = {
+          input: (session.tokens?.input || 0) + tokens.input,
+          output: (session.tokens?.output || 0) + tokens.output,
+          reasoning: (session.tokens?.reasoning || 0) + tokens.reasoning,
+          cache: {
+            read: (session.tokens?.cache?.read || 0) + tokens.cache.read,
+            write: (session.tokens?.cache?.write || 0) + tokens.cache.write,
+          },
+        };
+      }
       session.time.idle = completedTime;
       if (session.time) delete session.time.busy;
 

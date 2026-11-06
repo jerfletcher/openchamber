@@ -32,4 +32,27 @@ describe('AcpRuntime', () => {
 
     runtime.closeSession(session.sessionId);
   });
+
+  it('reaps idle sessions but not busy ones', () => {
+    const rt = new AcpRuntime({ idleTtlMs: 1000 });
+    const closed = [];
+    const mk = (busy, last) => ({ busy, lastUsedAt: last, createdAt: last, conn: { close: () => closed.push(1) } });
+    rt.activeSessions.set('idle', mk(false, 1));
+    rt.activeSessions.set('busy', mk(true, 1));
+    rt.reapIdle(10_000);
+    expect(rt.activeSessions.has('idle')).toBe(false);
+    expect(rt.activeSessions.has('busy')).toBe(true);
+    clearInterval(rt.reaper);
+  });
+
+  it('resumes an existing agy conversation through session/load', async () => {
+    const runtime = new AcpRuntime();
+    if (!runtime.getAvailableAgents().find((a) => a.id === 'antigravity')) return;
+    const first = await runtime.createSession({ agentId: 'antigravity', cwd: process.cwd() });
+    runtime.closeSession(first.sessionId);
+    const resumed = await runtime.createSession({ agentId: 'antigravity', cwd: process.cwd(), resumeSessionId: first.sessionId });
+    expect(resumed.sessionId).toBe(first.sessionId);
+    runtime.closeSession(resumed.sessionId);
+    clearInterval(runtime.reaper);
+  });
 });

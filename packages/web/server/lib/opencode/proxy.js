@@ -1256,7 +1256,9 @@ export const registerOpenCodeProxy = (app, deps) => {
             id: req.body?.id,
             text: req.body?.text || req.body?.prompt || '',
             directory: req.body?.directory || req.get('x-opencode-directory'),
+            files: req.body?.files || req.body?.attachments || [],
           };
+          if (req.body?.model?.variant) acpSessionBridge.switchModel(sessionID, req.body.model);
           try {
             const userMsg = await acpSessionBridge.startTurn(sessionID, promptData);
             const userInbox = {

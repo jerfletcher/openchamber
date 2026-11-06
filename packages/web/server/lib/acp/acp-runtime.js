@@ -64,6 +64,11 @@ export class AcpRuntime extends EventEmitter {
     super();
     this.customAgents = options.agents || [];
     this.activeSessions = new Map(); // sessionId -> { conn, agentId, cwd, models, currentModelId }
+    this.idleTtlMs = options.idleTtlMs ?? 20 * 60 * 1000;
+    if (this.idleTtlMs > 0) {
+      this.reaper = setInterval(() => this.reapIdle(), Math.min(60_000, this.idleTtlMs));
+      this.reaper.unref?.();
+    }
   }
 
   getAvailableAgents() {
@@ -71,7 +76,7 @@ export class AcpRuntime extends EventEmitter {
     return all.filter((a) => checkBinaryExists(a.command));
   }
 
-  async createSession({ agentId = 'antigravity', cwd = process.cwd() } = {}) {
+  async createSession({ agentId = 'antigravity', cwd = process.cwd(), resumeSessionId = null } = {}) {
     const agent = this.getAvailableAgents().find((a) => a.id === agentId);
     if (!agent) {
       throw new Error(`ACP agent '${agentId}' is not installed or available on this machine.`);
@@ -95,8 +100,16 @@ export class AcpRuntime extends EventEmitter {
     });
 
     // 2. session/new
-    const sessionResult = await conn.request('session/new', { cwd: effectiveCwd });
-    const sessionId = sessionResult.sessionId;
+    let sessionResult;
+    if (resumeSessionId && initResult?.agentCapabilities?.loadSession) {
+      try {
+        sessionResult = await conn.request('session/load', { sessionId: resumeSessionId, cwd: effectiveCwd });
+      } catch (err) {
+        console.warn(`[AcpRuntime] session/load failed for ${resumeSessionId}, starting fresh:`, err.message);
+      }
+    }
+    if (!sessionResult) sessionResult = await conn.request('session/new', { cwd: effectiveCwd });
+    const sessionId = sessionResult.sessionId || resumeSessionId;
 
     const availableModels = sessionResult.models?.availableModels || [];
     const currentModelId = sessionResult.models?.currentModelId || availableModels[0]?.modelId || '';
@@ -110,6 +123,7 @@ export class AcpRuntime extends EventEmitter {
       availableModels,
       currentModelId,
       title: 'New Session',
+      lastUsedAt: Date.now(),
       createdAt: Date.now(),
       updatedAt: Date.now(),
       messages: [],
@@ -201,11 +215,14 @@ export class AcpRuntime extends EventEmitter {
     if (!session) throw new Error(`Session '${sessionId}' not found.`);
 
     if (!session.title || session.title === 'New Session') {
-      session.title = text.trim().slice(0, 40) || 'New Session';
+      const t = Array.isArray(text) ? (text.find((b) => b.type === 'text')?.text || '') : text;
+      session.title = t.trim().slice(0, 40) || 'New Session';
     }
     session.updatedAt = Date.now();
+    session.lastUsedAt = Date.now();
+    session.busy = true;
 
-    const userMsg = { id: `msg_${Date.now()}_u`, role: 'user', text, createdAt: Date.now() };
+    const userMsg = { id: `msg_${Date.now()}_u`, role: 'user', text: Array.isArray(text) ? (text.find((b) => b.type === 'text')?.text || '') : text, createdAt: Date.now() };
     session.messages.push(userMsg);
 
     let assistantText = '';
@@ -246,7 +263,7 @@ export class AcpRuntime extends EventEmitter {
     try {
       const result = await session.conn.request('session/prompt', {
         sessionId,
-        prompt: [{ type: 'text', text }],
+        prompt: Array.isArray(text) ? text : [{ type: 'text', text }],
       }, 0);
 
       const assistantMsg = {
@@ -261,6 +278,8 @@ export class AcpRuntime extends EventEmitter {
 
       return result;
     } finally {
+      session.busy = false;
+      session.lastUsedAt = Date.now();
       if (unsub) unsub();
     }
   }
@@ -283,6 +302,15 @@ export class AcpRuntime extends EventEmitter {
     if (session) {
       session.conn.close();
       this.activeSessions.delete(sessionId);
+    }
+  }
+
+  /** Close agent processes idle past the TTL; the bridge resumes them via session/load on the next turn. */
+  reapIdle(now = Date.now()) {
+    for (const [id, s] of this.activeSessions.entries()) {
+      if (!s.busy && now - (s.lastUsedAt || s.createdAt || now) > this.idleTtlMs) {
+        this.closeSession(id);
+      }
     }
   }
 
