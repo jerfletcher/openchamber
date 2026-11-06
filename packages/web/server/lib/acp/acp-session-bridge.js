@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import EventEmitter from 'events';
+import { DatabaseSync } from 'node:sqlite';
 import { AcpRuntime } from './acp-runtime.js';
 
 const ACP_MODEL_NORM = {
@@ -22,14 +23,270 @@ export class AcpSessionBridge extends EventEmitter {
     this.runtime = options.runtime || new AcpRuntime(options);
     this.dataDir = options.dataDir || path.join(process.env.HOME || '/home/jeremy', '.config', 'openchamber');
     this.storageFile = path.join(this.dataDir, 'acp-sessions.json');
+    this.deletedHistoricalFile = path.join(this.dataDir, 'deleted-gemini-sessions.json');
+    this.deletedHistoricalIds = new Set();
     this.sessions = new Map();
     this.activeTurns = new Map();
     this.eventHub = options.eventHub || null;
     this.loadFromDisk();
+    this.loadDeletedHistorical();
   }
 
   setEventHub(hub) {
     this.eventHub = hub;
+  }
+
+  loadDeletedHistorical() {
+    try {
+      if (fs.existsSync(this.deletedHistoricalFile)) {
+        const raw = fs.readFileSync(this.deletedHistoricalFile, 'utf8');
+        const list = JSON.parse(raw);
+        if (Array.isArray(list)) {
+          this.deletedHistoricalIds = new Set(list);
+        }
+      }
+    } catch (e) {
+      console.warn('[acp-bridge] Error loading deleted historical IDs:', e.message);
+    }
+  }
+
+  saveDeletedHistorical() {
+    try {
+      if (!fs.existsSync(this.dataDir)) {
+        fs.mkdirSync(this.dataDir, { recursive: true });
+      }
+      fs.writeFileSync(this.deletedHistoricalFile, JSON.stringify(Array.from(this.deletedHistoricalIds), null, 2), 'utf8');
+    } catch (e) {
+      console.warn('[acp-bridge] Error saving deleted historical IDs:', e.message);
+    }
+  }
+
+  _getGeminiDb() {
+    if (this._geminiDb !== undefined) return this._geminiDb;
+    const geminiDbPath = path.join(process.env.HOME || '/home/jeremy', '.gemini', 'antigravity-cli', 'conversation_summaries.db');
+    if (!fs.existsSync(geminiDbPath)) {
+      this._geminiDb = null;
+      return null;
+    }
+    try {
+      this._geminiDb = new DatabaseSync(geminiDbPath, { readOnly: true });
+    } catch (e) {
+      console.warn('[acp-bridge] Error opening conversation_summaries.db:', e.message);
+      this._geminiDb = null;
+    }
+    return this._geminiDb;
+  }
+
+  getGeminiHistorySessions() {
+    const db = this._getGeminiDb();
+    if (!db) return [];
+    try {
+      const rows = db.prepare(`
+        SELECT conversation_id, title, preview, last_modified_time, workspace_uris, step_count
+        FROM conversation_summaries
+        WHERE step_count > 0
+        ORDER BY last_modified_time DESC
+      `).all();
+
+      const results = [];
+      for (const row of rows) {
+        const convId = row.conversation_id;
+        const sessionId = `ses_agy_${convId}`;
+        if (this.deletedHistoricalIds.has(sessionId) || this.deletedHistoricalIds.has(convId)) {
+          continue;
+        }
+        if (this.sessions.has(sessionId)) {
+          continue;
+        }
+
+        let directory = null;
+        try {
+          const uris = JSON.parse(row.workspace_uris);
+          if (Array.isArray(uris) && uris[0]) {
+            directory = uris[0].replace(/^file:\/\//, '');
+          }
+        } catch {}
+
+        const lastMod = row.last_modified_time ? new Date(row.last_modified_time).getTime() : Date.now();
+        const title = row.title || row.preview || 'Antigravity Session';
+
+        results.push({
+          id: sessionId,
+          title,
+          location: { directory: directory || (process.env.HOME || '/home/jeremy') },
+          agent: 'antigravity',
+          model: { id: 'gemini-3.8-flash', providerID: 'antigravity' },
+          cost: 0,
+          tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+          time: { created: lastMod, updated: lastMod, idle: lastMod },
+          geminiConvId: convId,
+          isHistoricalGemini: true,
+        });
+      }
+      return results;
+    } catch (e) {
+      console.warn('[acp-bridge] Error listing historical Gemini sessions:', e.message);
+      return [];
+    }
+  }
+
+  loadTranscriptMessages(convId, sessionId) {
+    const transcriptPath = path.join(process.env.HOME || '/home/jeremy', '.gemini', 'antigravity-cli', 'brain', convId, '.system_generated', 'logs', 'transcript.jsonl');
+    if (!fs.existsSync(transcriptPath)) return [];
+
+    try {
+      const raw = fs.readFileSync(transcriptPath, 'utf8');
+      const lines = raw.split('\n');
+      const messages = [];
+      let currentAssistantMsg = null;
+      const pendingTools = [];
+
+      const extractUserPrompt = (text) => {
+        if (!text) return '';
+        const match = text.match(/<USER_REQUEST>([\s\S]*?)<\/USER_REQUEST>/);
+        if (match) return match[1].trim();
+        let clean = text.replace(/<ADDITIONAL_METADATA>[\s\S]*?<\/ADDITIONAL_METADATA>/g, '');
+        clean = clean.replace(/<USER_SETTINGS_CHANGE>[\s\S]*?<\/USER_SETTINGS_CHANGE>/g, '');
+        clean = clean.replace(/<SYSTEM_MESSAGE>[\s\S]*?<\/SYSTEM_MESSAGE>/g, '');
+        return clean.trim();
+      };
+
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        let item;
+        try { item = JSON.parse(line); } catch { continue; }
+        const ts = item.created_at ? new Date(item.created_at).getTime() : Date.now();
+
+        if (item.type === 'USER_INPUT') {
+          currentAssistantMsg = null;
+          pendingTools.length = 0;
+          const promptText = extractUserPrompt(item.content);
+          if (!promptText) continue;
+          messages.push({
+            id: `msg_user_${item.step_index}`,
+            sessionID: sessionId,
+            type: 'user',
+            content: [{ type: 'text', text: promptText }],
+            time: { created: ts }
+          });
+        } else if (item.source === 'MODEL') {
+          if (!currentAssistantMsg) {
+            currentAssistantMsg = {
+              id: `msg_asst_${item.step_index}`,
+              sessionID: sessionId,
+              type: 'assistant',
+              content: [],
+              time: { created: ts, completed: ts }
+            };
+            messages.push(currentAssistantMsg);
+          }
+          currentAssistantMsg.time.completed = ts;
+
+          if (item.thinking) {
+            currentAssistantMsg.content.push({ type: 'thought', text: item.thinking });
+          }
+
+          if (Array.isArray(item.tool_calls) && item.tool_calls.length > 0) {
+            for (let i = 0; i < item.tool_calls.length; i++) {
+              const tc = item.tool_calls[i];
+              const callID = `call_${item.step_index}_${i}`;
+              const toolPart = {
+                type: 'tool',
+                callID,
+                name: tc.name || 'tool',
+                tool: tc.name || 'tool',
+                args: tc.args || {},
+                executed: true,
+                time: { created: ts, ran: ts, completed: ts },
+                state: {
+                  status: 'completed',
+                  input: tc.args || {},
+                  output: '',
+                  content: [{ type: 'text', text: '' }]
+                }
+              };
+              currentAssistantMsg.content.push(toolPart);
+              pendingTools.push(toolPart);
+            }
+          } else if (item.content && typeof item.content === 'string') {
+            if (pendingTools.length > 0 && (item.type === 'GENERIC' || item.status === 'DONE')) {
+              const toolPart = pendingTools.shift();
+              toolPart.state.output = item.content;
+              toolPart.state.content = [{ type: 'text', text: item.content }];
+              toolPart.time.completed = ts;
+            } else if (!item.content.startsWith('Created At:') && !item.content.includes('Tool is running as a background task')) {
+              currentAssistantMsg.content.push({ type: 'text', text: item.content });
+            }
+          }
+        }
+      }
+      return messages;
+    } catch (e) {
+      console.warn(`[acp-bridge] Error loading transcript for ${convId}:`, e.message);
+      return [];
+    }
+  }
+
+  loadHistoricalSession(sessionId) {
+    const convId = sessionId.replace(/^ses_agy_/, '');
+    const db = this._getGeminiDb();
+    if (!db) return null;
+
+    try {
+      const row = db.prepare(`
+        SELECT conversation_id, title, preview, last_modified_time, workspace_uris
+        FROM conversation_summaries
+        WHERE conversation_id = ?
+      `).get(convId);
+
+      if (!row) return null;
+
+      let directory = null;
+      try {
+        const uris = JSON.parse(row.workspace_uris);
+        if (Array.isArray(uris) && uris[0]) {
+          directory = uris[0].replace(/^file:\/\//, '');
+        }
+      } catch {}
+
+      const lastMod = row.last_modified_time ? new Date(row.last_modified_time).getTime() : Date.now();
+      const title = row.title || row.preview || 'Antigravity Session';
+      const messages = this.loadTranscriptMessages(convId, sessionId);
+
+      const session = {
+        id: sessionId,
+        title,
+        location: { directory: directory || (process.env.HOME || '/home/jeremy') },
+        agent: 'antigravity',
+        model: { id: 'gemini-3.8-flash', providerID: 'antigravity' },
+        cost: 0,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        time: { created: lastMod, updated: lastMod, idle: lastMod },
+        geminiConvId: convId,
+        isHistoricalGemini: true,
+        messages,
+      };
+
+      this._sanitizeSession(session);
+      this.sessions.set(sessionId, session);
+      return session;
+    } catch (e) {
+      console.warn(`[acp-bridge] Error loading historical session ${sessionId}:`, e.message);
+      return null;
+    }
+  }
+
+  isHistoricalGeminiId(sessionId) {
+    if (typeof sessionId !== 'string') return false;
+    const convId = sessionId.replace(/^ses_agy_/, '');
+    const db = this._getGeminiDb();
+    if (!db) return false;
+    try {
+      const row = db.prepare('SELECT 1 FROM conversation_summaries WHERE conversation_id = ?').get(convId);
+      return Boolean(row);
+    } catch {
+      return false;
+    }
   }
 
   _sanitizeSession(session) {
@@ -80,7 +337,7 @@ export class AcpSessionBridge extends EventEmitter {
       if (!fs.existsSync(this.dataDir)) {
         fs.mkdirSync(this.dataDir, { recursive: true });
       }
-      const data = Array.from(this.sessions.values());
+      const data = Array.from(this.sessions.values()).filter(s => !s.isHistoricalGemini);
       fs.writeFileSync(this.storageFile, JSON.stringify(data, null, 2), 'utf8');
     } catch (err) {
       console.warn('[acp-bridge] Failed to save sessions to disk:', err.message);
@@ -88,24 +345,34 @@ export class AcpSessionBridge extends EventEmitter {
   }
 
   isAcpSession(sessionId) {
-    return typeof sessionId === 'string' && (sessionId.startsWith('ses_agy_') || sessionId.startsWith('ses_acp_') || this.sessions.has(sessionId));
+    return typeof sessionId === 'string' && (
+      sessionId.startsWith('ses_agy_') ||
+      sessionId.startsWith('ses_acp_') ||
+      this.sessions.has(sessionId) ||
+      this.isHistoricalGeminiId(sessionId)
+    );
   }
 
   listSessions(directory = null) {
-    const list = Array.from(this.sessions.values());
+    const activeList = Array.from(this.sessions.values());
+    const historical = this.getGeminiHistorySessions();
+    const all = [...activeList, ...historical];
     if (directory) {
-      return list.filter((s) => !s.location?.directory || s.location.directory === directory);
+      return all.filter((s) => !s.location?.directory || s.location.directory === directory);
     }
-    return list;
+    return all;
   }
 
   getSession(sessionId) {
-    const session = this.sessions.get(sessionId);
+    let session = this.sessions.get(sessionId);
+    if (!session && typeof sessionId === 'string' && (sessionId.startsWith('ses_agy_') || sessionId.startsWith('ses_acp_') || this.isHistoricalGeminiId(sessionId))) {
+      session = this.loadHistoricalSession(sessionId);
+    }
     return session ? this._sanitizeSession(session) : null;
   }
 
   getMessages(sessionId, query = {}) {
-    const session = this.sessions.get(sessionId);
+    const session = this.getSession(sessionId);
     if (!session) return { data: [], cursor: {} };
     this._sanitizeSession(session);
     let msgs = session.messages ? session.messages.slice() : [];
@@ -121,7 +388,7 @@ export class AcpSessionBridge extends EventEmitter {
   }
 
   getMessage(sessionId, messageId) {
-    const session = this.sessions.get(sessionId);
+    const session = this.getSession(sessionId);
     if (!session || !session.messages) return null;
     this._sanitizeSession(session);
     return session.messages.find((m) => m.id === messageId) || null;
@@ -155,6 +422,12 @@ export class AcpSessionBridge extends EventEmitter {
   }
 
   deleteSession(sessionId) {
+    if (typeof sessionId === 'string') {
+      const convId = sessionId.replace(/^ses_agy_/, '');
+      this.deletedHistoricalIds.add(sessionId);
+      this.deletedHistoricalIds.add(convId);
+      this.saveDeletedHistorical();
+    }
     if (this.sessions.has(sessionId)) {
       const session = this.sessions.get(sessionId);
       const directory = session?.location?.directory || 'global';
@@ -169,6 +442,14 @@ export class AcpSessionBridge extends EventEmitter {
         data: { sessionID: sessionId },
         properties: { sessionID: sessionId },
       }, directory);
+      return true;
+    }
+    if (typeof sessionId === 'string' && this.isHistoricalGeminiId(sessionId)) {
+      this.emitEvent({
+        type: 'session.deleted',
+        data: { sessionID: sessionId },
+        properties: { sessionID: sessionId },
+      }, 'global');
       return true;
     }
     return false;

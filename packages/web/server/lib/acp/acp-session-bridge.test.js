@@ -212,4 +212,33 @@ describe('AcpSessionBridge', () => {
     expect(part.executed).toBe(true);
     expect(part.state.status).toBe('completed');
   });
+
+  it('loads and lists historical Gemini CLI sessions from conversation_summaries.db', () => {
+    const historical = bridge.getGeminiHistorySessions();
+    expect(Array.isArray(historical)).toBe(true);
+    expect(historical.length).toBeGreaterThan(0);
+
+    const first = historical[0];
+    expect(first.id.startsWith('ses_agy_')).toBe(true);
+    expect(first.agent).toBe('antigravity');
+    expect(first.model.providerID).toBe('antigravity');
+
+    expect(bridge.isAcpSession(first.id)).toBe(true);
+  });
+
+  it('lazy-loads transcript messages for historical Gemini session', () => {
+    const convId = '2f243661-e209-4f76-beaa-86d65bf0683a';
+    const sessionId = `ses_agy_${convId}`;
+    const session = bridge.getSession(sessionId);
+
+    expect(session).toBeDefined();
+    expect(session.id).toBe(sessionId);
+    expect(session.agent).toBe('antigravity');
+    expect(Array.isArray(session.messages)).toBe(true);
+    expect(session.messages.length).toBeGreaterThan(0);
+
+    const firstMsg = session.messages[0];
+    expect(firstMsg.type).toBe('user');
+    expect(firstMsg.content[0].type).toBe('text');
+  });
 });
