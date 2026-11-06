@@ -331,4 +331,43 @@ describe('AcpSessionBridge', () => {
     expect(aug.providers.some((p) => p.id === 'antigravity')).toBe(true);
     expect(aug.models.some((m) => m.id === 'antigravity/gemini-3.8-flash' && m.variants.length === 3)).toBe(true);
   });
+
+  it('emits wire events with id, created, and location that pass the UI event-pipeline wireEventSchema', async () => {
+    const { classifyStreamPayload } = await import('../../../../ui/src/sync/event-pipeline.ts');
+    const captured = [];
+    const injected = [];
+    bridge.setEventHub({
+      injectEvent(evt) {
+        injected.push(evt);
+      },
+    });
+    bridge.subscribeEvent((evt) => captured.push(evt));
+
+    const session = bridge.createSession({ title: 'Live Wire Test', directory: '/repo/test' });
+    await bridge.startTurn(session.id, { text: 'use tool please', directory: '/repo/test' });
+    await new Promise((r) => setTimeout(r, 90));
+
+    expect(injected.length).toBeGreaterThan(0);
+    expect(injected.every((e) => e.spaceId === 'acp')).toBe(true);
+
+    const syncEvents = [];
+    for (const wire of captured) {
+      expect(typeof wire.id).toBe('string');
+      expect(wire.id.startsWith('evt_')).toBe(true);
+      const classified = classifyStreamPayload(wire, '/repo/test');
+      if (classified.kind === 'events') {
+        syncEvents.push(...classified.events.map((e) => e.event));
+      }
+    }
+
+    const syncTypes = syncEvents.map((e) => e.type);
+    expect(syncTypes).toContain('session.created');
+    expect(syncTypes).toContain('session.status');
+    expect(syncTypes).toContain('message.updated');
+    expect(syncTypes).toContain('message.part.updated');
+    expect(syncTypes).toContain('message.part.delta');
+    expect(syncTypes).toContain('message.tool.transition');
+    expect(syncTypes).toContain('message.patched');
+    expect(syncTypes).toContain('session.idle');
+  });
 });

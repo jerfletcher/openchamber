@@ -1555,6 +1555,7 @@ const serverUtilsRuntime = createServerUtilsRuntime({
   // the global SSE stream their events. Called, not captured: the host is made in `main`.
   getMergeSpaceSessionList: () => (spacesHost ? (payload) => spacesHost.mergeSessionList(payload) : null),
   getSpaceEventHub: () => (spacesHost ? globalMessageStreamHub : null),
+  getGlobalEventHub: () => globalMessageStreamHub,
   openCodeTrust,
   // The checkout gate loads a folder's saved setup state on its first request,
   // so a worktree that failed before a restart stays closed from the start.

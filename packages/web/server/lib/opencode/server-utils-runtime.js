@@ -27,6 +27,7 @@ export const createServerUtilsRuntime = (dependencies) => {
     getUnreadBaseline = null,
     getMergeSpaceSessionList = null,
     getSpaceEventHub = null,
+    getGlobalEventHub = null,
     getStoredSessionMetadata = null,
     openCodeTrust = null,
     readWorktreeBootstrapStatus,
@@ -204,6 +205,7 @@ export const createServerUtilsRuntime = (dependencies) => {
       // Read when the proxy is set up, after `main` decided whether the spaces host exists.
       mergeSpaceSessionList: typeof getMergeSpaceSessionList === 'function' ? getMergeSpaceSessionList() : null,
       spaceEventHub: typeof getSpaceEventHub === 'function' ? getSpaceEventHub() : null,
+      globalEventHub: typeof getGlobalEventHub === 'function' ? getGlobalEventHub() : null,
       acpSessionBridge: getAcpSessionBridge(),
       openCodeTrust,
       readWorktreeBootstrapStatus,

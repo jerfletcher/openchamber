@@ -51,6 +51,7 @@ export class AcpSessionBridge extends EventEmitter {
     this.sessions = new Map();
     this.activeTurns = new Map();
     this.eventHub = options.eventHub || null;
+    this._eventSeq = 0;
     this.loadFromDisk();
     this.loadDeletedHistorical();
   }
@@ -585,7 +586,11 @@ export class AcpSessionBridge extends EventEmitter {
 
     this.emitEvent({
       type: 'session.created',
-      data: session,
+      data: {
+        ...session,
+        sessionID: session.id,
+        location: { directory },
+      },
       properties: { info: session, session },
     }, directory);
 
@@ -794,7 +799,29 @@ export class AcpSessionBridge extends EventEmitter {
     };
     session.messages.push(assistantMsg);
 
-    // Emit wire events for UI start
+    // Emit v2 wire events for user message and UI step start
+    this.emitEvent({
+      type: 'session.inbox.enqueued',
+      data: {
+        sessionID: sessionId,
+        inboxID: userMsgId,
+        item: {
+          type: 'user',
+          payload: { text },
+        },
+      },
+      created: now,
+    }, directory);
+
+    this.emitEvent({
+      type: 'session.inbox.delivered',
+      data: {
+        sessionID: sessionId,
+        inboxID: userMsgId,
+      },
+      created: now,
+    }, directory);
+
     this.emitEvent({
       type: 'session.execution.started',
       data: { sessionID: sessionId },
@@ -927,6 +954,11 @@ export class AcpSessionBridge extends EventEmitter {
             state: { status: 'running', input: toolArgs, time: { start: now } },
           };
           parts.push(toolPart);
+          this.emitEvent({
+            type: 'session.tool.input.started',
+            data: { sessionID: sessionId, assistantMessageID: assistantMsgId, id: callID, name: toolName },
+            created: now,
+          }, directory);
           this.emitEvent({
             type: 'session.tool.called',
             data: { sessionID: sessionId, assistantMessageID: assistantMsgId, id: callID, name: toolName, input: toolArgs, executed: true },
@@ -1102,7 +1134,13 @@ export class AcpSessionBridge extends EventEmitter {
 
       this.emitEvent({
         type: 'session.step.ended',
-        data: { sessionID: sessionId, assistantMessageID: assistantMsgId, finish: 'stop' },
+        data: {
+          sessionID: sessionId,
+          assistantMessageID: assistantMsgId,
+          finish: 'stop',
+          cost: assistantMsg.cost || 0,
+          tokens: assistantMsg.tokens || { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+        },
         created: completedTime,
       }, directory);
 
@@ -1120,10 +1158,11 @@ export class AcpSessionBridge extends EventEmitter {
     } catch (err) {
       if (abortCtrl.signal.aborted) return;
       const failedTime = Date.now();
+      const structuredError = { type: 'Error', message: err?.message || String(err) };
       for (const p of parts) {
         if (p.type === 'tool' && p.state && p.state.status === 'running') {
           p.state.status = 'error';
-          p.state.error = { message: err.message };
+          p.state.error = structuredError;
           p.time = p.time || { created: failedTime, ran: failedTime };
           p.time.completed = failedTime;
           this.emitEvent({
@@ -1132,7 +1171,7 @@ export class AcpSessionBridge extends EventEmitter {
               sessionID: sessionId,
               assistantMessageID: assistantMsgId,
               id: p.callID || p.id,
-              error: { message: err.message },
+              error: structuredError,
               executed: true,
             },
             created: failedTime,
@@ -1141,6 +1180,7 @@ export class AcpSessionBridge extends EventEmitter {
       }
       assistantMsg.time.completed = failedTime;
       assistantMsg.finish = 'error';
+      assistantMsg.error = structuredError;
       session.time.idle = failedTime;
       if (session.time) delete session.time.busy;
 
@@ -1151,15 +1191,26 @@ export class AcpSessionBridge extends EventEmitter {
         type: 'idle',
         role: 'idle',
         outcome: 'failed',
-        error: { message: err.message },
+        error: structuredError,
       };
       session.messages.push(idleMsg);
 
       this.saveToDisk();
 
       this.emitEvent({
+        type: 'session.step.failed',
+        data: {
+          sessionID: sessionId,
+          assistantMessageID: assistantMsgId,
+          finish: 'error',
+          error: structuredError,
+        },
+        created: failedTime,
+      }, directory);
+
+      this.emitEvent({
         type: 'session.execution.failed',
-        data: { sessionID: sessionId, error: { message: err.message } },
+        data: { sessionID: sessionId, error: structuredError },
         created: failedTime,
       }, directory);
 
@@ -1183,12 +1234,20 @@ export class AcpSessionBridge extends EventEmitter {
   }
 
   emitEvent(payload, directory = 'global') {
-    this.emit('event', payload);
+    const now = Number.isFinite(payload?.created) ? payload.created : Date.now();
+    const wirePayload = {
+      id: payload?.id || `evt_${now.toString(36)}_${(++this._eventSeq).toString(36)}`,
+      created: now,
+      ...(directory && directory !== 'global' && !payload?.location ? { location: { directory } } : {}),
+      ...payload,
+    };
+    this.emit('event', wirePayload);
     if (this.eventHub && typeof this.eventHub.injectEvent === 'function') {
       try {
         this.eventHub.injectEvent({
-          payload,
+          payload: wirePayload,
           directory: directory || 'global',
+          spaceId: 'acp',
         });
       } catch (err) {
         console.warn('[acp-bridge] Failed to inject event into globalHub:', err.message);

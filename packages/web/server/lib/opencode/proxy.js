@@ -411,14 +411,16 @@ export const registerOpenCodeProxy = (app, deps) => {
     // the host's own answers go out exactly as before spaces.
     mergeSpaceSessionList = null,
     spaceEventHub = null,
+    globalEventHub = null,
     // The folder trust check (`../opencode-trust`): requests for a folder
     // whose configuration runs code wait for the user's trust.
     openCodeTrust = null,
     acpSessionBridge = null,
   } = deps;
 
-  if (acpSessionBridge && spaceEventHub) {
-    acpSessionBridge.setEventHub(spaceEventHub);
+  const acpEventHub = globalEventHub || spaceEventHub;
+  if (acpSessionBridge && acpEventHub) {
+    acpSessionBridge.setEventHub(acpEventHub);
   }
 
   /**
