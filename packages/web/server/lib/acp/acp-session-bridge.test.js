@@ -240,5 +240,29 @@ describe('AcpSessionBridge', () => {
     const firstMsg = session.messages[0];
     expect(firstMsg.type).toBe('user');
     expect(firstMsg.content[0].type).toBe('text');
+
+    const asstMsg = session.messages.find((m) => m.type === 'assistant');
+    if (asstMsg) {
+      expect(asstMsg.role).toBe('assistant');
+      expect(asstMsg.model).toBeDefined();
+      expect(asstMsg.model.providerID).toBe('antigravity');
+      expect(asstMsg.model.id).toBe('gemini-3.8-flash');
+    }
+  });
+
+  it('guarantees historical messages project cleanly with projection.projectMessages', async () => {
+    const { projectMessages } = await import('../../../../ui/src/lib/opencode/projection.ts');
+    const convId = '2f243661-e209-4f76-beaa-86d65bf0683a';
+    const sessionId = `ses_agy_${convId}`;
+    const session = bridge.getSession(sessionId);
+    expect(session).toBeDefined();
+
+    const projected = projectMessages(session.messages, session.id);
+    expect(Array.isArray(projected)).toBe(true);
+    expect(projected.length).toBe(session.messages.length);
+    for (const item of projected) {
+      expect(item.message.id).toBeDefined();
+      expect(Array.isArray(item.parts)).toBe(true);
+    }
   });
 });

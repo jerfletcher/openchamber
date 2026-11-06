@@ -179,6 +179,11 @@ export class AcpSessionBridge extends EventEmitter {
               id: `msg_asst_${item.step_index}`,
               sessionID: sessionId,
               type: 'assistant',
+              role: 'assistant',
+              agent: 'antigravity',
+              model: { id: 'gemini-3.8-flash', providerID: 'antigravity' },
+              cost: 0,
+              tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
               content: [],
               time: { created: ts, completed: ts }
             };
@@ -187,7 +192,11 @@ export class AcpSessionBridge extends EventEmitter {
           currentAssistantMsg.time.completed = ts;
 
           if (item.thinking) {
-            currentAssistantMsg.content.push({ type: 'thought', text: item.thinking });
+            currentAssistantMsg.content.push({
+              type: 'reasoning',
+              text: item.thinking,
+              time: { created: ts, completed: ts }
+            });
           }
 
           if (Array.isArray(item.tool_calls) && item.tool_calls.length > 0) {
@@ -196,6 +205,7 @@ export class AcpSessionBridge extends EventEmitter {
               const callID = `call_${item.step_index}_${i}`;
               const toolPart = {
                 type: 'tool',
+                id: callID,
                 callID,
                 name: tc.name || 'tool',
                 tool: tc.name || 'tool',
@@ -299,22 +309,60 @@ export class AcpSessionBridge extends EventEmitter {
 
   _sanitizeSession(session) {
     if (!session || !Array.isArray(session.messages)) return session;
+    const sessionModel = session.model || { id: 'gemini-3.8-flash', providerID: 'antigravity' };
+    const sessionAgent = session.agent || 'antigravity';
     for (const msg of session.messages) {
-      if (msg && msg.type === 'assistant' && Array.isArray(msg.content)) {
-        for (const part of msg.content) {
-          if (part && part.type === 'tool') {
-            if (!part.name && part.tool) part.name = part.tool;
-            if (!part.tool && part.name) part.tool = part.name;
-            if (!part.time) {
-              const start = part.state?.time?.start || msg.time?.created || Date.now();
-              part.time = { created: start, ran: start, completed: msg.time?.completed || start };
+      if (!msg) continue;
+      if (msg.type === 'assistant') {
+        if (!msg.role) msg.role = 'assistant';
+        if (!msg.agent) msg.agent = sessionAgent;
+        if (!msg.model) msg.model = sessionModel;
+        if (!msg.providerID && msg.model?.providerID) msg.providerID = msg.model.providerID;
+        if (!msg.modelID && msg.model?.id) msg.modelID = msg.model.id;
+        if (msg.cost === undefined) msg.cost = 0;
+        if (!msg.tokens) msg.tokens = { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } };
+        if (!msg.time) msg.time = { created: Date.now() };
+        if (Array.isArray(msg.content)) {
+          for (const part of msg.content) {
+            if (!part) continue;
+            if (part.type === 'thought') {
+              part.type = 'reasoning';
+              if (!part.time) {
+                part.time = { created: msg.time.created, completed: msg.time.completed || msg.time.created };
+              }
             }
-            if (part.executed === undefined) part.executed = true;
-            if (part.state && part.state.status === 'running' && msg.time?.completed) {
-              part.state.status = 'completed';
-              if (!part.state.content) part.state.content = [{ type: 'text', text: '' }];
+            if (part.type === 'tool') {
+              if (!part.id && part.callID) part.id = part.callID;
+              if (!part.callID && part.id) part.callID = part.id;
+              if (!part.name && part.tool) part.name = part.tool;
+              if (!part.tool && part.name) part.tool = part.name;
+              if (!part.name) { part.name = 'tool'; part.tool = 'tool'; }
+              if (!part.time) {
+                const start = part.state?.time?.start || msg.time?.created || Date.now();
+                part.time = { created: start, ran: start, completed: msg.time?.completed || start };
+              }
+              if (part.executed === undefined) part.executed = true;
+              if (!part.state) {
+                part.state = { status: 'completed', input: part.args || {}, content: [{ type: 'text', text: '' }] };
+              }
+              if (part.state.status === 'running' && msg.time?.completed) {
+                part.state.status = 'completed';
+              }
+              if (!part.state.content) {
+                part.state.content = [{ type: 'text', text: part.state.output || '' }];
+              }
             }
           }
+        }
+      } else if (msg.type === 'user') {
+        if (!msg.role) msg.role = 'user';
+        if (!msg.text && Array.isArray(msg.content) && msg.content[0]?.text) {
+          msg.text = msg.content[0].text;
+        }
+        if (typeof msg.text !== 'string') msg.text = '';
+        if (!msg.time) msg.time = { created: Date.now() };
+        if (!Array.isArray(msg.content)) {
+          msg.content = [{ type: 'text', text: msg.text }];
         }
       }
     }
@@ -724,9 +772,9 @@ export class AcpSessionBridge extends EventEmitter {
             created: Date.now(),
           }, directory);
         } else if (chunk.type === 'tool' && chunk.tool) {
-          const callID = chunk.tool.callID || chunk.tool.id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          const callID = chunk.tool.toolCallId || chunk.tool.callID || chunk.tool.id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
           const toolName = chunk.tool.name || chunk.tool.tool || 'bash';
-          const toolArgs = chunk.tool.args || chunk.tool.input || {};
+          const toolArgs = chunk.tool.args || chunk.tool.rawInput || chunk.tool.input || {};
           const now = Date.now();
           const toolPart = {
             id: callID,
@@ -746,6 +794,65 @@ export class AcpSessionBridge extends EventEmitter {
             data: { sessionID: sessionId, assistantMessageID: assistantMsgId, id: callID, name: toolName, input: toolArgs, executed: true },
             created: now,
           }, directory);
+        } else if (chunk.type === 'tool_update' && chunk.update) {
+          const update = chunk.update;
+          const callID = update.toolCallId || update.callID || update.id;
+          const toolPart = parts.find((p) => p.type === 'tool' && (p.callID === callID || p.id === callID));
+          if (toolPart) {
+            let outputText = '';
+            if (Array.isArray(update.content)) {
+              outputText = update.content
+                .map((c) => {
+                  if (typeof c === 'string') return c;
+                  if (c?.content?.text) return c.content.text;
+                  if (c?.text) return c.text;
+                  return '';
+                })
+                .filter(Boolean)
+                .join('\n');
+            } else if (update.rawOutput?.output) {
+              outputText = update.rawOutput.output;
+            } else if (typeof update.content === 'string') {
+              outputText = update.content;
+            }
+
+            const now = Date.now();
+            toolPart.time.completed = now;
+
+            if (update.status === 'completed') {
+              toolPart.state.status = 'completed';
+              toolPart.state.output = outputText;
+              toolPart.state.content = [{ type: 'text', text: outputText }];
+              this.emitEvent({
+                type: 'session.tool.success',
+                data: {
+                  sessionID: sessionId,
+                  assistantMessageID: assistantMsgId,
+                  id: toolPart.callID || toolPart.id,
+                  content: toolPart.state.content,
+                  executed: true,
+                },
+                created: now,
+              }, directory);
+            } else if (update.status === 'error' || update.status === 'failed') {
+              toolPart.state.status = 'error';
+              toolPart.state.output = outputText;
+              toolPart.state.content = [{ type: 'text', text: outputText }];
+              toolPart.state.error = { message: outputText || 'Tool failed' };
+              this.emitEvent({
+                type: 'session.tool.failed',
+                data: {
+                  sessionID: sessionId,
+                  assistantMessageID: assistantMsgId,
+                  id: toolPart.callID || toolPart.id,
+                  error: toolPart.state.error,
+                  content: toolPart.state.content,
+                  executed: true,
+                },
+                created: now,
+              }, directory);
+            }
+          }
         } else if (chunk.type === 'text' && chunk.delta) {
           if (!hasTextPart) {
             hasTextPart = true;

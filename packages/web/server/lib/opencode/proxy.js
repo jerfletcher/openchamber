@@ -1352,6 +1352,14 @@ export const registerOpenCodeProxy = (app, deps) => {
     next();
   });
 
+  app.post('/api/session/:sessionID/view', (req, res, next) => {
+    const { sessionID } = req.params;
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      return res.status(204).end();
+    }
+    next();
+  });
+
   app.post('/api/session/:sessionID/move', (req, res, next) => {
     const { sessionID } = req.params;
     if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {

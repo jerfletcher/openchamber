@@ -127,6 +127,11 @@ export class AcpRuntime extends EventEmitter {
         sessionData.emitter.emit('thought_delta', update.thought || update.content?.text || '');
       } else if (update.sessionUpdate === 'tool_call' || update.toolCall) {
         sessionData.emitter.emit('tool_call', update.toolCall || update);
+      } else if (update.sessionUpdate === 'tool_call_update') {
+        sessionData.emitter.emit('tool_update', update);
+      } else if (update.sessionUpdate === 'session_info_update' && update.title) {
+        sessionData.title = update.title;
+        sessionData.emitter.emit('title', update.title);
       }
 
       sessionData.emitter.emit('update', update);
@@ -221,15 +226,20 @@ export class AcpRuntime extends EventEmitter {
         assistantTools.push(tool);
         onChunk({ type: 'tool', tool });
       };
+      const toolUpdateHandler = (update) => {
+        onChunk({ type: 'tool_update', update });
+      };
 
       session.emitter.on('text_delta', handler);
       session.emitter.on('thought_delta', thoughtHandler);
       session.emitter.on('tool_call', toolHandler);
+      session.emitter.on('tool_update', toolUpdateHandler);
 
       unsub = () => {
         session.emitter.off('text_delta', handler);
         session.emitter.off('thought_delta', thoughtHandler);
         session.emitter.off('tool_call', toolHandler);
+        session.emitter.off('tool_update', toolUpdateHandler);
       };
     }
 
@@ -237,7 +247,7 @@ export class AcpRuntime extends EventEmitter {
       const result = await session.conn.request('session/prompt', {
         sessionId,
         prompt: [{ type: 'text', text }],
-      });
+      }, 0);
 
       const assistantMsg = {
         id: `msg_${Date.now()}_a`,
