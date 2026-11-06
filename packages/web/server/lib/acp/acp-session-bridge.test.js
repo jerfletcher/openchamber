@@ -6,17 +6,30 @@ class MockRuntime extends EventEmitter {
   constructor() {
     super();
     this.sessions = new Map();
+    this.createCallCount = 0;
   }
   async createSession({ agentId, cwd }) {
+    this.createCallCount++;
     const id = `mock_acp_${Math.random().toString(36).slice(2, 6)}`;
     this.sessions.set(id, { agentId, cwd });
     return { sessionId: id, agentId };
   }
+  isSessionAlive(sessionId) {
+    return this.sessions.has(sessionId);
+  }
+  getSession(sessionId) {
+    const s = this.sessions.get(sessionId);
+    return s ? { sessionId, ...s } : null;
+  }
+  async cancel(sessionId) {}
   async setModel(sessionId, modelId) {
     return { sessionId, modelId };
   }
   async prompt(sessionId, text, onChunk) {
     onChunk({ type: 'thought', delta: 'Thinking about the problem...' });
+    if (text.includes('use tool')) {
+      onChunk({ type: 'tool', tool: { name: 'read_file', input: { Path: '/test.txt' } } });
+    }
     onChunk({ type: 'text', delta: 'Here is the answer.' });
     return { status: 'ok' };
   }
@@ -116,5 +129,87 @@ describe('AcpSessionBridge', () => {
     const deletedEvent = events.find((e) => e.type === 'session.deleted');
     expect(deletedEvent).toBeDefined();
     expect(deletedEvent.properties.sessionID).toBe(session.id);
+  });
+
+  it('reuses the same ACP process across Turn 1 and Turn 2', async () => {
+    const session = bridge.createSession({ title: 'Multi-turn Test' });
+
+    // Turn 1
+    await bridge.startTurn(session.id, { text: 'Turn 1 prompt' });
+    await new Promise((r) => setTimeout(r, 80));
+    expect(mockRuntime.createCallCount).toBe(1);
+    const acpId1 = session.acpSessionId;
+    expect(acpId1).toBeDefined();
+
+    // Turn 2
+    await bridge.startTurn(session.id, { text: 'Turn 2 prompt' });
+    await new Promise((r) => setTimeout(r, 80));
+    // Verify no new ACP session was created
+    expect(mockRuntime.createCallCount).toBe(1);
+    expect(session.acpSessionId).toBe(acpId1);
+  });
+
+  it('properly formats tool parts with name, time, and completed status', async () => {
+    const session = bridge.createSession({ title: 'Tool Test' });
+    await bridge.startTurn(session.id, { text: 'Please use tool now' });
+    await new Promise((r) => setTimeout(r, 80));
+
+    const messages = bridge.getMessages(session.id, { order: 'asc' });
+    const assistantMsg = messages.data.find((m) => m.type === 'assistant');
+    expect(assistantMsg).toBeDefined();
+
+    const toolPart = assistantMsg.content.find((p) => p.type === 'tool');
+    expect(toolPart).toBeDefined();
+    expect(toolPart.name).toBe('read_file');
+    expect(toolPart.tool).toBe('read_file');
+    expect(toolPart.executed).toBe(true);
+    expect(toolPart.time.created).toBeDefined();
+    expect(toolPart.time.completed).toBeDefined();
+    expect(toolPart.state.status).toBe('completed');
+  });
+
+  it('respects order asc and desc in getMessages', () => {
+    const session = bridge.createSession({ title: 'Order Test' });
+    session.messages = [
+      { id: 'msg_1', time: { created: 100 } },
+      { id: 'msg_2', time: { created: 200 } },
+      { id: 'msg_3', time: { created: 300 } },
+    ];
+
+    const desc = bridge.getMessages(session.id, { order: 'desc' });
+    expect(desc.data.map((m) => m.id)).toEqual(['msg_3', 'msg_2', 'msg_1']);
+
+    const asc = bridge.getMessages(session.id, { order: 'asc' });
+    expect(asc.data.map((m) => m.id)).toEqual(['msg_1', 'msg_2', 'msg_3']);
+  });
+
+  it('sanitizes legacy tool parts missing time or name so projection does not crash', () => {
+    const session = bridge.createSession({ title: 'Sanitize Test' });
+    session.messages = [
+      {
+        id: 'msg_legacy_a',
+        type: 'assistant',
+        time: { created: 100, completed: 200 },
+        content: [
+          {
+            id: 'call_1',
+            type: 'tool',
+            tool: 'read_file',
+            state: { status: 'running', input: { path: 'a.txt' } },
+            // missing time, missing name, missing executed
+          },
+        ],
+      },
+    ];
+
+    const res = bridge.getMessages(session.id, { order: 'asc' });
+    const part = res.data[0].content[0];
+    expect(part.name).toBe('read_file');
+    expect(part.tool).toBe('read_file');
+    expect(part.time).toBeDefined();
+    expect(part.time.ran).toBeDefined();
+    expect(part.time.completed).toBeDefined();
+    expect(part.executed).toBe(true);
+    expect(part.state.status).toBe('completed');
   });
 });

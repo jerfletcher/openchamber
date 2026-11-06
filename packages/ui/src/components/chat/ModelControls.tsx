@@ -1553,6 +1553,13 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             }
             setAgent(agentName);
             addRecentAgent(agentName);
+            if (agentName === 'antigravity' && currentProviderId !== 'antigravity') {
+                tryApplyModelSelection('antigravity', 'gemini-3.8-flash', 'antigravity');
+                const pickedSessionId = selection ? controlledSessionId : currentSessionId;
+                if (pickedSessionId) {
+                    useSelectionStore.getState().pickSessionModel(pickedSessionId, 'antigravity', 'gemini-3.8-flash');
+                }
+            }
             if (options?.closeModelSelector ?? true) {
                 setAgentMenuOpen(false);
             }

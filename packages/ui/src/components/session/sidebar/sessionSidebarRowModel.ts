@@ -3,7 +3,7 @@ import { listedChildren } from './listedChildren';
 import type { SessionFolder, SessionFoldersMap } from '@/stores/useSessionFoldersStore';
 import { compareSessionsByLifecycleOrder, EMPTY_SESSION_ORDER_RANKS } from '@/sync/session-ordering';
 import { isSessionPinned } from '@/lib/sessionPins';
-import type { GroupSearchData, SessionGroup, SessionNode } from './types';
+import { isAntigravitySession, type GroupSearchData, type SessionGroup, type SessionNode } from './types';
 import type { ProjectSection } from './projects/sessionProjectRender';
 import { buildGroupRenderDescriptors } from './projects/sessionProjectRender';
 import { normalizeFolderRoots, selectFolderIdsForProjection, selectFolderRootNodes, type BlockingBadgeSessionScope } from './sessions/sessionNodeItemUtils';
@@ -768,6 +768,43 @@ export const buildSessionSidebarRowModel = (args: SessionSidebarRowModelArgs): S
         nodes: selectFolderRootNodes(folder.sessionIds, indexed.byId).sort((left, right) => compareNodes(left, right, pinned, args.sessionOrderIndex)),
       }))
     ));
+
+    const agyNodes = sourceNodes.filter((node) => isAntigravitySession(node.session));
+    if (agyNodes.length > 0) {
+      const existingAgyEntry = folderEntries.find((entry) => entry.folder.name.toLowerCase() === 'antigravity');
+      const agySessionIdSet = new Set(agyNodes.map((n) => n.session.id));
+      for (const entry of folderEntries) {
+        if (entry !== existingAgyEntry) {
+          entry.nodes = entry.nodes.filter((node) => !agySessionIdSet.has(node.session.id));
+        }
+      }
+      if (existingAgyEntry) {
+        existingAgyEntry.nodes = agyNodes;
+        existingAgyEntry.folder = {
+          ...existingAgyEntry.folder,
+          sessionIds: agyNodes.map((n) => n.session.id),
+        };
+      } else {
+        const primaryScope = getSessionFolderScopes(group)[0] ?? {
+          scopeKey: group.folderScopeKey ?? group.directory ?? 'antigravity',
+          directory: group.directory ?? null,
+        };
+        const agyFolderId = `antigravity:${primaryScope.scopeKey}`;
+        const agyFolder: SessionFolder = {
+          id: agyFolderId,
+          name: 'Antigravity',
+          sessionIds: agyNodes.map((n) => n.session.id),
+          createdAt: 0,
+        };
+        folderEntries.push({
+          folder: agyFolder,
+          scopeKey: primaryScope.scopeKey,
+          scopeDirectory: primaryScope.directory,
+          ownerKey,
+          nodes: agyNodes,
+        });
+      }
+    }
     const visibleFolderKeys = selectFolderIdsForProjection(folderEntries.map((entry) => ({
       id: entry.folder.id,
       name: entry.folder.name,

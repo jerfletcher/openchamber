@@ -255,6 +255,19 @@ export class AcpRuntime extends EventEmitter {
     }
   }
 
+  isSessionAlive(sessionId) {
+    const session = this.activeSessions.get(sessionId);
+    return Boolean(session && session.conn && session.conn.isAlive());
+  }
+
+  async cancel(sessionId) {
+    const session = this.activeSessions.get(sessionId);
+    if (!session || !session.conn) return;
+    try {
+      session.conn.notify('session/cancel', { sessionId });
+    } catch {}
+  }
+
   closeSession(sessionId) {
     const session = this.activeSessions.get(sessionId);
     if (session) {

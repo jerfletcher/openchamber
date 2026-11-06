@@ -112,6 +112,10 @@ export class AcpConnection extends EventEmitter {
     this.proc.stdin.write(payload, 'utf8');
   }
 
+  isAlive() {
+    return !this.closed && Boolean(this.proc && !this.proc.killed);
+  }
+
   close() {
     this.closed = true;
     if (this.proc) {

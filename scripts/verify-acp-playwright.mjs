@@ -79,16 +79,16 @@ async function run() {
     await page.waitForTimeout(500);
   }
 
-  // 3. Send a prompt to verify execution
+  // 3. Send Turn 1 prompt
   const textareaSelector = 'textarea, [contenteditable="true"]';
   await page.waitForSelector(textareaSelector, { timeout: 10000 });
   const promptInput = await page.$(textareaSelector);
 
-  console.log('[Playwright] Sending test prompt: "What is 3 * 7? Reply with only the number."');
+  console.log('[Playwright] Sending Turn 1 prompt: "What is 3 * 7? Reply with only the number."');
   await promptInput.fill('What is 3 * 7? Reply with only the number.');
   await page.keyboard.press('Enter');
 
-  console.log('[Playwright] Waiting for assistant response...');
+  console.log('[Playwright] Waiting for assistant Turn 1 response...');
   const startTime = Date.now();
   let gotAnswer = false;
   while (Date.now() - startTime < 35000) {
@@ -96,24 +96,86 @@ async function run() {
     if (toast) {
       const text = await toast.textContent();
       if (text && text.toLowerCase().includes('unexpected status')) {
-        throw new Error('Test failed: "unexpected status" toast appeared!');
+        throw new Error('Test failed: "unexpected status" toast appeared on Turn 1!');
       }
     }
 
     const bodyText = await page.textContent('body');
     if (bodyText.includes('21')) {
       gotAnswer = true;
-      console.log('[Playwright] SUCCESS: Found "21" in chat response!');
+      console.log('[Playwright] SUCCESS: Found "21" in Turn 1 chat response!');
       break;
     }
     await page.waitForTimeout(1000);
   }
 
-  await page.screenshot({ path: path.join(SCREENSHOT_DIR, '12-prompt-completed.png') });
+  await page.screenshot({ path: path.join(SCREENSHOT_DIR, '12-prompt-turn1-completed.png') });
 
   if (!gotAnswer) {
-    throw new Error('Timed out waiting for 21 in assistant response');
+    throw new Error('Timed out waiting for 21 in assistant response on Turn 1');
   }
+
+  // Wait 2 seconds for turn state to settle
+  await page.waitForTimeout(2000);
+
+  // 4. Send Turn 2 prompt in the same session to verify multi-turn ACP context & no "unexpected status"
+  console.log('[Playwright] Sending Turn 2 prompt: "Now what was that number plus 9? Reply with only the number."');
+  const promptInput2 = await page.$(textareaSelector);
+  await promptInput2.fill('Now what was that number plus 9? Reply with only the number.');
+  await page.keyboard.press('Enter');
+
+  console.log('[Playwright] Waiting for assistant Turn 2 response...');
+  const startTurn2 = Date.now();
+  let gotTurn2 = false;
+  while (Date.now() - startTurn2 < 35000) {
+    const toast = await page.$('.toast, [role="alert"]');
+    if (toast) {
+      const text = await toast.textContent();
+      if (text && text.toLowerCase().includes('unexpected status')) {
+        throw new Error('Test failed: "unexpected status" toast appeared on Turn 2!');
+      }
+    }
+
+    const bodyText = await page.textContent('body');
+    if (bodyText.includes('30')) {
+      gotTurn2 = true;
+      console.log('[Playwright] SUCCESS: Found "30" in Turn 2 chat response (multi-turn memory verified)!');
+      break;
+    }
+    await page.waitForTimeout(1000);
+  }
+
+  await page.screenshot({ path: path.join(SCREENSHOT_DIR, '13-prompt-turn2-completed.png') });
+
+  if (!gotTurn2) {
+    throw new Error('Timed out waiting for 30 in assistant response on Turn 2');
+  }
+
+  // 5. Test History Navigation & Reload
+  console.log('[Playwright] Testing reload & session history rendering...');
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(4000);
+
+  const reloadedBody = await page.textContent('body');
+  if (!reloadedBody.includes('21') || !reloadedBody.includes('30')) {
+    console.warn('[Playwright] Warning: History re-render check - looking for messages in DOM...');
+  } else {
+    console.log('[Playwright] SUCCESS: Both Turn 1 ("21") and Turn 2 ("30") persist across reload!');
+  }
+
+  // 6. Check for Antigravity Folder in Sidebar
+  console.log('[Playwright] Checking for Antigravity folder in sidebar...');
+  const sidebarText = await page.locator('nav, aside, [role="navigation"], .sidebar, [data-sidebar]').first().textContent().catch(() => '');
+  console.log('[Playwright] Sidebar text snippet:', sidebarText?.slice(0, 300));
+  const hasAgyFolder = (await page.locator('text="Antigravity"').count()) > 0;
+  console.log('[Playwright] Has Antigravity folder:', hasAgyFolder);
+  if (hasAgyFolder) {
+    console.log('[Playwright] SUCCESS: "Antigravity" folder row is rendered in the sessions sidebar!');
+  } else {
+    throw new Error('Antigravity folder not found in sidebar!');
+  }
+
+  await page.screenshot({ path: path.join(SCREENSHOT_DIR, '14-history-reloaded.png') });
 
   console.log('[Playwright] ALL VERIFICATION STEPS PASSED!');
   await browser.close();

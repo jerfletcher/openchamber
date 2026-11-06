@@ -32,6 +32,30 @@ export class AcpSessionBridge extends EventEmitter {
     this.eventHub = hub;
   }
 
+  _sanitizeSession(session) {
+    if (!session || !Array.isArray(session.messages)) return session;
+    for (const msg of session.messages) {
+      if (msg && msg.type === 'assistant' && Array.isArray(msg.content)) {
+        for (const part of msg.content) {
+          if (part && part.type === 'tool') {
+            if (!part.name && part.tool) part.name = part.tool;
+            if (!part.tool && part.name) part.tool = part.name;
+            if (!part.time) {
+              const start = part.state?.time?.start || msg.time?.created || Date.now();
+              part.time = { created: start, ran: start, completed: msg.time?.completed || start };
+            }
+            if (part.executed === undefined) part.executed = true;
+            if (part.state && part.state.status === 'running' && msg.time?.completed) {
+              part.state.status = 'completed';
+              if (!part.state.content) part.state.content = [{ type: 'text', text: '' }];
+            }
+          }
+        }
+      }
+    }
+    return session;
+  }
+
   loadFromDisk() {
     try {
       if (fs.existsSync(this.storageFile)) {
@@ -39,7 +63,10 @@ export class AcpSessionBridge extends EventEmitter {
         const data = JSON.parse(raw);
         if (Array.isArray(data)) {
           for (const s of data) {
-            if (s && s.id) this.sessions.set(s.id, s);
+            if (s && s.id) {
+              this._sanitizeSession(s);
+              this.sessions.set(s.id, s);
+            }
           }
         }
       }
@@ -73,14 +100,31 @@ export class AcpSessionBridge extends EventEmitter {
   }
 
   getSession(sessionId) {
-    return this.sessions.get(sessionId) || null;
+    const session = this.sessions.get(sessionId);
+    return session ? this._sanitizeSession(session) : null;
   }
 
-  getMessages(sessionId) {
+  getMessages(sessionId, query = {}) {
     const session = this.sessions.get(sessionId);
-    if (!session) return { data: [] };
-    const msgs = session.messages || [];
-    return { data: msgs.slice().reverse() };
+    if (!session) return { data: [], cursor: {} };
+    this._sanitizeSession(session);
+    let msgs = session.messages ? session.messages.slice() : [];
+    const order = query?.order || 'desc';
+    if (order === 'desc') {
+      msgs.reverse();
+    }
+    const limit = query?.limit ? parseInt(query.limit, 10) : null;
+    if (limit && limit > 0 && msgs.length > limit) {
+      msgs = msgs.slice(0, limit);
+    }
+    return { data: msgs, cursor: {} };
+  }
+
+  getMessage(sessionId, messageId) {
+    const session = this.sessions.get(sessionId);
+    if (!session || !session.messages) return null;
+    this._sanitizeSession(session);
+    return session.messages.find((m) => m.id === messageId) || null;
   }
 
   createSession({ id = null, title, directory = process.cwd(), agent = 'antigravity', model = 'gemini-3.8-flash' } = {}) {
@@ -115,6 +159,9 @@ export class AcpSessionBridge extends EventEmitter {
       const session = this.sessions.get(sessionId);
       const directory = session?.location?.directory || 'global';
       this.abortTurn(sessionId);
+      if (session?.acpSessionId) {
+        this.runtime.closeSession(session.acpSessionId);
+      }
       this.sessions.delete(sessionId);
       this.saveToDisk();
       this.emitEvent({
@@ -170,6 +217,10 @@ export class AcpSessionBridge extends EventEmitter {
       const session = this.sessions.get(sessionId);
       const directory = session?.location?.directory || 'global';
       if (session) {
+        if (session.acpSessionId && typeof this.runtime.cancel === 'function') {
+          this.runtime.cancel(session.acpSessionId).catch(() => {});
+        }
+        if (session.time) delete session.time.busy;
         session.time.idle = Date.now();
         const idleMsg = {
           id: `msg_${Date.now().toString(36)}_idle`,
@@ -308,10 +359,21 @@ export class AcpSessionBridge extends EventEmitter {
     const parts = assistantMsg.content;
 
     try {
-      acpSession = await this.runtime.createSession({
-        agentId: 'antigravity',
-        cwd: directory || process.cwd(),
-      });
+      const existingAcpId = session.acpSessionId;
+      const isAlive = existingAcpId && typeof this.runtime.isSessionAlive === 'function'
+        ? this.runtime.isSessionAlive(existingAcpId)
+        : Boolean(existingAcpId && this.runtime.getSession(existingAcpId));
+
+      if (isAlive) {
+        acpSession = this.runtime.getSession(existingAcpId) || { sessionId: existingAcpId };
+      } else {
+        acpSession = await this.runtime.createSession({
+          agentId: 'antigravity',
+          cwd: directory || session.location?.directory || process.cwd(),
+        });
+        session.acpSessionId = acpSession.sessionId;
+        this.saveToDisk();
+      }
 
       if (abortCtrl.signal.aborted) return;
 
@@ -321,6 +383,13 @@ export class AcpSessionBridge extends EventEmitter {
       await this.runtime.setModel(acpSession.sessionId, acpTargetModel).catch(async () => {
         await this.runtime.setModel(acpSession.sessionId, baseModelId).catch(() => {});
       });
+
+      const onAbort = () => {
+        if (acpSession?.sessionId && typeof this.runtime.cancel === 'function') {
+          this.runtime.cancel(acpSession.sessionId).catch(() => {});
+        }
+      };
+      abortCtrl.signal.addEventListener('abort', onAbort, { once: true });
 
       await this.runtime.prompt(acpSession.sessionId, text, (chunk) => {
         if (abortCtrl.signal.aborted) return;
@@ -353,23 +422,27 @@ export class AcpSessionBridge extends EventEmitter {
             created: Date.now(),
           }, directory);
         } else if (chunk.type === 'tool' && chunk.tool) {
-          const callID = chunk.tool.callID || `call_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          const callID = chunk.tool.callID || chunk.tool.id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
           const toolName = chunk.tool.name || chunk.tool.tool || 'bash';
           const toolArgs = chunk.tool.args || chunk.tool.input || {};
+          const now = Date.now();
           const toolPart = {
             id: callID,
             sessionID: sessionId,
             messageID: assistantMsgId,
             callID,
             type: 'tool',
+            name: toolName,
             tool: toolName,
-            state: { status: 'running', input: toolArgs, time: { start: Date.now() } },
+            executed: true,
+            time: { created: now, ran: now },
+            state: { status: 'running', input: toolArgs, time: { start: now } },
           };
           parts.push(toolPart);
           this.emitEvent({
             type: 'session.tool.called',
             data: { sessionID: sessionId, assistantMessageID: assistantMsgId, id: callID, name: toolName, input: toolArgs, executed: true },
-            created: Date.now(),
+            created: now,
           }, directory);
         } else if (chunk.type === 'text' && chunk.delta) {
           if (!hasTextPart) {
@@ -414,23 +487,45 @@ export class AcpSessionBridge extends EventEmitter {
 
       if (abortCtrl.signal.aborted) return;
 
+      const completedTime = Date.now();
+      for (const p of parts) {
+        if (p.type === 'tool' && p.state && p.state.status === 'running') {
+          p.state.status = 'completed';
+          if (!p.state.content) p.state.content = [{ type: 'text', text: '' }];
+          p.time = p.time || { created: completedTime, ran: completedTime };
+          p.time.completed = completedTime;
+          this.emitEvent({
+            type: 'session.tool.success',
+            data: {
+              sessionID: sessionId,
+              assistantMessageID: assistantMsgId,
+              id: p.callID || p.id,
+              content: p.state.content,
+              executed: true,
+            },
+            created: completedTime,
+          }, directory);
+        }
+      }
+
       const t = parts.find((p) => p.id === textPartId);
       if (t && !t.time?.end) {
-        t.time = { ...t.time, end: Date.now() };
+        t.time = { ...t.time, end: completedTime };
         this.emitEvent({
           type: 'session.text.ended',
           data: { sessionID: sessionId, assistantMessageID: assistantMsgId, ordinal: 0, text: accumulatedText },
-          created: Date.now(),
+          created: completedTime,
         }, directory);
       }
-      assistantMsg.time.completed = Date.now();
+      assistantMsg.time.completed = completedTime;
       assistantMsg.finish = 'stop';
-      session.time.idle = Date.now();
+      session.time.idle = completedTime;
+      if (session.time) delete session.time.busy;
 
       const idleMsg = {
-        id: `msg_${Date.now().toString(36)}_idle`,
+        id: `msg_${completedTime.toString(36)}_idle`,
         sessionID: sessionId,
-        time: { created: Date.now() },
+        time: { created: completedTime },
         type: 'idle',
         role: 'idle',
         outcome: 'succeeded',
@@ -442,13 +537,13 @@ export class AcpSessionBridge extends EventEmitter {
       this.emitEvent({
         type: 'session.step.ended',
         data: { sessionID: sessionId, assistantMessageID: assistantMsgId, finish: 'stop' },
-        created: Date.now(),
+        created: completedTime,
       }, directory);
 
       this.emitEvent({
         type: 'session.execution.succeeded',
         data: { sessionID: sessionId },
-        created: Date.now(),
+        created: completedTime,
       }, directory);
 
       this.emitEvent({
@@ -458,14 +553,35 @@ export class AcpSessionBridge extends EventEmitter {
       }, directory);
     } catch (err) {
       if (abortCtrl.signal.aborted) return;
-      assistantMsg.time.completed = Date.now();
+      const failedTime = Date.now();
+      for (const p of parts) {
+        if (p.type === 'tool' && p.state && p.state.status === 'running') {
+          p.state.status = 'error';
+          p.state.error = { message: err.message };
+          p.time = p.time || { created: failedTime, ran: failedTime };
+          p.time.completed = failedTime;
+          this.emitEvent({
+            type: 'session.tool.failed',
+            data: {
+              sessionID: sessionId,
+              assistantMessageID: assistantMsgId,
+              id: p.callID || p.id,
+              error: { message: err.message },
+              executed: true,
+            },
+            created: failedTime,
+          }, directory);
+        }
+      }
+      assistantMsg.time.completed = failedTime;
       assistantMsg.finish = 'error';
-      session.time.idle = Date.now();
+      session.time.idle = failedTime;
+      if (session.time) delete session.time.busy;
 
       const idleMsg = {
-        id: `msg_${Date.now().toString(36)}_idle`,
+        id: `msg_${failedTime.toString(36)}_idle`,
         sessionID: sessionId,
-        time: { created: Date.now() },
+        time: { created: failedTime },
         type: 'idle',
         role: 'idle',
         outcome: 'failed',
@@ -478,7 +594,7 @@ export class AcpSessionBridge extends EventEmitter {
       this.emitEvent({
         type: 'session.execution.failed',
         data: { sessionID: sessionId, error: { message: err.message } },
-        created: Date.now(),
+        created: failedTime,
       }, directory);
 
       this.emitEvent({
@@ -488,9 +604,8 @@ export class AcpSessionBridge extends EventEmitter {
       }, directory);
     } finally {
       this.activeTurns.delete(sessionId);
-      if (acpSession) {
-        this.runtime.closeSession(acpSession.sessionId);
-      }
+      if (session?.time) delete session.time.busy;
+      // Do NOT close acpSession! Keep ACP session alive across turns for conversation memory!
     }
   }
 

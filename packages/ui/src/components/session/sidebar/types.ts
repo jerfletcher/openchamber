@@ -44,3 +44,13 @@ export type GroupSearchData = {
   groupMatches: boolean;
   hasMatch: boolean;
 };
+
+export const isAntigravitySession = (session: Session | null | undefined): boolean => {
+  if (!session) return false;
+  if (typeof session.id === 'string' && (session.id.startsWith('ses_agy_') || session.id.startsWith('ses_acp_'))) return true;
+  if (session.agent === 'antigravity') return true;
+  if (session.model?.providerID === 'antigravity') return true;
+  if ((session as { acpSessionId?: string }).acpSessionId) return true;
+  return false;
+};
+

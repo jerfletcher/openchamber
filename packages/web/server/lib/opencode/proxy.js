@@ -1255,8 +1255,23 @@ export const registerOpenCodeProxy = (app, deps) => {
             text: req.body?.text || req.body?.prompt || '',
             directory: req.body?.directory || req.get('x-opencode-directory'),
           };
-          const userMsg = await acpSessionBridge.startTurn(sessionID, promptData);
-          return res.json({ data: userMsg });
+          try {
+            const userMsg = await acpSessionBridge.startTurn(sessionID, promptData);
+            const userInbox = {
+              id: userMsg ? userMsg.id : (promptData.id || `msg_${Date.now()}`),
+              sessionID,
+              time: userMsg?.time || { created: Date.now() },
+              type: 'user',
+              payload: {
+                text: promptData.text || '',
+              },
+              delivery: 'express',
+            };
+            return res.json({ data: userInbox });
+          } catch (err) {
+            console.error('[proxy] ACP startTurn error:', err);
+            return res.status(500).json({ error: err.message });
+          }
         }
         next();
       });
@@ -1431,12 +1446,22 @@ export const registerOpenCodeProxy = (app, deps) => {
     }
   });
 
+  app.get('/api/session/:sessionID/message/:messageID', (req, res, next) => {
+    const { sessionID, messageID } = req.params;
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      const msg = acpSessionBridge.getMessage(sessionID, messageID);
+      if (msg) return res.json({ data: msg });
+      return res.status(404).json({ error: 'Message not found' });
+    }
+    next();
+  });
+
   // A client that asks for it gets message pages with finished tool results
   // shelled (see message-shells.js); anyone else reaches OpenCode untouched.
   app.get('/api/session/:sessionID/message', async function forwardMessageListRequest(req, res, next) {
     const { sessionID } = req.params;
     if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
-      return res.json(acpSessionBridge.getMessages(sessionID));
+      return res.json(acpSessionBridge.getMessages(sessionID, req.query));
     }
     const keepWhole = parsePartShellsHeader(req.get(PART_SHELLS_HEADER));
     if (!keepWhole) return next();
