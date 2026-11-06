@@ -1031,10 +1031,12 @@ interface UIStore {
   expandReasoningWhileStreaming: boolean;
   activityRenderMode: ActivityRenderMode;
   tiledSwarmViewEnabled: boolean;
-  tiledSwarmLayout: 'grid-4' | 'columns-3' | 'split-2';
+  tiledSwarmPinnedId: string | null;
+  tiledSwarmLayout: 'auto' | 'grid-4' | 'columns-3' | 'split-2';
   expandCommandsByDefault: boolean;
   expandSubagentsByDefault: boolean;
   expandSearchesByDefault: boolean;
+  expandEditsByDefault: boolean;
   showDeletionDialog: boolean;
   autoDeleteEnabled: boolean;
   /** Global file-editor autosave. Default true for backward compatibility. */
@@ -1367,11 +1369,14 @@ interface UIStore {
   setExpandReasoningWhileStreaming: (value: boolean) => void;
   setActivityRenderMode: (value: ActivityRenderMode) => void;
   setTiledSwarmViewEnabled: (value: boolean) => void;
-  setTiledSwarmLayout: (value: 'grid-4' | 'columns-3' | 'split-2') => void;
+  setTiledSwarmPinnedId: (id: string | null) => void;
+  openTiledSwarmWithPin: (id: string) => void;
+  setTiledSwarmLayout: (value: 'auto' | 'grid-4' | 'columns-3' | 'split-2') => void;
   toggleTiledSwarmView: () => void;
   setExpandCommandsByDefault: (value: boolean) => void;
   setExpandSubagentsByDefault: (value: boolean) => void;
   setExpandSearchesByDefault: (value: boolean) => void;
+  setExpandEditsByDefault: (value: boolean) => void;
   setShowDeletionDialog: (value: boolean) => void;
   setAutoDeleteEnabled: (value: boolean) => void;
   setMergedWorktreeCleanupEnabled: (value: boolean) => void;
@@ -1639,10 +1644,12 @@ export const useUIStore = create<UIStore>()(
         expandReasoningWhileStreaming: false,
         activityRenderMode: 'summary',
         tiledSwarmViewEnabled: false,
+        tiledSwarmPinnedId: null,
         tiledSwarmLayout: 'grid-4',
         expandCommandsByDefault: true,
         expandSubagentsByDefault: false,
         expandSearchesByDefault: false,
+        expandEditsByDefault: true,
         showDeletionDialog: true,
         autoDeleteEnabled: false,
         autoSaveEnabled: true,
@@ -2773,6 +2780,10 @@ export const useUIStore = create<UIStore>()(
           set({ expandSubagentsByDefault: value });
         },
 
+        setExpandEditsByDefault: (value) => {
+          set({ expandEditsByDefault: value });
+        },
+
         setExpandSearchesByDefault: (value) => {
           set({ expandSearchesByDefault: value });
         },
@@ -2783,6 +2794,14 @@ export const useUIStore = create<UIStore>()(
 
         setTiledSwarmViewEnabled: (value) => {
           set({ tiledSwarmViewEnabled: value });
+        },
+
+        setTiledSwarmPinnedId: (id) => {
+          set({ tiledSwarmPinnedId: id });
+        },
+
+        openTiledSwarmWithPin: (id) => {
+          set({ tiledSwarmViewEnabled: true, tiledSwarmPinnedId: id });
         },
 
         setTiledSwarmLayout: (value) => {
@@ -3934,6 +3953,7 @@ export const useUIStore = create<UIStore>()(
           expandCommandsByDefault: state.expandCommandsByDefault,
           expandSubagentsByDefault: state.expandSubagentsByDefault,
           expandSearchesByDefault: state.expandSearchesByDefault,
+          expandEditsByDefault: state.expandEditsByDefault,
           showDeletionDialog: state.showDeletionDialog,
           autoDeleteEnabled: state.autoDeleteEnabled,
           autoSaveEnabled: state.autoSaveEnabled,

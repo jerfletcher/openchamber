@@ -219,7 +219,7 @@ function Row({ props }: NodeProps) {
   return (
     <div
       className={stats
-        ? 'grid grid-cols-[repeat(auto-fill,minmax(10rem,1fr))] gap-3 [&>div]:w-full'
+        ? 'grid grid-cols-[repeat(auto-fit,minmax(10rem,1fr))] gap-3 [&>div]:w-full'
         : 'flex flex-wrap items-stretch gap-3 [&>div]:min-w-[12rem] [&>div]:flex-1 [&>button]:self-center [&>span]:self-center'}
     >
       <RowTrailingContext.Provider value={null}><Children nodes={value.children} /></RowTrailingContext.Provider>
@@ -423,7 +423,7 @@ function KeyValue({ props }: NodeProps) {
   const value = useBlockProps(blockProps.KeyValue, props);
   if (!value) return null;
   return (
-    <dl className="m-0 grid max-w-lg grid-cols-[fit-content(55%)_minmax(0,1fr)] gap-y-0.5">
+    <dl className="m-0 grid w-full grid-cols-[fit-content(55%)_minmax(0,1fr)] gap-y-0.5">
       {value.items.map((item, index) => (
         <React.Fragment key={index}>
           <dt className="flex min-w-0 items-baseline gap-3 text-muted-foreground">

@@ -55,6 +55,7 @@ import vercel_light_Raw from './vercel-light.json';
 import mono_plus_dark_Raw from './mono-plus-dark.json';
 import mono_plus_light_Raw from './mono-plus-light.json';
 import mono_dark_Raw from './mono-dark.json';
+import terminal_tui_dark_Raw from './terminal-tui-dark.json';
 import mono_light_Raw from './mono-light.json';
 import vitesse_dark_dark_Raw from './vitesse-dark-dark.json';
 import vitesse_light_light_Raw from './vitesse-light-light.json';
@@ -112,6 +113,7 @@ export const presetThemes: Theme[] = [
   vercel_light_Raw,
   mono_plus_dark_Raw,
   mono_plus_light_Raw,
+  terminal_tui_dark_Raw,
   mono_dark_Raw,
   mono_light_Raw,
   vitesse_dark_dark_Raw,

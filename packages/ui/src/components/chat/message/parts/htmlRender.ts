@@ -166,7 +166,7 @@ export function htmlRenderTheme(theme: Theme, metrics: HtmlRenderMetrics): HtmlR
             // Not listed for agents: the page's root font size (see BASE_CSS).
             '--oc-text': `${metrics.text}px`,
             // The app's --radius (0.5625rem), at the app's scale.
-            '--radius': `${metrics.rem * 0.5625}px`,
+            '--radius': theme.metadata.id === 'terminal-tui-dark' ? '0px' : `${metrics.rem * 0.5625}px`,
             '--font-sans': metrics.sans,
             '--font-mono': metrics.mono,
             // Not listed for agents: the fill of a quote mark the chat paints

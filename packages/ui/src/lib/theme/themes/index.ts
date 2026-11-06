@@ -2,11 +2,13 @@ import type { Theme } from '@/types/theme';
 import { presetThemes } from './presets';
 import { withPrColors } from './prColors';
 import { requireTheme } from '../definition';
+import terminalTuiDarkRaw from './terminal-tui-dark.json';
 import flexokiLightRaw from './flexoki-light.json';
 import flexokiDarkRaw from './flexoki-dark.json';
 import openchamberLightRaw from './openchamber-light.json';
 import openchamberDarkRaw from './openchamber-dark.json';
 
+const terminalTuiDarkTheme = withPrColors(requireTheme(terminalTuiDarkRaw));
 const flexokiLightTheme = withPrColors(requireTheme(flexokiLightRaw));
 const flexokiDarkTheme = withPrColors(requireTheme(flexokiDarkRaw));
 const openchamberLightTheme = withPrColors(requireTheme(openchamberLightRaw));
@@ -18,10 +20,11 @@ export const DEFAULT_DARK_THEME_ID = 'openchamber-dark' as const;
 export const themes: Theme[] = [
   openchamberLightTheme,
   openchamberDarkTheme,
+  terminalTuiDarkTheme,
   flexokiLightTheme,
   flexokiDarkTheme,
   ...presetThemes.filter(
-    (theme) => theme.metadata.id !== 'openchamber-light' && theme.metadata.id !== 'openchamber-dark',
+    (theme) => theme.metadata.id !== 'openchamber-light' && theme.metadata.id !== 'openchamber-dark' && theme.metadata.id !== 'terminal-tui-dark',
   ),
 ];
 

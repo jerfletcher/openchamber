@@ -47,7 +47,7 @@ import { getContextObligatoryMessages } from '@/lib/contextObligatoryMessages';
 import { setContextObligatoryMessage } from '@/sync/session-actions';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { useChatColumnActions } from './chatColumnSession';
-import { normalizeToolName } from '@/lib/opencode/tools';
+import { normalizeToolName, isFileChangeTool } from '@/lib/opencode/tools';
 
 const ToolOutputDialog = lazyWithChunkRecovery(() => import('./message/ToolOutputDialog'));
 
@@ -154,6 +154,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     const expandCommandsByDefault = useUIStore((state) => state.expandCommandsByDefault);
     const expandSubagentsByDefault = useUIStore((state) => state.expandSubagentsByDefault);
     const expandSearchesByDefault = useUIStore((state) => state.expandSearchesByDefault);
+    const expandEditsByDefault = useUIStore((state) => state.expandEditsByDefault);
 
     const [copiedCode, setCopiedCode] = React.useState<string | null>(null);
     const [copiedMessage, setCopiedMessage] = React.useState(false);
@@ -210,11 +211,14 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
         if (toolName === 'subagent' || toolName === 'task' || toolName === 'agent') {
             return expandSubagentsByDefault;
         }
+        if (isFileChangeTool(toolName)) {
+            return expandEditsByDefault;
+        }
         if (toolName === 'glob' || toolName === 'grep' || toolName === 'read' || toolName === 'file_search' || toolName === 'search') {
             return expandSearchesByDefault;
         }
         return expandCommandsByDefault;
-    }, [expandSubagentsByDefault, expandSearchesByDefault, expandCommandsByDefault]);
+    }, [expandSubagentsByDefault, expandSearchesByDefault, expandEditsByDefault, expandCommandsByDefault]);
 
     const expandedTools = React.useMemo(() => {
         return {

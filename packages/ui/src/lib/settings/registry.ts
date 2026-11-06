@@ -460,6 +460,10 @@ export const SETTINGS_REGISTRY = {
   streamingAutoFollowEnabled: field({ scope: 'profile', perSurface: true, parse: parseBoolean, ui: uiStore('streamingAutoFollowEnabled', (v) => useUIStore.getState().setStreamingAutoFollowEnabled(v)) }),
   collapsibleThinkingBlocks: field({ scope: 'profile', parse: parseBoolean, ui: uiStore('collapsibleThinkingBlocks', (v) => useUIStore.getState().setCollapsibleThinkingBlocks(v)) }),
   expandReasoningWhileStreaming: field({ scope: 'profile', parse: parseBoolean, ui: uiStore('expandReasoningWhileStreaming', (v) => useUIStore.getState().setExpandReasoningWhileStreaming(v)) }),
+  expandCommandsByDefault: field({ scope: 'profile', parse: parseBoolean, ui: uiStore('expandCommandsByDefault', (v) => useUIStore.getState().setExpandCommandsByDefault(v)) }),
+  expandEditsByDefault: field({ scope: 'profile', parse: parseBoolean, ui: uiStore('expandEditsByDefault', (v) => useUIStore.getState().setExpandEditsByDefault(v)) }),
+  expandSubagentsByDefault: field({ scope: 'profile', parse: parseBoolean, ui: uiStore('expandSubagentsByDefault', (v) => useUIStore.getState().setExpandSubagentsByDefault(v)) }),
+  expandSearchesByDefault: field({ scope: 'profile', parse: parseBoolean, ui: uiStore('expandSearchesByDefault', (v) => useUIStore.getState().setExpandSearchesByDefault(v)) }),
   showTextJustificationActivity: field({ scope: 'profile', parse: parseBoolean }),
   /** Legacy chat mode that `activityRenderMode` absorbs at parse time. */
   chatRenderMode: field({ scope: 'profile', parse: parseOneOf(['sorted', 'live']) }),
@@ -700,6 +704,8 @@ export type DesktopSettings = { -readonly [K in SettingsKey]?: FieldValue<(typeo
  */
 export const LOCAL_DEVICE_KEYS = [
   'theme',
+  'tiledSwarmViewEnabled',
+  'tiledSwarmLayout',
   'isSidebarOpen',
   'sidebarFoldedForExpandedZone',
   'sidebarWidth',

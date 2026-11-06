@@ -1182,3 +1182,198 @@ html[data-glass-redraw-guard] body::before {
     display: none;
   }
 }
+
+/* Terminal (TUI) theme: sharp, monospace, flat */
+:root[data-theme-id="terminal-tui-dark"] {
+  --radius: 0px !important;
+  --radius-sm: 0px !important;
+  --radius-md: 0px !important;
+  --radius-lg: 0px !important;
+  --radius-xl: 0px !important;
+  --font-sans: var(--font-mono) !important;
+  --font-heading: var(--font-mono) !important;
+  --font-family-sans: var(--font-mono) !important;
+  --oc-elevation-button: none !important;
+  --oc-elevation-raised: none !important;
+  --oc-elevation-floating: 0 0 0 1px var(--border) !important;
+  --oc-glass-blur: 0px !important;
+}
+:root[data-theme-id="terminal-tui-dark"] code:not(pre code) {
+  border: 1px solid #26303d;
+  padding: 1px 5px;
+  background: #12171f;
+  color: #96e3a6;
+}
+
+:root[data-theme-id="terminal-tui-dark"] :is(pre, [data-code-block], .cm-editor) {
+  border: 1px solid #262c36;
+  background: #040506;
+}
+
+:root[data-theme-id="terminal-tui-dark"] body,
+:root[data-theme-id="terminal-tui-dark"] button,
+:root[data-theme-id="terminal-tui-dark"] input,
+:root[data-theme-id="terminal-tui-dark"] textarea,
+:root[data-theme-id="terminal-tui-dark"] select {
+  font-family: var(--font-mono) !important;
+}
+:root[data-theme-id="terminal-tui-dark"] :is(.rounded, .rounded-md, .rounded-lg, .rounded-xl, .rounded-2xl, .rounded-3xl, .rounded-sm):not(.rounded-full) {
+  border-radius: 0 !important;
+}
+:root[data-theme-id="terminal-tui-dark"] .chat-message-column,
+:root[data-theme-id="terminal-tui-dark"] .chat-input-column,
+:root[data-theme-id="terminal-tui-dark"] .chat-column {
+  width: 100% !important;
+  max-width: 100% !important;
+  padding-inline: 0.75rem !important;
+}
+:root[data-theme-id="terminal-tui-dark"] .chat-message-column .max-w-\[85\%\] {
+  max-width: 100% !important;
+  width: 100%;
+}
+:root[data-theme-id="terminal-tui-dark"] [data-user-message-bubble] {
+  border: 1px solid var(--interactive-border) !important;
+  border-left: 2px solid var(--primary) !important;
+  border-radius: 0 !important;
+}
+:root[data-theme-id="terminal-tui-dark"] [data-user-message-bubble]::before {
+  content: "> ";
+  color: var(--primary);
+  font-family: var(--font-mono);
+  font-weight: 600;
+  display: block;
+  float: left;
+  margin-right: 0.5ch;
+}
+:root[data-theme-id="terminal-tui-dark"] [data-user-message-bubble] > * {
+  overflow: hidden;
+}
+:root[data-theme-id="terminal-tui-dark"] .typography-meta.font-medium.tracking-normal::before,
+:root[data-theme-id="terminal-tui-dark"] .typography-meta.font-medium.tracking-normal::before {
+  content: "[";
+  color: var(--muted-foreground);
+  margin-right: 1px;
+}
+:root[data-theme-id="terminal-tui-dark"] .typography-meta.font-medium.tracking-normal::after,
+:root[data-theme-id="terminal-tui-dark"] .typography-meta.font-medium.tracking-normal::after {
+  content: "]";
+  color: var(--muted-foreground);
+  margin-left: 1px;
+}
+
+/* Agent status / verdict hand-off banner */
+p[data-streamdown="paragraph"][data-oc-status-banner="true"] {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  margin-block: 0.75rem;
+  padding: 0.35rem 0.75rem;
+  background: color-mix(in srgb, #e08a3c 14%, transparent);
+  border-block: 1px solid color-mix(in srgb, #e08a3c 45%, transparent);
+  border-left: 3px solid #e08a3c;
+  font-family: var(--font-mono);
+  font-size: var(--text-meta);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: #f0a458;
+}
+p[data-streamdown="paragraph"][data-oc-status-banner="true"] strong { color: inherit; font-weight: inherit; }
+p[data-streamdown="paragraph"][data-oc-status-banner="true"]::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: linear-gradient(90deg, color-mix(in srgb, #e08a3c 55%, transparent), transparent);
+}
+.terminal-tui-dark p[data-streamdown="paragraph"][data-oc-status-banner="true"],
+[data-theme="terminal-tui-dark"] p[data-streamdown="paragraph"][data-oc-status-banner="true"] {
+  border-radius: 0;
+}
+.terminal-tui-dark p[data-streamdown="paragraph"][data-oc-status-banner="true"]::after,
+[data-theme="terminal-tui-dark"] p[data-streamdown="paragraph"][data-oc-status-banner="true"]::after {
+  background: color-mix(in srgb, #e08a3c 55%, transparent);
+}
+
+/* Dark-friendly rendered boxes */
+.dark .oc-box {
+  border: 1px solid color-mix(in srgb, var(--border) 75%, transparent);
+  background-color: color-mix(in srgb, var(--surface-elevated) 75%, var(--surface-background)) !important;
+}
+
+/* Terminal (TUI): crisp tables, boxes, badges */
+:root[data-theme-id="terminal-tui-dark"] :is(.markdown-content [data-streamdown="table-wrapper"] > div:has(> table), .markdown-content [data-streamdown="table-wrapper"] > .overlay-scrollbar-wrapper, .oc-table) {
+  border-radius: 0 !important;
+  border: 1px solid #2a303b !important;
+  background: #060709 !important;
+}
+:root[data-theme-id="terminal-tui-dark"] :is(.markdown-content [data-streamdown="table-header"], .oc-table thead) {
+  background: #10141b !important;
+  border-bottom: 1px solid #363e4d !important;
+}
+:root[data-theme-id="terminal-tui-dark"] :is(.markdown-content [data-streamdown="table-header-cell"], .oc-table th) {
+  color: #7dcfff !important;
+  font-family: var(--font-mono) !important;
+  font-size: var(--text-meta) !important;
+  font-weight: 600 !important;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.4rem 0.75rem !important;
+  border-inline-end: 1px solid #222730 !important;
+}
+:root[data-theme-id="terminal-tui-dark"] :is(.markdown-content [data-streamdown="table-cell"], .oc-table td) {
+  font-family: var(--font-mono) !important;
+  padding: 0.4rem 0.75rem !important;
+  border-inline-end: 1px solid #1b2028 !important;
+  color: #d4d7dc !important;
+}
+:root[data-theme-id="terminal-tui-dark"] :is(.markdown-content [data-streamdown="table-row"], .oc-table tbody tr) {
+  border-bottom: 1px solid #181c23 !important;
+}
+:root[data-theme-id="terminal-tui-dark"] :is(.markdown-content [data-streamdown="table-body"], .oc-table tbody) > tr:nth-child(even) {
+  background: #0a0c10;
+}
+:root[data-theme-id="terminal-tui-dark"] :is(.markdown-content [data-streamdown="table-body"], .oc-table tbody) > tr:hover {
+  background: #131820;
+}
+:root[data-theme-id="terminal-tui-dark"] .oc-box {
+  border-radius: 0 !important;
+  background-color: #06080b !important;
+  border: 1px solid #262c36 !important;
+  border-top: 2px solid #364152 !important;
+  padding: 0.625rem 0.75rem !important;
+}
+:root[data-theme-id="terminal-tui-dark"] .oc-box .oc-box {
+  background-color: #0b0e13 !important;
+  border: 1px solid #1f252e !important;
+}
+:root[data-theme-id="terminal-tui-dark"] .oc-badge {
+  border-radius: 0 !important;
+  font-family: var(--font-mono) !important;
+  font-size: 0.75rem !important;
+  padding: 0.1rem 0.45rem !important;
+  background-color: #0d1117 !important;
+  border: 1px solid #2a303b !important;
+}
+:root[data-theme-id="terminal-tui-dark"] .oc-badge[data-tone] {
+  background-color: color-mix(in srgb, var(--oc-tone) 12%, #06080b) !important;
+  border: 1px solid color-mix(in srgb, var(--oc-tone) 45%, transparent) !important;
+  color: var(--oc-tone-text) !important;
+}
+:root[data-theme-id="terminal-tui-dark"] :is(.oc-track, .oc-bar) {
+  border-radius: 0 !important;
+}
+
+:root[data-theme-id="terminal-tui-dark"] .oc-ui-block,
+:root[data-theme-id="terminal-tui-dark"] .oc-ui-block dl,
+:root[data-theme-id="terminal-tui-dark"] .oc-ui-block .oc-box,
+:root[data-theme-id="terminal-tui-dark"] .oc-ui-block .oc-table,
+:root[data-theme-id="terminal-tui-dark"] .markdown-content [data-streamdown="table-wrapper"],
+:root[data-theme-id="terminal-tui-dark"] .markdown-content [data-streamdown="table-wrapper"] > div:has(> table),
+:root[data-theme-id="terminal-tui-dark"] .markdown-content [data-streamdown="table-wrapper"] > .overlay-scrollbar-wrapper,
+:root[data-theme-id="terminal-tui-dark"] .markdown-content [data-streamdown="table"] {
+  width: 100% !important;
+}
+
+.grid-cols-\[repeat\(auto-fill\,minmax\(10rem\,1fr\)\)\] {
+  grid-template-columns: repeat(auto-fit, minmax(10rem, 1fr)) !important;
+}

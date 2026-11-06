@@ -6,6 +6,7 @@ import { useSessionUIStore } from '@/sync/session-ui-store';
 type ChatViewProps = {
     active?: boolean;
     readOnly?: boolean;
+    hideReadOnlyBanner?: boolean;
     /** Shows this session instead of the app's selection (see ChatContainer). */
     pinnedSession?: { sessionId: string; directory: string | null };
 };
@@ -13,6 +14,7 @@ type ChatViewProps = {
 export const ChatView: React.FC<ChatViewProps> = ({
     active = true,
     readOnly = false,
+    hideReadOnlyBanner = false,
     pinnedSession,
 }) => {
     const currentSessionId = useSessionUIStore((state) => (pinnedSession ? null : state.currentSessionId));
@@ -22,6 +24,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
             <ChatContainer
                 active={active}
                 readOnly={readOnly}
+                hideReadOnlyBanner={hideReadOnlyBanner}
                 pinnedSession={pinnedSession}
             />
         </ChatErrorBoundary>

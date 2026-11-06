@@ -127,6 +127,8 @@ const MessagesTab: React.FC = () => {
   const setShowTurnChangedFiles = useUIStore((state) => state.setShowTurnChangedFiles);
   const expandCommandsByDefault = useUIStore((state) => state.expandCommandsByDefault);
   const setExpandCommandsByDefault = useUIStore((state) => state.setExpandCommandsByDefault);
+  const expandEditsByDefault = useUIStore((state) => state.expandEditsByDefault);
+  const setExpandEditsByDefault = useUIStore((state) => state.setExpandEditsByDefault);
   const expandSubagentsByDefault = useUIStore((state) => state.expandSubagentsByDefault);
   const setExpandSubagentsByDefault = useUIStore((state) => state.setExpandSubagentsByDefault);
   const expandSearchesByDefault = useUIStore((state) => state.expandSearchesByDefault);
@@ -229,9 +231,16 @@ const MessagesTab: React.FC = () => {
           <SettingsCheckboxRow
             checked={expandCommandsByDefault}
             onChange={(enabled) => setExpandCommandsByDefault(enabled)}
-            label="Expand shell commands & edits by default"
-            ariaLabel="Expand shell commands and file edits by default"
-            info="Keep bash commands, tool executions, and file edits open in the activity stream."
+            label="Expand shell commands & tool use by default"
+            ariaLabel="Expand shell commands and tool use by default"
+            info="Keep bash commands, MCP and web tool executions open in the activity stream."
+          />
+          <SettingsCheckboxRow
+            checked={expandEditsByDefault}
+            onChange={(enabled) => setExpandEditsByDefault(enabled)}
+            label="Expand file changes by default"
+            ariaLabel="Expand file changes by default"
+            info="Off: edit, write, and patch rows stay folded to their file headers."
           />
           <SettingsCheckboxRow
             checked={expandSubagentsByDefault}
@@ -243,9 +252,9 @@ const MessagesTab: React.FC = () => {
           <SettingsCheckboxRow
             checked={expandSearchesByDefault}
             onChange={(enabled) => setExpandSearchesByDefault(enabled)}
-            label="Expand file searches by default"
-            ariaLabel="Expand file searches by default"
-            info="Off: glob and grep file exploration rows stay folded to their pattern headers."
+            label="Expand file reads & searches by default"
+            ariaLabel="Expand file reads and searches by default"
+            info="Off: read, glob, and grep rows stay folded to their headers."
           />
         </div>
       </SettingsSection>

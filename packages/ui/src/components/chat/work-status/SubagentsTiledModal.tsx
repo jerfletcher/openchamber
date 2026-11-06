@@ -3,21 +3,22 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/u
 import { Icon } from '@/components/icon/Icon';
 import { Button } from '@/components/ui/button';
 import { useI18n } from '@/lib/i18n';
-import { useSessionMessages } from '@/sync/sync-context';
+import { useSessionMessages, useSessionPartsForMessages } from '@/sync/sync-context';
 import { getProviderModelDisplayName } from '@/lib/modelDisplay';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { SessionActivityDuration } from '@/components/session/SessionActivityDuration';
-import type { SessionInfo } from '@/sync/types';
-import type { MessagePart, ToolPart } from '@/lib/opencode/model';
+import { useUIStore } from '@/stores/useUIStore';
+import type { Session as SessionInfo, ToolPart, Part as MessagePart } from '@/lib/opencode/model';
 
 interface SubagentTileProps {
   child: SessionInfo;
   status: 'busy' | 'blocked' | 'done' | 'failed' | 'idle';
   directory: string | null;
   onOpen: () => void;
+  onOpenSplit?: () => void;
 }
 
-const SubagentTile: React.FC<SubagentTileProps> = ({ child, status, directory, onOpen }) => {
+const SubagentTile: React.FC<SubagentTileProps> = ({ child, status, directory, onOpen, onOpenSplit }) => {
   const { t } = useI18n();
   const providers = useConfigStore((state) => state.providers);
   const messages = useSessionMessages(child.id, child.directory ?? directory ?? undefined);
@@ -28,12 +29,20 @@ const SubagentTile: React.FC<SubagentTileProps> = ({ child, status, directory, o
   );
 
   // Extract latest active tools, thoughts, or responses from the child session
-  const latestInfo = React.useMemo(() => {
-    if (!messages || messages.length === 0) return null;
+  const lastAssistantId = React.useMemo(() => {
     for (let i = messages.length - 1; i >= 0; i--) {
-      const msg = messages[i];
-      if (msg.info.role === 'assistant') {
-        const parts = msg.parts || [];
+      if (messages[i].role === 'assistant') return messages[i].id;
+    }
+    return null;
+  }, [messages]);
+  const partsByMessage = useSessionPartsForMessages(
+    React.useMemo(() => (lastAssistantId ? [lastAssistantId] : []), [lastAssistantId]),
+    child.directory ?? directory ?? undefined,
+  );
+  const latestInfo = React.useMemo(() => {
+    if (lastAssistantId) {
+      {
+        const parts = partsByMessage[lastAssistantId] || [];
         // Look for running or latest tool
         for (let j = parts.length - 1; j >= 0; j--) {
           const part = parts[j] as MessagePart;
@@ -65,7 +74,7 @@ const SubagentTile: React.FC<SubagentTileProps> = ({ child, status, directory, o
       }
     }
     return null;
-  }, [messages]);
+  }, [lastAssistantId, partsByMessage]);
 
   const isWorking = status === 'busy';
 
@@ -144,6 +153,13 @@ const SubagentTile: React.FC<SubagentTileProps> = ({ child, status, directory, o
         <span className="text-[11px] capitalize text-muted-foreground">
           {status}
         </span>
+        <div className="flex items-center gap-1">
+        {onOpenSplit ? (
+          <Button type="button" size="xs" variant="outline" className="h-6 gap-1 px-2 text-xs" onClick={onOpenSplit}>
+            <Icon name="layout" className="size-3" />
+            <span>Split View</span>
+          </Button>
+        ) : null}
         <Button
           type="button"
           size="xs"
@@ -154,6 +170,7 @@ const SubagentTile: React.FC<SubagentTileProps> = ({ child, status, directory, o
           <Icon name="layout-right" className="size-3" />
           <span>Open Tab</span>
         </Button>
+        </div>
       </div>
     </div>
   );
@@ -185,7 +202,7 @@ export const SubagentsTiledModal: React.FC<SubagentsTiledModalProps> = ({
   const activeCount = childrenSessions.filter((c) => {
     const status = statuses[c.id]?.type;
     const observed = observedById.get(c.id);
-    return status === 'busy' || (!status && observed === 'busy');
+    return status === 'busy' || status === 'retry' || (!status && observed === 'busy');
   }).length;
 
   return (
@@ -208,7 +225,7 @@ export const SubagentsTiledModal: React.FC<SubagentsTiledModalProps> = ({
             const asked = (forms[child.id]?.length ?? 0) > 0;
             const statusType = statuses[child.id]?.type;
             const observed = observedById.get(child.id);
-            const busy = statusType === 'busy' || (!statusType && observed === 'busy');
+            const busy = statusType === 'busy' || statusType === 'retry' || (!statusType && observed === 'busy');
             const failed = !busy && observed === 'failed';
             const done = !failed && !busy && (statusType === 'idle' || observed === 'settled');
 
@@ -221,6 +238,10 @@ export const SubagentsTiledModal: React.FC<SubagentsTiledModalProps> = ({
                 child={child}
                 status={status}
                 directory={directory}
+                onOpenSplit={() => {
+                  useUIStore.getState().openTiledSwarmWithPin(child.id);
+                  onOpenChange(false);
+                }}
                 onOpen={() => {
                   onOpenChild(child.id, child.title || 'Subagent');
                   onOpenChange(false);

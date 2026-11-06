@@ -401,6 +401,18 @@
     "expandReasoningWhileStreaming": {
       "scope": "profile"
     },
+    "expandCommandsByDefault": {
+      "scope": "profile"
+    },
+    "expandEditsByDefault": {
+      "scope": "profile"
+    },
+    "expandSubagentsByDefault": {
+      "scope": "profile"
+    },
+    "expandSearchesByDefault": {
+      "scope": "profile"
+    },
     "showTextJustificationActivity": {
       "scope": "profile"
     },
@@ -870,6 +882,14 @@
       ]
     },
     "theme": {
+      "scope": "device",
+      "local": true
+    },
+    "tiledSwarmViewEnabled": {
+      "scope": "device",
+      "local": true
+    },
+    "tiledSwarmLayout": {
       "scope": "device",
       "local": true
     },

@@ -173,6 +173,7 @@ const sidebarBaseRgb = hexToRgb(theme.colors.surface.muted);
     document.head.appendChild(style);
 
     document.documentElement.setAttribute('data-theme', theme.metadata.variant);
+    document.documentElement.setAttribute('data-theme-id', theme.metadata.id);
 
   }
 

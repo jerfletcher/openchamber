@@ -1,0 +1,142 @@
+{
+  "metadata": {
+    "id": "terminal-tui-dark",
+    "name": "Terminal (TUI)",
+    "variant": "dark",
+    "description": "Monotone ANSI terminal aesthetic — sharp 0px corners, monospace typography, TUI prompts, and muted semantic colors while keeping full web rendering.",
+    "version": "1.0.0",
+    "tags": [
+      "dark",
+      "terminal",
+      "tui",
+      "monochrome",
+      "monospace"
+    ]
+  },
+  "colors": {
+    "primary": {
+      "base": "#7dcfff",
+      "hover": "#99dbff",
+      "active": "#5cbef8",
+      "foreground": "#050608",
+      "muted": "#7dcfff66"
+    },
+    "surface": {
+      "background": "#0a0b0d",
+      "foreground": "#d4d7dc",
+      "muted": "#0d0f12",
+      "mutedForeground": "#7c828d",
+      "elevated": "#13161b",
+      "elevatedForeground": "#e2e5ea",
+      "overlay": "#050608cc",
+      "subtle": "#161a20"
+    },
+    "interactive": {
+      "border": "#2a303b",
+      "borderHover": "#434c5e",
+      "borderFocus": "#7dcfff",
+      "selection": "#7dcfff26",
+      "selectionForeground": "#e2e5ea",
+      "focus": "#7dcfff",
+      "focusRing": "#7dcfff66",
+      "cursor": "#d4d7dc",
+      "hover": "#ffffff0a",
+      "active": "#ffffff12"
+    },
+    "status": {
+      "success": "#6bd586",
+      "successForeground": "#050608",
+      "successBackground": "#6bd58624",
+      "successBorder": "#6bd58666",
+      "warning": "#f2cf76",
+      "warningForeground": "#050608",
+      "warningBackground": "#f2cf7624",
+      "warningBorder": "#f2cf7666",
+      "error": "#f17471",
+      "errorForeground": "#050608",
+      "errorBackground": "#f1747124",
+      "errorBorder": "#f1747166",
+      "info": "#7dcfff",
+      "infoForeground": "#050608",
+      "infoBackground": "#7dcfff24",
+      "infoBorder": "#7dcfff66"
+    },
+    "syntax": {
+      "base": {
+        "background": "#040506",
+        "foreground": "#e6edf3",
+        "comment": "#6e7681",
+        "keyword": "#f799c6",
+        "string": "#96e3a6",
+        "number": "#ffc799",
+        "function": "#7dcfff",
+        "variable": "#f0f4f8",
+        "type": "#b4befe",
+        "operator": "#94a3b8"
+      },
+      "tokens": {
+        "variableProperty": "#ffc799",
+        "parameter": "#e6edf3",
+        "boolean": "#ffc799",
+        "punctuation": "#8b949e",
+        "stringEscape": "#7dcfff",
+        "keywordImport": "#f799c6",
+        "tag": "#96e3a6",
+        "jsxTag": "#7dcfff",
+        "className": "#b4befe",
+        "regex": "#96e3a6"
+      },
+      "highlights": {
+        "diffAdded": "#6bd586",
+        "diffAddedBackground": "#072110",
+        "diffRemoved": "#f17471",
+        "diffRemovedBackground": "#280808",
+        "diffModified": "#f2cf76",
+        "diffModifiedBackground": "#f2cf7624",
+        "lineNumber": "#586069",
+        "lineNumberActive": "#f0f4f8"
+      }
+    },
+    "chat": {
+      "background": "#0a0b0d",
+      "userMessageBackground": "#101419",
+      "divider": "#2a303b"
+    },
+    "markdown": {
+      "link": "#7dcfff",
+      "linkHover": "#a3dfff",
+      "inlineCode": "#96e3a6",
+      "inlineCodeBackground": "#141920",
+      "blockquote": "#94a3b8",
+      "blockquoteBorder": "#7dcfff66",
+      "listMarker": "#7dcfff",
+      "bold": "#ffffff",
+      "italic": "#cbd5e1",
+      "hr": "#2a303b"
+    },
+    "tools": {
+      "border": "#2a303b",
+      "icon": "#7dcfff",
+      "title": "#e6edf3",
+      "description": "#94a3b8",
+      "edit": {
+        "addedBackground": "#072110",
+        "removedBackground": "#280808",
+        "modifiedBackground": "#f2cf7624",
+        "lineNumber": "#6e7681"
+      }
+    }
+  },
+  "config": {
+    "fonts": {
+      "sans": "ui-monospace, \"SFMono-Regular\", \"Menlo\", \"Cascadia Mono\", \"Segoe UI Mono\", monospace",
+      "mono": "ui-monospace, \"SFMono-Regular\", \"Menlo\", \"Cascadia Mono\", \"Segoe UI Mono\", monospace",
+      "heading": "ui-monospace, \"SFMono-Regular\", \"Menlo\", \"Cascadia Mono\", \"Segoe UI Mono\", monospace"
+    },
+    "transitions": {
+      "fast": "0ms",
+      "normal": "0ms",
+      "slow": "0ms"
+    }
+  }
+}

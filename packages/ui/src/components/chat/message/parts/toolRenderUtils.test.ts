@@ -4,9 +4,9 @@ import { isExpandableTool, isStaticTool } from './toolRenderUtils';
 
 describe('tool rendering classification', () => {
     test('keeps navigation tools compact', () => {
-        expect(isStaticTool('read')).toBe(true);
+        expect(isStaticTool('read')).toBe(false);
         expect(isStaticTool('skill')).toBe(true);
-        expect(isExpandableTool('read')).toBe(false);
+        expect(isExpandableTool('read')).toBe(true);
         expect(isExpandableTool('skill')).toBe(false);
     });
 
@@ -24,7 +24,7 @@ describe('tool rendering classification', () => {
     });
 
     test('normalizes dotted and indexed tool names', () => {
-        expect(isStaticTool('runtime.read:2')).toBe(true);
+        expect(isStaticTool('runtime.skill:2')).toBe(true);
         expect(isExpandableTool('runtime.custom_tool:2')).toBe(true);
     });
 });

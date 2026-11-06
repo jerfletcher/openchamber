@@ -433,9 +433,15 @@ export function MarkdownParagraph({ node, children, ...props }: React.ComponentP
     paragraphStyle.gap = '0.5rem';
     paragraphStyle.maxWidth = `calc(min(30rem, ${Math.min(...known.map((size) => size.height))}px) * ${ratioSum} + ${(count - 1) * 0.5}rem)`;
   }
+  const plainText = (n: unknown): string => {
+    const x = n as { type?: string; value?: string; children?: unknown[] };
+    if (typeof x?.value === 'string') return x.value;
+    return Array.isArray(x?.children) ? x.children.map(plainText).join('') : '';
+  };
+  const isStatus = /^(?:status|verdict)\s*:/i.test((node?.children ?? []).map(plainText).join('').trim());
   return (
     <ImageRowContext.Provider value={value}>
-      <p {...props} data-streamdown="paragraph" data-oc-media-row={ready ? 'true' : undefined} style={paragraphStyle}>
+      <p {...props} data-streamdown="paragraph" data-oc-media-row={ready ? 'true' : undefined} data-oc-status-banner={isStatus ? 'true' : undefined} style={paragraphStyle}>
         {children}
       </p>
     </ImageRowContext.Provider>

@@ -231,6 +231,7 @@ type ChatViewportProps = {
     /** Height the floating status row takes above the composer while the
         session works, px; 0 when there is no row. */
     statusRowClearance: number;
+    compactTail?: boolean;
     directory?: string;
     scrollRef: React.RefObject<HTMLDivElement | null>;
     messageListRef: React.RefObject<MessageListHandle | null>;
@@ -283,6 +284,7 @@ const ChatViewport = React.memo(({
     isMobile,
     floatingComposer,
     statusRowClearance,
+    compactTail = false,
     directory,
     scrollRef,
     messageListRef,
@@ -400,6 +402,8 @@ const ChatViewport = React.memo(({
         </div>
     ), [isLoadingOlder, onLoadOlder, showLoadOlderButton, t]);
 
+    const tailDefaultPx = compactTail ? 8 : FLOATING_COMPOSER_DEFAULT_TAIL_INSET_PX;
+    const tailGapPx = compactTail ? 12 : FLOATING_COMPOSER_GAP_PX;
     const listFooter = React.useMemo(() => (
         <>
             {/* Permissions and forms dock above the composer (`PermissionDock`, `FormDock`). */}
@@ -424,8 +428,8 @@ const ChatViewport = React.memo(({
                 style={{
                     height: floatingComposer
                         ? `calc(${sessionIsWorking
-                            ? `max(var(--chat-composer-tail-inset, ${FLOATING_COMPOSER_DEFAULT_TAIL_INSET_PX}px), var(--chat-composer-inset, 0px) + ${FLOATING_COMPOSER_GAP_PX}px)`
-                            : `var(--chat-composer-tail-inset, ${FLOATING_COMPOSER_DEFAULT_TAIL_INSET_PX}px)`} + var(--chat-floating-panel-clearance, 0px))`
+                            ? `max(var(--chat-composer-tail-inset, ${tailDefaultPx}px), var(--chat-composer-inset, 0px) + ${tailGapPx}px)`
+                            : `var(--chat-composer-tail-inset, ${tailDefaultPx}px)`} + var(--chat-floating-panel-clearance, 0px))`
                         : (isMobile ? '40px' : '10vh'),
                 }}
             >
@@ -436,7 +440,7 @@ const ChatViewport = React.memo(({
                     here rather than in the answer's row. It goes once a new
                     prompt makes the session busy, and while the composer grows
                     into the band or a panel docks over it (design-system.css). */}
-                {floatingComposer && currentSessionId ? (
+                {floatingComposer && currentSessionId && !compactTail ? (
                     <div className="oc-recap-hint pointer-events-none absolute inset-x-0 top-0 transition-opacity duration-300 ease-out">
                         <div className="chat-message-column">
                             <SessionRecapNote sessionId={currentSessionId} directory={directory} isMobile={isMobile} />
@@ -445,7 +449,7 @@ const ChatViewport = React.memo(({
                 ) : null}
             </div>
         </>
-    ), [currentSessionId, directory, floatingComposer, isMobile, sessionIsWorking]);
+    ), [compactTail, currentSessionId, directory, floatingComposer, isMobile, sessionIsWorking, tailDefaultPx, tailGapPx]);
 
     const endFadeStyle: React.CSSProperties & Record<'--chat-status-row-clearance', string> = {
         '--chat-status-row-clearance': `${statusRowClearance}px`,
@@ -654,6 +658,7 @@ const ChatViewport = React.memo(({
         && prev.isMobile === next.isMobile
         && prev.floatingComposer === next.floatingComposer
         && prev.statusRowClearance === next.statusRowClearance
+        && prev.compactTail === next.compactTail
         && prev.directory === next.directory
         && prev.scrollRef === next.scrollRef
         && prev.messageListRef === next.messageListRef
@@ -828,6 +833,7 @@ type ChatContainerProps = {
     active?: boolean;
     autoOpenDraft?: boolean;
     readOnly?: boolean;
+    hideReadOnlyBanner?: boolean;
     /**
      * Shows this session instead of the app's selection: a chat opened in the
      * side panel. The column navigates inside itself (open a subtask, return
@@ -843,6 +849,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
     active = true,
     autoOpenDraft: autoOpenDraftProp = true,
     readOnly = false,
+    hideReadOnlyBanner = false,
     pinnedSession,
 }) => {
     const pinned = pinnedSession !== undefined;
@@ -1317,7 +1324,8 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
     // appears a commit after the session opened: a viewport pinned to the end
     // would otherwise be left sitting the row's height above it. Measurement
     // only extends the reserve for a taller row.
-    const composerOverlayHeight = Math.max(STATUS_OVERLAY_RESERVED_HEIGHT, statusOverlayHeight);
+    const compactTail = promptReadOnly && hideReadOnlyBanner;
+    const composerOverlayHeight = compactTail ? statusOverlayHeight : Math.max(STATUS_OVERLAY_RESERVED_HEIGHT, statusOverlayHeight);
     const statusOverlayObserverRef = React.useRef<ResizeObserver | null>(null);
     const onStatusOverlayNode = React.useCallback((node: HTMLDivElement | null) => {
         statusOverlayObserverRef.current?.disconnect();
@@ -1742,6 +1750,13 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
             // the floor they left the composer "grown" (recap hidden) until a
             // reload.
             const transient = slot.style.height !== '' || slot.querySelector('[data-composer-transient]') !== null;
+            if (compactTail) {
+                publishComposerInsets(column, height > 0
+                    ? { inset: height, tailInset: height + 12 }
+                    : { inset: 0, tailInset: 8 });
+                column.removeAttribute('data-composer-grown');
+                return;
+            }
             const { tailInset, grown } = recordComposerSlotHeight(column, height, !transient);
             publishComposerInsets(column, { inset: height, tailInset });
             column.toggleAttribute('data-composer-grown', grown);
@@ -1755,7 +1770,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
             withdrawComposerInsets(column);
             column.removeAttribute('data-composer-grown');
         };
-    }, [composerSlotNode, floatingComposer]);
+    }, [composerSlotNode, floatingComposer, compactTail]);
     // The list owns the scroll element, so the shadows and the load-older
     // trigger bind to its node rather than to a wrapper we render.
     const scrollNodeRef = React.useMemo(() => ({ current: scrollNode }), [scrollNode]);
@@ -1913,6 +1928,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
             isMobile={isMobile}
             floatingComposer={floatingComposer}
             statusRowClearance={sessionIsWorking ? composerOverlayHeight : 0}
+            compactTail={compactTail}
             directory={effectiveSessionDirectory}
             scrollRef={scrollRef}
             registerList={registerList}
@@ -2063,7 +2079,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                             directory={effectiveSessionDirectory}
                             hidden={sessionPermissions.length > 0}
                         />
-                        <ReadOnlyPromptBanner
+                        {hideReadOnlyBanner ? null : <ReadOnlyPromptBanner
                             text={spaceArchive
                                 ? t('spaces.archive.readOnlyBanner', { name: spaceArchive.name })
                                 : t('chat.container.readOnlySubagentPromptBanner')}
@@ -2071,7 +2087,7 @@ export const ChatContainer: React.FC<ChatContainerProps> = ({
                                 ? () => void abortCurrentOperation(currentSessionId)
                                 : undefined}
                             stopLabel={t('chat.chatInput.actions.stopGeneratingAria')}
-                        />
+                        />}
                     </>
                 ) : (
                     <ChatInput

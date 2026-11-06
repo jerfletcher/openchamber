@@ -106,6 +106,7 @@ export const WorkStatusSubagentsSection: React.FC<Props> = ({ sessionId, directo
     hadChildren.current = present;
   }, [children.length, setSectionExpanded]);
 
+  const [deckOpen, setDeckOpen] = React.useState(false);
   const openChildSession = useOpenChildSession(directory);
 
   useReportWorkStatusPresence('subagents', children.length > 0);
@@ -145,7 +146,7 @@ export const WorkStatusSubagentsSection: React.FC<Props> = ({ sessionId, directo
     || ((right.child.time?.created ?? 0) - (left.child.time?.created ?? 0)));
 
   const busyChildren = rows.filter((row) => row.busy).length;
-  const [deckOpen, setDeckOpen] = React.useState(false);
+  const openSplit = (id: string) => useUIStore.getState().openTiledSwarmWithPin(id);
 
   return (
     <>
@@ -156,6 +157,7 @@ export const WorkStatusSubagentsSection: React.FC<Props> = ({ sessionId, directo
         defaultExpanded
         summary={busyChildren > 0 ? `${busyChildren}/${children.length}` : children.length}
         action={
+          <>
           <Button
             type="button"
             size="xs"
@@ -170,6 +172,21 @@ export const WorkStatusSubagentsSection: React.FC<Props> = ({ sessionId, directo
             <Icon name="layout" className="size-3 text-primary" />
             <span>Tile View</span>
           </Button>
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            className="h-5 gap-1 px-1.5 text-[11px] text-muted-foreground hover:text-foreground"
+            onClick={(e) => {
+              e.stopPropagation();
+              openSplit(rows[0]?.child.id ?? '');
+            }}
+            title="Open the full-screen Swarm Split View"
+          >
+            <Icon name="fullscreen" className="size-3 text-primary" />
+            <span>Split</span>
+          </Button>
+          </>
         }
       >
       <ScrollableOverlay outerClassName="max-h-56" disableHorizontal>

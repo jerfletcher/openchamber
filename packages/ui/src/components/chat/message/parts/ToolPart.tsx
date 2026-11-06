@@ -940,22 +940,47 @@ const OpenSubtaskButton: React.FC<{
         });
     };
 
+    const swarmLabel = 'Open in Swarm Split View';
+    const showSwarm = !isMobile && !runtime?.runtime.isVSCode;
+
     return (
-        <HoverTooltip label={label}>
-            <button
-                type="button"
-                onPointerDown={(event) => event.stopPropagation()}
-                onClick={handleOpen}
-                className={cn(
-                    'flex-shrink-0 inline-flex h-4 w-4 items-center justify-center rounded transition-opacity hover:bg-interactive-hover',
-                    'opacity-60 hover:opacity-100 focus-visible:opacity-100',
-                )}
-                style={{ color: 'var(--tools-icon)' }}
-                aria-label={label}
-            >
-                <Icon name="external-link" className="h-3 w-3" />
-            </button>
-        </HoverTooltip>
+        <>
+            {showSwarm && (
+                <HoverTooltip label={swarmLabel}>
+                    <button
+                        type="button"
+                        onPointerDown={(event) => event.stopPropagation()}
+                        onClick={(event) => {
+                            event.stopPropagation();
+                            useUIStore.getState().openTiledSwarmWithPin(sessionId);
+                        }}
+                        className={cn(
+                            'flex-shrink-0 inline-flex h-4 w-4 items-center justify-center rounded transition-opacity hover:bg-interactive-hover',
+                            'opacity-60 hover:opacity-100 focus-visible:opacity-100',
+                        )}
+                        style={{ color: 'var(--tools-icon)' }}
+                        aria-label={swarmLabel}
+                    >
+                        <Icon name="layout" className="h-3 w-3" />
+                    </button>
+                </HoverTooltip>
+            )}
+            <HoverTooltip label={label}>
+                <button
+                    type="button"
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={handleOpen}
+                    className={cn(
+                        'flex-shrink-0 inline-flex h-4 w-4 items-center justify-center rounded transition-opacity hover:bg-interactive-hover',
+                        'opacity-60 hover:opacity-100 focus-visible:opacity-100',
+                    )}
+                    style={{ color: 'var(--tools-icon)' }}
+                    aria-label={label}
+                >
+                    <Icon name="external-link" className="h-3 w-3" />
+                </button>
+            </HoverTooltip>
+        </>
     );
 };
 
