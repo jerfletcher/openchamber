@@ -19,7 +19,7 @@ import { useConfigStore } from '@/stores/useConfigStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { SessionFolderItem } from '../../SessionFolderItem';
 import { DroppableFolderWrapper, SessionFolderDndScope } from '../folders/sessionFolderDnd';
-import { isAntigravitySession, type GroupSearchData, type SessionGroup, type SessionNode } from '../types';
+import { getAcpSessionFolderMeta, getAutoAgentFolderAgentId, type AcpAgentFolderMeta, type GroupSearchData, type SessionGroup, type SessionNode } from '../types';
 import { isBranchDifferentFromLabel, normalizePath, renderHighlightedText } from '../utils';
 import { compareSessionsByLifecycleOrder, EMPTY_SESSION_ORDER_RANKS } from '@/sync/session-ordering';
 import {
@@ -421,38 +421,45 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
       const nodes = selectFolderRootNodes(folder.sessionIds, nodeBySessionId).sort(compareSessionNodes);
       return { folder, scopeKey, scopeDirectory, nodes };
     });
-    const agyNodes = sourceGroupNodes.filter((node) => isAntigravitySession(node.session));
-    if (agyNodes.length > 0) {
-      const existingAgyEntry = folders.find((entry) => entry.folder.name.toLowerCase() === 'antigravity');
-      const agySessionIdSet = new Set(agyNodes.map((n) => n.session.id));
+    const acpBuckets = new Map<string, { meta: AcpAgentFolderMeta; nodes: SessionNode[] }>();
+    for (const node of sourceGroupNodes) {
+      const meta = getAcpSessionFolderMeta(node.session);
+      if (!meta) continue;
+      const bucket = acpBuckets.get(meta.agentId);
+      if (bucket) bucket.nodes.push(node);
+      else acpBuckets.set(meta.agentId, { meta, nodes: [node] });
+    }
+    for (const { meta, nodes: acpNodes } of acpBuckets.values()) {
+      const existingEntry = folders.find((entry) => entry.folder.name.toLowerCase() === meta.folderName.toLowerCase());
+      const acpSessionIdSet = new Set(acpNodes.map((n) => n.session.id));
       for (const entry of folders) {
-        if (entry !== existingAgyEntry) {
-          entry.nodes = entry.nodes.filter((node) => !agySessionIdSet.has(node.session.id));
+        if (entry !== existingEntry) {
+          entry.nodes = entry.nodes.filter((node) => !acpSessionIdSet.has(node.session.id));
         }
       }
-      if (existingAgyEntry) {
-        existingAgyEntry.nodes = agyNodes;
-        existingAgyEntry.folder = {
-          ...existingAgyEntry.folder,
-          sessionIds: agyNodes.map((n) => n.session.id),
+      if (existingEntry) {
+        existingEntry.nodes = acpNodes;
+        existingEntry.folder = {
+          ...existingEntry.folder,
+          sessionIds: acpNodes.map((n) => n.session.id),
         };
       } else {
         const primaryScope = folderScopes[0] ?? {
-          scopeKey: folderScopeKey ?? group.directory ?? 'antigravity',
+          scopeKey: folderScopeKey ?? group.directory ?? meta.agentId,
           directory: group.directory ?? null,
         };
-        const agyFolderId = `antigravity:${primaryScope.scopeKey}`;
-        const agyFolder: SessionFolder = {
-          id: agyFolderId,
-          name: 'Antigravity',
-          sessionIds: agyNodes.map((n) => n.session.id),
+        const autoFolderId = `${meta.folderIdPrefix}:${primaryScope.scopeKey}`;
+        const autoFolder: SessionFolder = {
+          id: autoFolderId,
+          name: meta.folderName,
+          sessionIds: acpNodes.map((n) => n.session.id),
           createdAt: 0,
         };
         folders.push({
-          folder: agyFolder,
+          folder: autoFolder,
           scopeKey: primaryScope.scopeKey,
           scopeDirectory: primaryScope.directory,
-          nodes: agyNodes,
+          nodes: acpNodes,
         });
       }
     }
@@ -680,7 +687,8 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
     const { folder, scopeKey, scopeDirectory, nodes } = entry;
     const folderSessionsForDelete = folderSessionsForDeleteById.get(folder.id) ?? [];
     const isRenamingFolder = folderRename?.folderId === folder.id && folderRename?.scopeKey === scopeKey;
-    const isAgyFolder = folder.id.startsWith('antigravity:') || folder.name.toLowerCase() === 'antigravity';
+    const autoFolderAgentId = getAutoAgentFolderAgentId(folder);
+    const isAgyFolder = Boolean(autoFolderAgentId);
 
     const isFolderCollapsed = hasSessionSearchQuery ? false : collapsedFolderIds.has(folder.id);
     const item = (collapsedActivityState: ReturnType<typeof useCollapsedSessionActivityState>) => (
@@ -742,8 +750,8 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
             onNewSession={() => {
               if (projectId && projectId !== activeProjectId) setActiveProjectIdOnly(projectId);
               if (mobileVariant) setSessionSwitcherOpen(false);
-              if (isAgyFolder) {
-                useConfigStore.getState().setAgent('antigravity');
+              if (autoFolderAgentId) {
+                useConfigStore.getState().setAgent(autoFolderAgentId);
               }
               openNewSessionDraft({
                 selectedProjectId: projectId,

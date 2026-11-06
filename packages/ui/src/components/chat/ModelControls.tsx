@@ -439,14 +439,20 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         : currentVariantSelection.override ?? effectiveCurrentVariant;
     if (selection) currentVariant = selection.variant ?? undefined;
     const currentAgentName = useConfigStore((state) => selection ? selection.agent : state.currentAgentName);
-    const isAntigravityAgent = currentAgentName === 'antigravity';
+    const dedicatedAgentProviderId = React.useMemo(() => {
+        if (!currentAgentName) return null;
+        if (currentAgentName === 'antigravity') return 'antigravity';
+        const match = providers.find((p) => p.id === currentAgentName);
+        return match ? match.id : null;
+    }, [currentAgentName, providers]);
+    const isAntigravityAgent = Boolean(dedicatedAgentProviderId);
     const effectiveProviders = React.useMemo(() => {
-        if (isAntigravityAgent) {
-            const agy = providers.filter((p) => p.id === 'antigravity');
-            if (agy.length > 0) return agy;
+        if (dedicatedAgentProviderId) {
+            const matched = providers.filter((p) => p.id === dedicatedAgentProviderId);
+            if (matched.length > 0) return matched;
         }
         return providers;
-    }, [isAntigravityAgent, providers]);
+    }, [dedicatedAgentProviderId, providers]);
     const settingsDefaultModel = useConfigStore((state) => state.settingsDefaultModel);
     const settingsDefaultVariant = useConfigStore((state) => state.settingsDefaultVariant);
     const getDefaultVariantForModel = useConfigStore((state) => state.getDefaultVariantForModel);
@@ -558,18 +564,18 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     const [isAgentSelectorOpen, setIsAgentSelectorOpen] = React.useState(false);
     const { favoriteModelsList, recentModelsList } = useModelLists(catalogDirectory);
     const effectiveFavoriteModels = React.useMemo(() => {
-        if (isAntigravityAgent) {
-            return favoriteModelsList.filter((m) => m.providerID === 'antigravity');
+        if (dedicatedAgentProviderId) {
+            return favoriteModelsList.filter((m) => m.providerID === dedicatedAgentProviderId);
         }
         return favoriteModelsList;
-    }, [isAntigravityAgent, favoriteModelsList]);
+    }, [dedicatedAgentProviderId, favoriteModelsList]);
 
     const effectiveRecentModels = React.useMemo(() => {
-        if (isAntigravityAgent) {
-            return recentModelsList.filter((m) => m.providerID === 'antigravity');
+        if (dedicatedAgentProviderId) {
+            return recentModelsList.filter((m) => m.providerID === dedicatedAgentProviderId);
         }
         return recentModelsList;
-    }, [isAntigravityAgent, recentModelsList]);
+    }, [dedicatedAgentProviderId, recentModelsList]);
     // Auto routing: the server resolves `openchamber/auto` into a real model per
     // send. Offered only while the server says it can honour it, in the main
     // composer and in controlled selections (BTW) alike.
@@ -1553,11 +1559,19 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             }
             setAgent(agentName);
             addRecentAgent(agentName);
-            if (agentName === 'antigravity' && currentProviderId !== 'antigravity') {
-                tryApplyModelSelection('antigravity', 'gemini-3.8-flash', 'antigravity');
-                const pickedSessionId = selection ? controlledSessionId : currentSessionId;
-                if (pickedSessionId) {
-                    useSelectionStore.getState().pickSessionModel(pickedSessionId, 'antigravity', 'gemini-3.8-flash');
+            const dedicatedProvider = providers.find((p) => p.id === agentName);
+            const targetProviderId = dedicatedProvider?.id || (agentName === 'antigravity' ? 'antigravity' : null);
+            if (targetProviderId && currentProviderId !== targetProviderId) {
+                const agentDef = agents.find((a) => a.name === agentName);
+                const defaultModelId = agentDef?.model?.modelID
+                    || dedicatedProvider?.models?.[0]?.id
+                    || (targetProviderId === 'antigravity' ? 'gemini-3.8-flash' : '');
+                if (defaultModelId) {
+                    tryApplyModelSelection(targetProviderId, defaultModelId, agentName);
+                    const pickedSessionId = selection ? controlledSessionId : currentSessionId;
+                    if (pickedSessionId) {
+                        useSelectionStore.getState().pickSessionModel(pickedSessionId, targetProviderId, defaultModelId);
+                    }
                 }
             }
             if (options?.closeModelSelector ?? true) {

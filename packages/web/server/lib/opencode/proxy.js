@@ -1213,23 +1213,69 @@ export const registerOpenCodeProxy = (app, deps) => {
     });
   }
 
-  // ACP / Antigravity Autonomous Session routes
+  // ACP Autonomous Session & Catalog routes
+  const forwardAcpCatalogOverlay = (kind) => async (req, res, next) => {
+    if (!acpSessionBridge || typeof acpSessionBridge.getCatalogAugmentation !== 'function') return next();
+    try {
+      const signal = createUpstreamReadSignal({ res, timeoutMs: SESSION_UPSTREAM_TIMEOUT_MS });
+      const upstreamPath = await getRequestUpstreamPath(req);
+      const result = await fetchSessionListPayload(upstreamPath, { req, signal });
+      res.status(result.upstream.status);
+      applyForwardProxyResponseHeaders(result.upstream.headers, res);
+      res.setHeader('content-type', result.contentType);
+      if (!result.isJson || result.parseError || !result.upstream.ok || !Array.isArray(result.payload?.data)) {
+        res.end(result.bodyText);
+        return;
+      }
+      const aug = acpSessionBridge.getCatalogAugmentation();
+      const list = result.payload.data.slice();
+      if (kind === 'agent') {
+        const seen = new Set(list.map((a) => a?.id || a?.name));
+        for (const agent of aug.agents) {
+          if (!seen.has(agent.id)) list.push(agent);
+        }
+      } else if (kind === 'provider') {
+        const seen = new Set(list.map((p) => p?.id));
+        for (const provider of aug.providers) {
+          if (!seen.has(provider.id)) list.push(provider);
+        }
+      } else if (kind === 'model') {
+        const byId = new Map(list.map((m, idx) => [m?.id || `${m?.providerID}/${m?.modelID}`, idx]));
+        for (const model of aug.models) {
+          const existingIdx = byId.get(model.id);
+          if (existingIdx === undefined) {
+            list.push(model);
+          } else if (!Array.isArray(list[existingIdx].variants) || list[existingIdx].variants.length === 0) {
+            list[existingIdx] = { ...list[existingIdx], variants: model.variants };
+          }
+        }
+      }
+      res.json({ ...result.payload, data: list });
+    } catch (error) {
+      const status = sessionRouteErrorStatus(error);
+      if (status === null) return;
+      next(error);
+    }
+  };
+
+  app.get('/api/agent', forwardAcpCatalogOverlay('agent'));
+  app.get('/api/provider', forwardAcpCatalogOverlay('provider'));
+  app.get('/api/model', forwardAcpCatalogOverlay('model'));
+
   app.post('/api/session', parseJsonBody, (req, res, next) => {
-    if (
-      acpSessionBridge &&
-      (req.body?.agent === 'antigravity' ||
-        req.body?.engine === 'acp' ||
-        req.body?.model?.providerID === 'antigravity' ||
-        req.query?.agent === 'antigravity' ||
-        req.query?.engine === 'acp')
-    ) {
+    const acpAgent = acpSessionBridge?.resolveAcpAgent?.({
+      agent: req.body?.agent || req.query?.agent,
+      providerID: req.body?.model?.providerID,
+      engine: req.body?.engine || req.query?.engine,
+    });
+    if (acpSessionBridge && acpAgent) {
       const directory = req.body?.location?.directory || req.get('x-opencode-directory') || process.cwd();
       const session = acpSessionBridge.createSession({
         id: req.body?.id,
         title: req.body?.title,
         directory,
-        agent: 'antigravity',
-        model: req.body?.model?.id || 'gemini-3.8-flash',
+        agent: acpAgent.id,
+        model: req.body?.model?.id || acpAgent.defaultModel,
       });
       return res.json({ data: session });
     }
@@ -1242,13 +1288,14 @@ export const registerOpenCodeProxy = (app, deps) => {
       return parsePromptJson(req, res, async (err) => {
         if (err) return res.status(400).json({ error: err.message });
         if (!acpSessionBridge.isAcpSession(sessionID)) {
-          if (
-            req.body?.agent === 'antigravity' ||
-            req.body?.model?.providerID === 'antigravity' ||
-            (Array.isArray(req.body?.agents) && req.body.agents.some((a) => a?.name === 'antigravity'))
-          ) {
+          const acpAgent = acpSessionBridge.resolveAcpAgent?.({
+            agent: req.body?.agent,
+            providerID: req.body?.model?.providerID,
+            agents: req.body?.agents,
+          });
+          if (acpAgent) {
             const directory = req.body?.directory || req.get('x-opencode-directory') || process.cwd();
-            acpSessionBridge.createSession({ id: sessionID, agent: 'antigravity', directory });
+            acpSessionBridge.createSession({ id: sessionID, agent: acpAgent.id, directory });
           }
         }
         if (acpSessionBridge.isAcpSession(sessionID)) {
@@ -1287,9 +1334,11 @@ export const registerOpenCodeProxy = (app, deps) => {
     const { sessionID } = req.params;
     if (acpSessionBridge) {
       return parseJsonBody(req, res, () => {
-        if (req.body?.model?.providerID === 'antigravity' && !acpSessionBridge.isAcpSession(sessionID)) {
+        const providerID = req.body?.model?.providerID;
+        if (acpSessionBridge.isAcpProvider?.(providerID) && !acpSessionBridge.isAcpSession(sessionID)) {
+          const cfg = acpSessionBridge.getAgentConfig(providerID);
           const directory = req.get('x-opencode-directory') || process.cwd();
-          acpSessionBridge.createSession({ id: sessionID, agent: 'antigravity', directory });
+          acpSessionBridge.createSession({ id: sessionID, agent: cfg?.id || providerID, directory });
         }
         if (acpSessionBridge.isAcpSession(sessionID)) {
           acpSessionBridge.switchModel(sessionID, req.body?.model);
@@ -1305,9 +1354,10 @@ export const registerOpenCodeProxy = (app, deps) => {
     const { sessionID } = req.params;
     if (acpSessionBridge) {
       return parseJsonBody(req, res, () => {
-        if (req.body?.agent === 'antigravity' && !acpSessionBridge.isAcpSession(sessionID)) {
+        const agentName = req.body?.agent;
+        if (acpSessionBridge.isAcpAgent?.(agentName) && !acpSessionBridge.isAcpSession(sessionID)) {
           const directory = req.get('x-opencode-directory') || process.cwd();
-          acpSessionBridge.createSession({ id: sessionID, agent: 'antigravity', directory });
+          acpSessionBridge.createSession({ id: sessionID, agent: agentName, directory });
         }
         if (acpSessionBridge.isAcpSession(sessionID)) {
           acpSessionBridge.switchAgent(sessionID, req.body?.agent);

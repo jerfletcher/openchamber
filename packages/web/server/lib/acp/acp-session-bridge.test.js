@@ -10,6 +10,7 @@ class MockRuntime extends EventEmitter {
   }
   async createSession({ agentId, cwd, resumeSessionId }) {
     this.createCallCount++;
+    this.lastAgentId = agentId;
     this.lastResume = resumeSessionId;
     this.models = [];
     const id = `mock_acp_${Math.random().toString(36).slice(2, 6)}`;
@@ -304,5 +305,30 @@ describe('AcpSessionBridge', () => {
     expect(blocks[0]).toEqual({ type: 'text', text: 'see' });
     expect(blocks[1]).toEqual({ type: 'image', data: 'AAAA', mimeType: 'image/png' });
     expect(blocks[2].resource.text).toBe('hello');
+  });
+
+  it('supports general multi-agent ACP configurations (e.g. claude-code) and catalog augmentation', async () => {
+    expect(bridge.isAcpAgent('antigravity')).toBe(true);
+    expect(bridge.isAcpAgent('claude-code')).toBe(true);
+    expect(bridge.isAcpProvider('claude-code')).toBe(true);
+    expect(bridge.resolveAcpAgent({ agent: 'claude-code' })?.id).toBe('claude-code');
+
+    const session = bridge.createSession({ agent: 'claude-code' });
+    expect(session.id.startsWith('ses_acp_claude-code_')).toBe(true);
+    expect(session.agent).toBe('claude-code');
+    expect(session.model).toEqual({ id: 'claude-sonnet-4-6', providerID: 'claude-code' });
+
+    await bridge.startTurn(session.id, { text: 'Hello Claude ACP' });
+    await new Promise((r) => setTimeout(r, 80));
+
+    expect(mockRuntime.lastAgentId).toBe('claude-code');
+    const asst = session.messages.find((m) => m.type === 'assistant');
+    expect(asst.agent).toBe('claude-code');
+    expect(asst.model.providerID).toBe('claude-code');
+
+    const aug = bridge.getCatalogAugmentation();
+    expect(aug.agents.some((a) => a.id === 'antigravity')).toBe(true);
+    expect(aug.providers.some((p) => p.id === 'antigravity')).toBe(true);
+    expect(aug.models.some((m) => m.id === 'antigravity/gemini-3.8-flash' && m.variants.length === 3)).toBe(true);
   });
 });

@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import EventEmitter from 'events';
 import { DatabaseSync } from 'node:sqlite';
-import { AcpRuntime } from './acp-runtime.js';
+import { AcpRuntime, DEFAULT_ACP_AGENTS } from './acp-runtime.js';
 
 const ACP_MODEL_NORM = {
   'gemini-3.8-flash': 'gemini-3.8-flash',
@@ -57,6 +57,90 @@ export class AcpSessionBridge extends EventEmitter {
 
   setEventHub(hub) {
     this.eventHub = hub;
+  }
+
+  _allAgentConfigs() {
+    if (typeof this.runtime?.getRegisteredAgents === 'function') {
+      return this.runtime.getRegisteredAgents();
+    }
+    return DEFAULT_ACP_AGENTS;
+  }
+
+  getAgentConfig(agentOrProviderId) {
+    if (!agentOrProviderId) return null;
+    return this._allAgentConfigs().find((a) => a.id === agentOrProviderId || a.providerId === agentOrProviderId) || null;
+  }
+
+  isAcpAgent(agentId) {
+    return Boolean(agentId && this.getAgentConfig(agentId));
+  }
+
+  isAcpProvider(providerId) {
+    return Boolean(providerId && this.getAgentConfig(providerId));
+  }
+
+  resolveAcpAgent({ agent, providerID, engine, agents } = {}) {
+    if (agent && this.isAcpAgent(agent)) return this.getAgentConfig(agent);
+    if (providerID && this.isAcpProvider(providerID)) return this.getAgentConfig(providerID);
+    if (Array.isArray(agents)) {
+      for (const entry of agents) {
+        const name = typeof entry === 'string' ? entry : entry?.name || entry?.id;
+        if (name && this.isAcpAgent(name)) return this.getAgentConfig(name);
+      }
+    }
+    if (engine === 'acp') {
+      return this.getAgentConfig('antigravity') || this._allAgentConfigs()[0] || null;
+    }
+    return null;
+  }
+
+  getCatalogAugmentation() {
+    const available = typeof this.runtime?.getAvailableAgents === 'function'
+      ? this.runtime.getAvailableAgents()
+      : DEFAULT_ACP_AGENTS;
+    const agents = [];
+    const providers = [];
+    const models = [];
+    for (const cfg of available) {
+      if (!Array.isArray(cfg.models) || cfg.models.length === 0) continue;
+      const providerID = cfg.providerId || cfg.id;
+      const defaultModelId = cfg.defaultModel || cfg.models[0]?.id;
+      agents.push({
+        id: cfg.id,
+        name: cfg.id,
+        description: cfg.description || cfg.name,
+        mode: 'primary',
+        model: defaultModelId ? { providerID, modelID: defaultModelId } : undefined,
+        hidden: false,
+        permissions: [],
+        request: { settings: {}, headers: {}, body: {} },
+      });
+      providers.push({
+        id: providerID,
+        name: cfg.providerName || cfg.name || cfg.id,
+        activation: 'enabled',
+      });
+      for (const m of cfg.models) {
+        const variants = Array.isArray(m.variants)
+          ? m.variants.map((v) => ({ id: v, settings: { reasoningEffort: v } }))
+          : [];
+        models.push({
+          id: `${providerID}/${m.id}`,
+          modelID: m.id,
+          providerID,
+          name: m.name || m.id,
+          enabled: true,
+          variants,
+          limit: {
+            context: m.context || 200000,
+            input: m.context || 200000,
+            output: m.output || 16000,
+          },
+          modalities: { input: ['text', 'image'] },
+        });
+      }
+    }
+    return { agents, providers, models };
   }
 
   loadDeletedHistorical() {
@@ -473,17 +557,24 @@ export class AcpSessionBridge extends EventEmitter {
     return session.messages.find((m) => m.id === messageId) || null;
   }
 
-  createSession({ id = null, title, directory = process.cwd(), agent = 'antigravity', model = 'gemini-3.8-flash' } = {}) {
-    const sessionId = id || `ses_agy_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+  createSession({ id = null, title, directory = process.cwd(), agent = 'antigravity', model = null } = {}) {
+    const cfg = this.getAgentConfig(agent) || this.getAgentConfig('antigravity');
+    const agentId = cfg?.id || agent || 'antigravity';
+    const providerID = cfg?.providerId || agentId;
+    const defaultModel = cfg?.defaultModel || 'gemini-3.8-flash';
+    const prefix = cfg?.sessionPrefix || (agentId === 'antigravity' ? 'ses_agy_' : `ses_acp_${agentId}_`);
+    const folderLabel = cfg?.folderName || cfg?.name || 'ACP';
+    const sessionId = id || `${prefix}${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
     const now = Date.now();
-    const resolvedModel = ACP_MODEL_NORM[model] || model || 'gemini-3.8-flash';
+    const rawModel = typeof model === 'object' ? model?.id : model;
+    const resolvedModel = ACP_MODEL_NORM[rawModel] || rawModel || defaultModel;
     const session = {
       id: sessionId,
-      title: title || 'New Antigravity Session',
+      title: title || `New ${folderLabel} Session`,
       directory,
       location: { directory },
-      agent: 'antigravity',
-      model: { id: resolvedModel, providerID: 'antigravity' },
+      agent: agentId,
+      model: { id: resolvedModel, providerID },
       cost: 0,
       tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
       time: { created: now, updated: now, idle: now },
@@ -538,11 +629,18 @@ export class AcpSessionBridge extends EventEmitter {
   switchModel(sessionId, model) {
     const session = this.sessions.get(sessionId) || this.getSession(sessionId);
     if (!session) return false;
-    const modelId = typeof model === 'string' ? model : (model?.id || 'gemini-3.8-flash');
+    const cfg = this.getAgentConfig(session.agent);
+    const defaultModel = cfg?.defaultModel || 'gemini-3.8-flash';
+    const modelId = typeof model === 'string' ? model : (model?.id || defaultModel);
     const resolvedModel = ACP_MODEL_NORM[modelId] || modelId;
+    const providerID = (typeof model === 'object' && model?.providerID)
+      || session.model?.providerID
+      || cfg?.providerId
+      || session.agent
+      || 'antigravity';
     const rawVariant = typeof model === 'object' ? model?.variant : null;
     const variant = ACP_VARIANTS.has(rawVariant) ? rawVariant : null;
-    session.model = { id: resolvedModel, providerID: 'antigravity', ...(variant ? { variant } : {}) };
+    session.model = { id: resolvedModel, providerID, ...(variant ? { variant } : {}) };
     session.time = session.time || {};
     session.time.updated = Date.now();
     this.saveToDisk();
@@ -552,7 +650,15 @@ export class AcpSessionBridge extends EventEmitter {
   switchAgent(sessionId, agent) {
     const session = this.sessions.get(sessionId);
     if (!session) return false;
-    session.agent = agent || 'antigravity';
+    const nextAgent = agent || session.agent || 'antigravity';
+    session.agent = nextAgent;
+    const cfg = this.getAgentConfig(nextAgent);
+    if (cfg && session.model && session.model.providerID !== cfg.providerId) {
+      session.model = {
+        id: cfg.defaultModel || session.model.id,
+        providerID: cfg.providerId || nextAgent,
+      };
+    }
     session.time = session.time || {};
     session.time.updated = Date.now();
     this.saveToDisk();
@@ -639,7 +745,7 @@ export class AcpSessionBridge extends EventEmitter {
     const text = promptData.text || promptData.prompt || promptData.content || '';
     if (!text.trim()) return null;
 
-    if (session.messages.length === 0 || session.title === 'New Antigravity Session') {
+    if (session.messages.length === 0 || /^New .* Session$/.test(session.title || '')) {
       session.title = text.trim().slice(0, 36);
       this.emitEvent({
         type: 'session.renamed',
@@ -667,7 +773,10 @@ export class AcpSessionBridge extends EventEmitter {
 
     // 2. Assistant Message
     const assistantMsgId = `msg_${(now + 1).toString(36)}_a`;
-    const rawModelId = session.model?.id || 'gemini-3.8-flash-medium';
+    const sessionAgent = session.agent || 'antigravity';
+    const cfg = this.getAgentConfig(sessionAgent);
+    const providerID = session.model?.providerID || cfg?.providerId || sessionAgent;
+    const rawModelId = session.model?.id || cfg?.defaultModel || 'gemini-3.8-flash-medium';
     const modelId = ACP_MODEL_NORM[rawModelId] || rawModelId;
     const parts = [];
 
@@ -677,10 +786,10 @@ export class AcpSessionBridge extends EventEmitter {
       time: { created: now + 1, streamed: now + 1 },
       type: 'assistant',
       role: 'assistant',
-      agent: 'antigravity',
-      providerID: 'antigravity',
+      agent: sessionAgent,
+      providerID,
       modelID: modelId,
-      model: { id: modelId, providerID: 'antigravity' },
+      model: { id: modelId, providerID },
       content: parts,
     };
     session.messages.push(assistantMsg);
@@ -697,8 +806,8 @@ export class AcpSessionBridge extends EventEmitter {
       data: {
         sessionID: sessionId,
         assistantMessageID: assistantMsgId,
-        agent: 'antigravity',
-        model: { id: modelId, providerID: 'antigravity' },
+        agent: sessionAgent,
+        model: { id: modelId, providerID },
       },
       created: now,
     }, directory);
@@ -742,10 +851,10 @@ export class AcpSessionBridge extends EventEmitter {
       if (isAlive) {
         acpSession = this.runtime.getSession(existingAcpId) || { sessionId: existingAcpId };
       } else {
-        // Resume natively when agy already knows this conversation (history or restart).
+        // Resume natively when the ACP agent already knows this conversation (history or restart).
         const resumeId = session.geminiConvId || existingAcpId || null;
         acpSession = await this.runtime.createSession({
-          agentId: 'antigravity',
+          agentId: session.agent || 'antigravity',
           cwd: directory || session.location?.directory || process.cwd(),
           resumeSessionId: resumeId,
         });

@@ -39,23 +39,49 @@ export const DEFAULT_ACP_AGENTS = [
   {
     id: 'antigravity',
     name: 'Google Antigravity (AGY)',
+    folderName: 'Antigravity',
+    providerId: 'antigravity',
+    providerName: 'Google Antigravity (ACP)',
+    defaultModel: 'gemini-3.8-flash',
+    sessionPrefix: 'ses_agy_',
     description: 'Autonomous coding agent powered by Google Gemini, Claude, and your Google AI Pro subscription.',
     command: 'agy',
     args: ['acp', '--stdio', '--dangerously-skip-permissions'],
+    models: [
+      { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', context: 1000000, output: 64000, variants: ['low', 'medium', 'high'] },
+      { id: 'gemini-4-argon', name: 'Gemini 4 Argon', context: 1000000, output: 64000, variants: ['low', 'medium', 'high'] },
+      { id: 'claude-opus-5-5', name: 'Claude Opus 5.5', context: 200000, output: 16000, variants: ['low', 'medium', 'high'] },
+      { id: 'claude-sonnet-5-5', name: 'Claude Sonnet 5.5', context: 200000, output: 16000, variants: ['low', 'medium', 'high'] },
+    ],
   },
   {
     id: 'claude-code',
     name: 'Claude Code',
+    folderName: 'Claude Code',
+    providerId: 'claude-code',
+    providerName: 'Claude Code (ACP)',
+    defaultModel: 'claude-sonnet-4-6',
+    sessionPrefix: 'ses_acp_claude-code_',
     description: 'Anthropic agent running in ACP mode.',
     command: 'claude',
     args: ['acp'],
+    models: [
+      { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', context: 200000, output: 16000, variants: ['low', 'medium', 'high'] },
+      { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', context: 200000, output: 16000, variants: ['low', 'medium', 'high'] },
+    ],
   },
   {
     id: 'opencode-headless',
     name: 'OpenCode ACP',
+    folderName: 'OpenCode ACP',
+    providerId: 'opencode-headless',
+    providerName: 'OpenCode (ACP)',
+    defaultModel: 'default',
+    sessionPrefix: 'ses_acp_opencode-headless_',
     description: 'OpenCode running in headless ACP mode.',
     command: 'opencode',
     args: ['acp'],
+    models: [],
   },
 ];
 
@@ -71,9 +97,17 @@ export class AcpRuntime extends EventEmitter {
     }
   }
 
+  getRegisteredAgents() {
+    return [...this.customAgents, ...DEFAULT_ACP_AGENTS];
+  }
+
+  getAgentConfig(agentOrProviderId) {
+    if (!agentOrProviderId) return null;
+    return this.getRegisteredAgents().find((a) => a.id === agentOrProviderId || a.providerId === agentOrProviderId) || null;
+  }
+
   getAvailableAgents() {
-    const all = [...this.customAgents, ...DEFAULT_ACP_AGENTS];
-    return all.filter((a) => checkBinaryExists(a.command));
+    return this.getRegisteredAgents().filter((a) => checkBinaryExists(a.command));
   }
 
   async createSession({ agentId = 'antigravity', cwd = process.cwd(), resumeSessionId = null } = {}) {

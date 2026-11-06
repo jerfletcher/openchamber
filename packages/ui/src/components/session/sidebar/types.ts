@@ -45,12 +45,68 @@ export type GroupSearchData = {
   hasMatch: boolean;
 };
 
-export const isAntigravitySession = (session: Session | null | undefined): boolean => {
-  if (!session) return false;
-  if (typeof session.id === 'string' && (session.id.startsWith('ses_agy_') || session.id.startsWith('ses_acp_'))) return true;
-  if (session.agent === 'antigravity') return true;
-  if (session.model?.providerID === 'antigravity') return true;
-  if ((session as { acpSessionId?: string }).acpSessionId) return true;
-  return false;
+export type AcpAgentFolderMeta = {
+  agentId: string;
+  folderName: string;
+  folderIdPrefix: string;
 };
+
+const ACP_AGENT_FOLDERS: Record<string, { folderName: string; folderIdPrefix: string }> = {
+  antigravity: { folderName: 'Antigravity', folderIdPrefix: 'antigravity' },
+  'claude-code': { folderName: 'Claude Code', folderIdPrefix: 'acp:claude-code' },
+  'opencode-headless': { folderName: 'OpenCode ACP', folderIdPrefix: 'acp:opencode-headless' },
+};
+
+export const getAcpSessionFolderMeta = (session: Session | null | undefined): AcpAgentFolderMeta | null => {
+  if (!session) return null;
+  const agent = session.agent || '';
+  const providerID = session.model?.providerID || '';
+  const known = ACP_AGENT_FOLDERS[agent] || ACP_AGENT_FOLDERS[providerID];
+  if (known) {
+    const agentId = ACP_AGENT_FOLDERS[agent] ? agent : providerID;
+    return { agentId, folderName: known.folderName, folderIdPrefix: known.folderIdPrefix };
+  }
+  if (typeof session.id === 'string') {
+    if (session.id.startsWith('ses_agy_')) {
+      return { agentId: 'antigravity', ...ACP_AGENT_FOLDERS.antigravity };
+    }
+    if (session.id.startsWith('ses_acp_')) {
+      const resolvedAgent = agent || 'antigravity';
+      const fallback = ACP_AGENT_FOLDERS[resolvedAgent] ?? {
+        folderName: resolvedAgent.replace(/(^|-)([a-z])/g, (_, sep, ch) => `${sep ? ' ' : ''}${ch.toUpperCase()}`),
+        folderIdPrefix: `acp:${resolvedAgent}`,
+      };
+      return { agentId: resolvedAgent, ...fallback };
+    }
+  }
+  if ((session as { acpSessionId?: string }).acpSessionId) {
+    const resolvedAgent = agent || 'antigravity';
+    const fallback = ACP_AGENT_FOLDERS[resolvedAgent] ?? {
+      folderName: resolvedAgent.replace(/(^|-)([a-z])/g, (_, sep, ch) => `${sep ? ' ' : ''}${ch.toUpperCase()}`),
+      folderIdPrefix: `acp:${resolvedAgent}`,
+    };
+    return { agentId: resolvedAgent, ...fallback };
+  }
+  return null;
+};
+
+export const getAutoAgentFolderAgentId = (folder: { id: string; name: string } | null | undefined): string | null => {
+  if (!folder) return null;
+  if (folder.id.startsWith('antigravity:') || folder.name.toLowerCase() === 'antigravity') {
+    return 'antigravity';
+  }
+  if (folder.id.startsWith('acp:')) {
+    const parts = folder.id.split(':');
+    if (parts[1]) return parts[1];
+  }
+  for (const [agentId, meta] of Object.entries(ACP_AGENT_FOLDERS)) {
+    if (folder.name.toLowerCase() === meta.folderName.toLowerCase()) {
+      return agentId;
+    }
+  }
+  return null;
+};
+
+export const isAntigravitySession = (session: Session | null | undefined): boolean =>
+  Boolean(getAcpSessionFolderMeta(session));
 
