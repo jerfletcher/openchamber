@@ -988,7 +988,7 @@ export const registerOpenCodeProxy = (app, deps) => {
       const wantsSpaces = typeof mergeSpaceSessionList === 'function' && !listQuery.get('cursor') && !scopedToDirectory;
       let finalResult = wantsSpaces ? await mergeSpaceSessionList(hostList) : hostList;
 
-      if (acpSessionBridge) {
+      if (acpSessionBridge && !listQuery.get('cursor')) {
         const filterDir = scopedToDirectory ? (listQuery.get('directory') || req.get('x-opencode-directory')) : null;
         const acpList = acpSessionBridge.listSessions(filterDir);
         if (Array.isArray(finalResult)) {
@@ -1126,6 +1126,7 @@ export const registerOpenCodeProxy = (app, deps) => {
   // A move names its destination in the body, which reaches the proxy
   // unread. Parsed here, it goes upstream through `replayParsedBody`.
   const parseJsonBody = express.json({ limit: '64kb' });
+  const parsePromptJson = express.json({ limit: '50mb' });
   const readBody = (req, res) => new Promise((resolve, reject) => {
     parseJsonBody(req, res, (error) => (error ? reject(error) : resolve(req.body)));
   });
@@ -1238,7 +1239,8 @@ export const registerOpenCodeProxy = (app, deps) => {
   app.post(['/api/session/:sessionID/prompt', '/api/session/:sessionID/message'], (req, res, next) => {
     const { sessionID } = req.params;
     if (acpSessionBridge) {
-      return parseJsonBody(req, res, async () => {
+      return parsePromptJson(req, res, async (err) => {
+        if (err) return res.status(400).json({ error: err.message });
         if (!acpSessionBridge.isAcpSession(sessionID)) {
           if (
             req.body?.agent === 'antigravity' ||

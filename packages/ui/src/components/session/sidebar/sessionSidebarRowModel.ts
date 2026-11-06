@@ -878,7 +878,8 @@ export const buildSessionSidebarRowModel = (args: SessionSidebarRowModelArgs): S
         && !group.isArchivedBucket
         && !isArchivedFolderScope(entry.scopeKey)
         && authority?.complete === true
-        && authority.scopeKeys.includes(entry.scopeKey);
+        && authority.scopeKeys.includes(entry.scopeKey)
+        && !entry.folder.id.startsWith('antigravity:');
       push({
         kind: 'folder-header', key: folderKey, estimateSize: HEADER_ESTIMATE, depth: contentDepth, group,
         folder: entry.folder, displayName, scopeKey: entry.scopeKey, scopeDirectory: entry.scopeDirectory,

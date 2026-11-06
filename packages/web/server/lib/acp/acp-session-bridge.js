@@ -131,7 +131,9 @@ export class AcpSessionBridge extends EventEmitter {
   }
 
   loadTranscriptMessages(convId, sessionId) {
-    const transcriptPath = path.join(process.env.HOME || '/home/jeremy', '.gemini', 'antigravity-cli', 'brain', convId, '.system_generated', 'logs', 'transcript.jsonl');
+    const cleanConvId = (convId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+    if (!cleanConvId) return [];
+    const transcriptPath = path.join(process.env.HOME || '/home/jeremy', '.gemini', 'antigravity-cli', 'brain', cleanConvId, '.system_generated', 'logs', 'transcript.jsonl');
     if (!fs.existsSync(transcriptPath)) return [];
 
     try {
@@ -166,6 +168,8 @@ export class AcpSessionBridge extends EventEmitter {
             id: `msg_user_${item.step_index}`,
             sessionID: sessionId,
             type: 'user',
+            role: 'user',
+            text: promptText,
             content: [{ type: 'text', text: promptText }],
             time: { created: ts }
           });
@@ -209,7 +213,7 @@ export class AcpSessionBridge extends EventEmitter {
               pendingTools.push(toolPart);
             }
           } else if (item.content && typeof item.content === 'string') {
-            if (pendingTools.length > 0 && (item.type === 'GENERIC' || item.status === 'DONE')) {
+            if (pendingTools.length > 0 && item.type === 'GENERIC') {
               const toolPart = pendingTools.shift();
               toolPart.state.output = item.content;
               toolPart.state.content = [{ type: 'text', text: item.content }];
@@ -222,13 +226,15 @@ export class AcpSessionBridge extends EventEmitter {
       }
       return messages;
     } catch (e) {
-      console.warn(`[acp-bridge] Error loading transcript for ${convId}:`, e.message);
+      console.warn(`[acp-bridge] Error loading transcript for ${cleanConvId}:`, e.message);
       return [];
     }
   }
 
   loadHistoricalSession(sessionId) {
-    const convId = sessionId.replace(/^ses_agy_/, '');
+    const rawConvId = sessionId.replace(/^ses_agy_/, '');
+    const convId = rawConvId.replace(/[^a-zA-Z0-9_-]/g, '');
+    if (!convId) return null;
     const db = this._getGeminiDb();
     if (!db) return null;
 
@@ -252,11 +258,13 @@ export class AcpSessionBridge extends EventEmitter {
       const lastMod = row.last_modified_time ? new Date(row.last_modified_time).getTime() : Date.now();
       const title = row.title || row.preview || 'Antigravity Session';
       const messages = this.loadTranscriptMessages(convId, sessionId);
+      const resolvedDir = directory || (process.env.HOME || '/home/jeremy');
 
       const session = {
         id: sessionId,
         title,
-        location: { directory: directory || (process.env.HOME || '/home/jeremy') },
+        directory: resolvedDir,
+        location: { directory: resolvedDir },
         agent: 'antigravity',
         model: { id: 'gemini-3.8-flash', providerID: 'antigravity' },
         cost: 0,
@@ -401,6 +409,7 @@ export class AcpSessionBridge extends EventEmitter {
     const session = {
       id: sessionId,
       title: title || 'New Antigravity Session',
+      directory,
       location: { directory },
       agent: 'antigravity',
       model: { id: resolvedModel, providerID: 'antigravity' },
@@ -531,8 +540,15 @@ export class AcpSessionBridge extends EventEmitter {
   }
 
   async startTurn(sessionId, promptData) {
+    if (this.activeTurns.has(sessionId)) {
+      throw new Error('Session is currently busy processing a turn.');
+    }
+
     let session = this.sessions.get(sessionId);
     const directory = promptData.directory || session?.location?.directory || process.cwd();
+    if (!session) {
+      session = this.getSession(sessionId);
+    }
     if (!session) {
       session = this.createSession({
         id: sessionId,
@@ -540,6 +556,11 @@ export class AcpSessionBridge extends EventEmitter {
         directory,
       });
       sessionId = session.id;
+    }
+
+    if (session.isHistoricalGemini) {
+      session.isHistoricalGemini = false;
+      this.saveToDisk();
     }
 
     const text = promptData.text || promptData.prompt || promptData.content || '';

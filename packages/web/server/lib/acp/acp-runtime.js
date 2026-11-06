@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import EventEmitter from 'events';
 import { AcpConnection } from './acp-connection.js';
 
@@ -15,7 +15,7 @@ export function resolveBinaryPath(command) {
     if (fs.existsSync(p)) return p;
   }
   try {
-    const stdout = execSync(`which ${command}`, { encoding: 'utf8' }).trim();
+    const stdout = execFileSync('which', [command], { encoding: 'utf8' }).trim();
     if (stdout && fs.existsSync(stdout)) return stdout;
   } catch {}
   return command;
@@ -25,7 +25,7 @@ export function checkBinaryExists(command) {
   const resolved = resolveBinaryPath(command);
   if (fs.existsSync(resolved)) return true;
   try {
-    execSync(`which ${command}`, { stdio: 'ignore' });
+    execFileSync('which', [command], { stdio: 'ignore' });
     return true;
   } catch {
     return false;

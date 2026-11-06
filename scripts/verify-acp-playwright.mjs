@@ -1,9 +1,24 @@
 import { chromium } from '/home/jeremy/develop/oc-workspace/node_modules/playwright/index.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
+import { execSync } from 'node:child_process';
 
 const BASE_URL = 'http://localhost:4096';
-const PASSWORD = process.env.OPENCHAMBER_UI_PASSWORD || 'lEGXHEaqp0q60IGvacRuIlnN';
+
+function getPassword() {
+  if (process.env.OPENCHAMBER_UI_PASSWORD) return process.env.OPENCHAMBER_UI_PASSWORD;
+  try {
+    const pw = execSync('infisical secrets get OPENCHAMBER_UI_PASSWORD --env dev --projectId c8457c8b-0665-42de-9889-7e70569781ae --domain https://is.0mod.com/api --plain --silent', { encoding: 'utf8' }).trim();
+    if (pw && !pw.startsWith('error:')) return pw;
+  } catch {}
+  return null;
+}
+
+const PASSWORD = getPassword();
+if (!PASSWORD) {
+  console.error('[Playwright] Error: OPENCHAMBER_UI_PASSWORD environment variable or Infisical session is required.');
+  process.exit(1);
+}
 const SCREENSHOT_DIR = '/tmp/openchamber-acp-tests';
 
 fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });

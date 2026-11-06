@@ -89,16 +89,35 @@ export class AcpConnection extends EventEmitter {
     }
   }
 
-  request(method, params = {}) {
+  request(method, params = {}, timeoutMs = 60000) {
     if (this.closed || !this.proc) {
       return Promise.reject(new Error(`Cannot send request '${method}': ACP process not running`));
     }
     const id = this.nextId++;
     return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
+      let timer = null;
+      if (timeoutMs > 0) {
+        timer = setTimeout(() => {
+          if (this.pending.has(id)) {
+            this.pending.delete(id);
+            reject(new Error(`ACP request '${method}' timed out after ${timeoutMs}ms`));
+          }
+        }, timeoutMs);
+      }
+      this.pending.set(id, {
+        resolve: (val) => {
+          if (timer) clearTimeout(timer);
+          resolve(val);
+        },
+        reject: (err) => {
+          if (timer) clearTimeout(timer);
+          reject(err);
+        },
+      });
       const payload = JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n';
       this.proc.stdin.write(payload, 'utf8', (err) => {
         if (err) {
+          if (timer) clearTimeout(timer);
           this.pending.delete(id);
           reject(err);
         }
