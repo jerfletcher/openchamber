@@ -240,6 +240,7 @@ export const dict = {
   'terminalView.toast.copyFailed': 'Copy failed',
   'terminalView.actions.copy': 'Copy',
   'terminalView.actions.paste': 'Paste',
+  'terminalView.actions.pastePrompt': 'Paste text into terminal:',
   'terminalView.toast.pasteFailed': 'Could not read the clipboard. Use the paste keyboard shortcut.',
   'terminalView.toast.pasteFailedTouch': 'Could not read the clipboard.',
   'terminalView.actions.restart': 'Restart terminal',

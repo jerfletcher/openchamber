@@ -179,6 +179,7 @@ export const dict = {
   'terminalView.toast.copyFailed': 'Kopyalama başarısız',
   'terminalView.actions.copy': 'Kopyala',
   'terminalView.actions.paste': 'Yapıştır',
+  'terminalView.actions.pastePrompt': 'Metni terminale yapıştır:',
   'terminalView.toast.pasteFailed': 'Pano okunamadı. Yapıştırmak için klavye kısayolunu kullanın.',
   'terminalView.toast.pasteFailedTouch': 'Pano okunamadı.',
   'terminalView.actions.restart': 'Terminali yeniden başlat',

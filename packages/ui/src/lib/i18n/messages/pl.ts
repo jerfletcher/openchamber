@@ -241,6 +241,7 @@ export const dict: Record<I18nKey, string> = {
   'terminalView.toast.copyFailed': 'Kopiowanie nie powiodło się',
   'terminalView.actions.copy': 'Kopiuj',
   'terminalView.actions.paste': 'Wklej',
+  'terminalView.actions.pastePrompt': 'Wklej tekst do terminala:',
   'terminalView.toast.pasteFailed': 'Nie udało się odczytać schowka. Użyj skrótu klawiaturowego do wklejania.',
   'terminalView.toast.pasteFailedTouch': 'Nie udało się odczytać schowka.',
   'terminalView.actions.restart': 'Uruchom terminal ponownie',

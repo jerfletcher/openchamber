@@ -251,6 +251,7 @@ export const dict: Record<I18nKey, string> = {
   'terminalView.toast.copyFailed': 'Не вдалося скопіювати',
   'terminalView.actions.copy': 'Копіювати',
   'terminalView.actions.paste': 'Вставити',
+  'terminalView.actions.pastePrompt': 'Вставити текст у термінал:',
   'terminalView.toast.pasteFailed': 'Не вдалося прочитати буфер обміну. Скористайтеся комбінацією клавіш для вставлення.',
   'terminalView.toast.pasteFailedTouch': 'Не вдалося прочитати буфер обміну.',
   'terminalView.actions.restart': 'Перезапустити термінал',

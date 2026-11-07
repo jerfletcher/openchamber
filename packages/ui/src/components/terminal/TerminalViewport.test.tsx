@@ -51,9 +51,15 @@ class TerminalSurfaceDouble implements TerminalSurface {
   getSelection() {
     return selectedText;
   }
+  getScreenText() {
+    return '';
+  }
   async pasteFromClipboard(readText: () => Promise<string>, isCurrent: () => boolean = () => true) {
     const data = await readText();
     if (isCurrent()) terminalEvents.push({ type: 'paste', data });
+  }
+  pasteText(data: string) {
+    terminalEvents.push({ type: 'paste', data });
   }
   getSelectionPosition() {
     return null;
@@ -63,6 +69,11 @@ class TerminalSurfaceDouble implements TerminalSurface {
     return false;
   }
   extendSelectionTo() {}
+  selectAll() {}
+  setBypassMouseReporting() {}
+  isBypassMouseReporting() {
+    return false;
+  }
   dispose() {
     terminalEvents.push({ type: 'dispose' });
   }

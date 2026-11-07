@@ -1478,7 +1478,7 @@ export const TerminalView: React.FC<TerminalViewProps> = ({ visible, directory, 
                                     onClick={handleToggleSelectMode}
                                     aria-label="Toggle text selection mode"
                                 >
-                                    <Icon name={isSelectMode ? 'cursor' : 'text'} className="h-4 w-4" />
+                                    <Icon name={isSelectMode ? 'text' : 'terminal'} className="h-4 w-4" />
                                 </Button>
                             </ButtonTooltip>
                             <ButtonTooltip label={t('terminalView.actions.copySelection')} side="bottom">

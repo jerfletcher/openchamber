@@ -241,6 +241,7 @@ export const dict: Record<I18nKey, string> = {
   'terminalView.toast.copyFailed': '복사 실패',
   'terminalView.actions.copy': '복사',
   'terminalView.actions.paste': '붙여넣기',
+  'terminalView.actions.pastePrompt': '터미널에 텍스트 붙여넣기:',
   'terminalView.toast.pasteFailed': '클립보드를 읽을 수 없습니다. 붙여넣기 단축키를 사용하세요.',
   'terminalView.toast.pasteFailedTouch': '클립보드를 읽을 수 없습니다.',
   'terminalView.actions.restart': '터미널 다시 시작',

@@ -33,7 +33,9 @@ export type TerminalSurface = Pick<
   | 'refresh'
   | 'focus'
   | 'getSelection'
+  | 'getScreenText'
   | 'pasteFromClipboard'
+  | 'pasteText'
   | 'getSelectionPosition'
   | 'scrollLines'
   | 'selectWordAt'
@@ -42,7 +44,6 @@ export type TerminalSurface = Pick<
   | 'setBypassMouseReporting'
   | 'isBypassMouseReporting'
   | 'dispose'
-  | 'core'
 >;
 
 export type TerminalSurfaceFactory = (
@@ -205,7 +206,7 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
         try {
           const text = window.prompt(t('terminalView.actions.pastePrompt') || 'Paste text into terminal:');
           if (text !== null && text.length > 0) {
-            surface.write(surface.core.encodePaste(text));
+            surface.pasteText(text);
             return;
           }
         } catch {
