@@ -576,6 +576,21 @@ export const createSettingsHelpers = (dependencies) => {
     if (typeof candidate.expandReasoningWhileStreaming === 'boolean') {
       result.expandReasoningWhileStreaming = candidate.expandReasoningWhileStreaming;
     }
+    // The per-category auto-expand settings the UI registry already exposes.
+    // Without a branch here the save path silently dropped them: the registry
+    // gate in settings-helpers.test.js is what keeps the two lists in step.
+    if (typeof candidate.expandCommandsByDefault === 'boolean') {
+      result.expandCommandsByDefault = candidate.expandCommandsByDefault;
+    }
+    if (typeof candidate.expandEditsByDefault === 'boolean') {
+      result.expandEditsByDefault = candidate.expandEditsByDefault;
+    }
+    if (typeof candidate.expandSubagentsByDefault === 'boolean') {
+      result.expandSubagentsByDefault = candidate.expandSubagentsByDefault;
+    }
+    if (typeof candidate.expandSearchesByDefault === 'boolean') {
+      result.expandSearchesByDefault = candidate.expandSearchesByDefault;
+    }
     if (typeof candidate.codeBlockLineWrap === 'boolean') {
       result.codeBlockLineWrap = candidate.codeBlockLineWrap;
     }

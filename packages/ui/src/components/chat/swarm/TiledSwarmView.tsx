@@ -14,6 +14,7 @@ import { useGitStore } from '@/stores/useGitStore';
 import type { State } from '@/sync/types';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { useUIStore } from '@/stores/useUIStore';
+import { useWaitingBlink } from '@/hooks/useDurationTicker';
 import { Icon } from '@/components/icon/Icon';
 import { Button } from '@/components/ui/button';
 import { SessionActivityDuration } from '@/components/session/SessionActivityDuration';
@@ -29,6 +30,25 @@ type SwarmRow = {
   finished: boolean;
   failed: boolean;
   rank: number;
+};
+
+/**
+ * Status light for one subagent row. A busy row blinks on the shared waiting
+ * clock (`useWaitingBlink`) instead of an infinite CSS pulse: the
+ * animation contract keeps every unbounded wait on one clock so an idle app
+ * stops drawing frames (see `lib/infiniteAnimations.test.ts`). The component
+ * exists because the stats card renders these dots from inside a `.map`, where
+ * a hook cannot be called.
+ */
+const SwarmStatusDot: React.FC<{ row: SwarmRow; size: 'sm' | 'md' }> = ({ row, size }) => {
+  const blink = useWaitingBlink(row.busy && !row.blocked && !row.asked);
+  return (
+    <span
+      className={`${size === 'sm' ? 'size-1.5' : 'size-2'} shrink-0 rounded-full ${
+        row.blocked || row.asked ? 'bg-amber-500' : row.busy ? `bg-emerald-500 ${blink ?? ''}` : row.failed ? 'bg-red-500' : 'bg-muted-foreground/50'
+      }`}
+    />
+  );
 };
 
 interface StatsCardProps {
@@ -106,7 +126,7 @@ const SwarmStatsCard: React.FC<StatsCardProps> = ({ slotNumber, sessionId, direc
                     onClick={() => onPin(row.child.id)}
                     className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-muted/50"
                   >
-                    <span className={`size-1.5 shrink-0 rounded-full ${row.blocked || row.asked ? 'bg-amber-500' : row.busy ? 'animate-pulse bg-emerald-500' : row.failed ? 'bg-red-500' : 'bg-muted-foreground/50'}`} />
+                    <SwarmStatusDot row={row} size="sm" />
                     <span className="truncate">{row.child.title?.trim() || 'Subagent'}</span>
                   </button>
                 ))}
@@ -159,11 +179,7 @@ const SubagentSlot: React.FC<SubagentSlotProps> = ({ row, rows, slotNumber, dire
     <div className="relative flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-border/80 bg-background shadow-2xs">
       <div className="flex h-8 shrink-0 select-none items-center justify-between border-b border-border/60 bg-muted/30 px-2.5">
         <div className="flex min-w-0 items-center gap-2">
-          <span
-            className={`size-2 shrink-0 rounded-full ${
-              row.blocked || row.asked ? 'bg-amber-500' : row.busy ? 'animate-pulse bg-emerald-500' : row.failed ? 'bg-red-500' : 'bg-muted-foreground/50'
-            }`}
-          />
+          <SwarmStatusDot row={row} size="md" />
           <h4 className="truncate font-mono text-xs font-semibold text-foreground" title={child.title}>
             {child.title?.trim() || `Subagent #${slotNumber}`}
           </h4>

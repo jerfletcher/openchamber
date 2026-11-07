@@ -152,7 +152,7 @@ const LONG_REASONING =
   'process that should remain hidden in the collapsed header view.';
 
 describe('ReasoningTimelineBlock', () => {
-  test('renders reasoning traces behind an accessible collapsed disclosure by default', () => {
+  test('renders reasoning traces expanded by default behind an accessible disclosure', () => {
     const markup = renderToStaticMarkup(
       <TestProviders>
         <ReasoningTimelineBlock
@@ -164,15 +164,13 @@ describe('ReasoningTimelineBlock', () => {
 
     // Accessible toggle row is rendered
     expect(markup).toContain('role="button"');
-    expect(markup).toContain('aria-expanded="false"');
-    expect(markup).toContain('aria-label="Expand reasoning trace"');
+    // The fork keeps work uncollapsed: a reasoning trace opens by default so
+    // its steps read as part of the transcript, and the same row collapses it.
+    expect(markup).toContain('aria-expanded="true"');
+    expect(markup).toContain('aria-label="Collapse reasoning trace"');
 
-    // Summary preview (beginning of text) is visible in the header
-    expect(markup).toContain('First thought');
-
-    // Historical collapsed blocks do not mount the expanded body, avoiding a
-    // first-frame flash when Activity reveals previously hidden rows.
-    expect(markup).not.toContain('data-message-text-export-source');
+    // The body renders on the first paint, not behind a hidden fold.
+    expect(markup).toContain('data-message-text-export-source');
   });
 
   test('opens a collapsed block with its body in the first render when search asks for it', () => {
@@ -207,12 +205,15 @@ describe('ReasoningTimelineBlock', () => {
     expect(markup).toContain('Thinking');
   });
 
-  test('header summary is a truncated excerpt from the beginning', () => {
+  test('header summary is a truncated excerpt from the beginning when collapsed', () => {
     const markup = renderToStaticMarkup(
       <TestProviders>
         <ReasoningTimelineBlock
           text={LONG_REASONING}
           blockId="reasoning-test"
+          // Trace bodies are expanded by default; this test is about the
+          // collapsed header's one-line preview, so it asks for that state.
+          defaultExpanded={false}
         />
       </TestProviders>,
     );
@@ -229,6 +230,7 @@ describe('ReasoningTimelineBlock', () => {
         <ReasoningTimelineBlock
           text={'Planning accessible icon labels with translations <!-- -->'}
           blockId="reasoning-comment-test"
+          defaultExpanded={false}
         />
       </TestProviders>,
     );
@@ -274,7 +276,8 @@ describe('ReasoningPart streaming gating (issue #2020)', () => {
     const markup = renderPart(makeReasoningPart({ start: 1_000 }), undefined);
 
     expect(markup).not.toContain(BUSY_INDICATOR);
-    expect(markup).toContain('aria-expanded="false"');
+    // Expanded by default: finished reasoning reads as part of the transcript.
+    expect(markup).toContain('aria-expanded="true"');
     expect(markup).toContain(SHORT_REASONING);
   });
 
@@ -282,7 +285,8 @@ describe('ReasoningPart streaming gating (issue #2020)', () => {
     const markup = renderPart(makeReasoningPart({ start: 1_000 }), 'completed');
 
     expect(markup).not.toContain(BUSY_INDICATOR);
-    expect(markup).toContain('aria-expanded="false"');
+    // Expanded by default: finished reasoning reads as part of the transcript.
+    expect(markup).toContain('aria-expanded="true"');
     expect(markup).toContain(SHORT_REASONING);
   });
 
@@ -290,7 +294,8 @@ describe('ReasoningPart streaming gating (issue #2020)', () => {
     const markup = renderPart(makeReasoningPart({ start: 1_000, end: 2_000 }), 'streaming');
 
     expect(markup).not.toContain(BUSY_INDICATOR);
-    expect(markup).toContain('aria-expanded="false"');
+    // Expanded by default: finished reasoning reads as part of the transcript.
+    expect(markup).toContain('aria-expanded="true"');
     expect(markup).toContain(SHORT_REASONING);
   });
 
@@ -308,14 +313,14 @@ describe('ReasoningPart streaming gating (issue #2020)', () => {
     </TestProviders>,
   );
 
-  test('live in-progress reasoning renders as streaming, folded to its header by default', () => {
+  test('live in-progress reasoning renders as streaming, expanded like every trace', () => {
     // Genuinely live: the message-level stream phase reports streaming and the
-    // part has not ended. The header shows the busy indicator; the body stays
-    // folded so its closing at the end does not move the chat.
+    // part has not ended. The header shows the busy indicator; the body is
+    // open, matching the uncollapsed default the fork applies to all traces.
     const markup = renderPart(makeReasoningPart({ start: 1_000 }), 'streaming');
 
     expect(markup).toContain(BUSY_INDICATOR);
-    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).toContain('aria-expanded="true"');
   });
 
   test('live in-progress reasoning opens while it streams when the setting asks for it', () => {
@@ -344,10 +349,10 @@ describe('ReasoningPart streaming gating (issue #2020)', () => {
 
     expect(markup).toContain(BUSY_INDICATOR);
     expect(markup).toContain('role="button"');
-    // The summary span carries `title="<summary>"`; with no text there must be
-    // no summary span at all rather than an empty one.
-    expect(withText).toContain('title="');
+    // Expanded by default, the text lives in the body and no header summary
+    // span is painted at all — an empty one would still be a blank row.
     expect(markup).not.toContain('title="');
+    expect(withText).not.toContain('title="');
   });
 
   test('remounting a completed reasoning part does not re-trigger the streaming presentation', async () => {
@@ -405,7 +410,7 @@ describe('ReasoningTimelineBlock opened by the reader', () => {
       await act(async () => {
         root.render(
           <TestProviders>
-            <ReasoningTimelineBlock text={LONG_REASONING} blockId="reasoning-open" />
+            <ReasoningTimelineBlock text={LONG_REASONING} blockId="reasoning-open" defaultExpanded={false} />
           </TestProviders>,
         );
       });

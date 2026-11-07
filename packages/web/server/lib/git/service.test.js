@@ -201,7 +201,13 @@ afterAll(() => {
  */
 async function createTempRepo() {
   const tmpDir = createTempDir();
-  const git = simpleGit(tmpDir);
+  // simple-git 4 hands git only the variables named in `allowEnvironment`;
+  // every other `GIT_*` name is stripped from the child. The file's empty
+  // global config (set in `beforeAll`) is therefore invisible to these
+  // fixtures' own commits and tags unless it is named here — without it a
+  // developer's `~/.gitconfig` signs the tag and git opens an editor for the
+  // tag message, which fails with "Standard input is not a terminal".
+  const git = simpleGit(tmpDir, { allowEnvironment: ['GIT_CONFIG_GLOBAL'] });
   await git.init();
   await git.addConfig('user.name', 'Test User', false, 'local');
   await git.addConfig('user.email', 'test@example.com', false, 'local');
@@ -3520,10 +3526,16 @@ describe('git remote arguments with option-like names', () => {
     }
   };
 
-  const addOptionLikeRemote = (repository, remoteUrl, { fetch = true } = {}) => {
+  const addOptionLikeRemote = (repository, remoteUrl, { fetch = true, headBranch = 'react' } = {}) => {
     runGit(repository, ['remote', 'add', '--', OPTION_LIKE_REMOTE, remoteUrl]);
     if (fetch) {
       runGit(repository, ['fetch', '--', OPTION_LIKE_REMOTE]);
+      // A fetch only records `refs/remotes/<remote>/HEAD` from Git 2.48 on
+      // (`fetch.followRemoteHEAD`); older Gits leave it to `remote set-head`.
+      // Declare the remote HEAD here so the fixture has the same shape — a
+      // remote with a known default branch — on every Git version, which is
+      // what `getRemoteDefaultBranches` reads.
+      runGit(repository, ['symbolic-ref', `refs/remotes/${OPTION_LIKE_REMOTE}/HEAD`, `refs/remotes/${OPTION_LIKE_REMOTE}/${headBranch}`]);
     }
   };
 

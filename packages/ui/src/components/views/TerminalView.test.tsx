@@ -415,12 +415,14 @@ describe('TerminalView project action tab indicator', () => {
     expect(host.querySelectorAll('[data-spinner]').length).toBe(1);
   });
 
-  test('offers Paste next to Copy only on touch terminals and pastes into the active tab', async () => {
+  test('offers Paste next to Copy on every terminal, not only touch ones, and pastes into the active tab', async () => {
     await act(async () => {
       root.render(React.createElement(TerminalView, { visible: false }));
     });
     expect(host.querySelector('[aria-label="terminalView.actions.copySelection"]')).not.toBeNull();
-    expect(host.querySelector('[aria-label="terminalView.actions.paste"]')).toBeNull();
+    // The toolbar keeps Paste on desktop too: a TUI can swallow the platform
+    // paste chord, so the button is the reliable path for the shell.
+    expect(host.querySelector('[aria-label="terminalView.actions.paste"]')).not.toBeNull();
 
     deviceInfo = { isMobile: true, isTablet: false, hasTouchOnlyPointer: true };
     await act(async () => {

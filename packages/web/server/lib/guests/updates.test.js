@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -18,11 +19,31 @@ import {
   updateGuest,
 } from './updates.js';
 
+// The fixtures must not inherit the developer machine's git config: a global
+// `tag.gpgsign` (or `commit.gpgsign`) turns `git tag` into a signed annotated
+// tag, which needs a tag message and therefore an editor — on a test run that
+// fails with "Standard input is not a terminal". An empty global config plus
+// no system config makes every fixture commit and tag the plain objects the
+// tests describe.
+const emptyGlobalGitConfig = path.join(
+  fsSync.mkdtempSync(path.join(os.tmpdir(), 'openchamber-guests-config-')),
+  'gitconfig',
+);
+fsSync.writeFileSync(emptyGlobalGitConfig, '');
+process.on('exit', () => {
+  try { fsSync.rmSync(path.dirname(emptyGlobalGitConfig), { recursive: true, force: true }); } catch { /* best effort */ }
+});
+
 const git = (cwd, args) => {
   const result = spawnSync('git', args, {
     cwd,
     encoding: 'utf8',
-    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    env: {
+      ...process.env,
+      GIT_TERMINAL_PROMPT: '0',
+      GIT_CONFIG_GLOBAL: emptyGlobalGitConfig,
+      GIT_CONFIG_NOSYSTEM: '1',
+    },
   });
   if (result.status !== 0) {
     throw new Error(result.stderr || `git ${args.join(' ')} failed`);

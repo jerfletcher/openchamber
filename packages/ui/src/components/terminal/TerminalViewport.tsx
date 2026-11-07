@@ -508,6 +508,14 @@ const TerminalViewport = React.forwardRef<TerminalController, Props>(({
       }}
     >
       <ContextMenuTrigger
+        onContextMenu={(event) => {
+          // Only an event the surface released reaches the menu: the surface
+          // suppresses the native event itself while a terminal application
+          // owns the click (or a touch host owns the gesture), and the trigger
+          // must not open over that decision.
+          if (event.nativeEvent !== allowedContextEventRef.current) event.preventBaseUIHandler();
+          allowedContextEventRef.current = null;
+        }}
         render={<div
           ref={containerRef}
           data-terminal-owner="main"

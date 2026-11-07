@@ -166,13 +166,25 @@ describe('Linux selection clipboard wiring', () => {
     expect(pastes()).toBe(1);
   });
 
-  test('a mouse-reporting application owns plain middle click and Shift pastes', async () => {
+  test('a mouse-reporting application owns plain middle click and Shift pastes once select mode is off', async () => {
     const { surface: terminal, pastes, mouseData } = await createSurface();
 
     for (const mode of [1000, 1002, 1003]) {
       terminal.write(`\x1b[?${mode}h`);
       const pasteCount = pastes();
+      const mouseCountBeforeSelectMode = mouseData.length;
 
+      // Select mode is the default: the surface bypasses the application's
+      // mouse tracking, so the click never reaches the PTY and no report is
+      // sent.
+      const selectModeClick = middleClick(terminal);
+      expect(selectModeClick.defaultPrevented).toBe(false);
+      expect(pastes()).toBe(pasteCount);
+      expect(mouseData).toHaveLength(mouseCountBeforeSelectMode);
+
+      // Text-select mode off is "terminal mouse mode": the application owns
+      // the click again, and only Shift hands it back to the host.
+      terminal.setBypassMouseReporting(false);
       const mouseCount = mouseData.length;
       const click = middleClick(terminal);
       expect(click.defaultPrevented).toBe(true);
@@ -182,6 +194,7 @@ describe('Linux selection clipboard wiring', () => {
       middleClick(terminal, true);
       expect(pastes()).toBe(pasteCount + 1);
 
+      terminal.setBypassMouseReporting(true);
       terminal.write(`\x1b[?${mode}l`);
     }
   });
@@ -189,6 +202,9 @@ describe('Linux selection clipboard wiring', () => {
   test('suppresses Chromium paste after a mouse-reporting application owns middle click', async () => {
     const { surface: terminal, pastes, mouseData } = await createSurface();
     terminal.write('\x1b[?1000h');
+    // Terminal mouse mode (select mode off) is what lets the application own
+    // the click; the surface default bypasses tracking for text selection.
+    terminal.setBypassMouseReporting(false);
 
     const click = middleClick(terminal);
     expect(pastes()).toBe(0);

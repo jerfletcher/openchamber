@@ -8,6 +8,7 @@ import { getProviderModelDisplayName } from '@/lib/modelDisplay';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { SessionActivityDuration } from '@/components/session/SessionActivityDuration';
 import { useUIStore } from '@/stores/useUIStore';
+import { useWaitingBlink } from '@/hooks/useDurationTicker';
 import type { Session as SessionInfo, ToolPart, Part as MessagePart } from '@/lib/opencode/model';
 
 interface SubagentTileProps {
@@ -77,6 +78,9 @@ const SubagentTile: React.FC<SubagentTileProps> = ({ child, status, directory, o
   }, [lastAssistantId, partsByMessage]);
 
   const isWorking = status === 'busy';
+  // Blink on the shared waiting clock rather than an infinite CSS pulse: see
+  // the animation contract in `lib/infiniteAnimations.test.ts`.
+  const workingBlink = useWaitingBlink(isWorking);
 
   return (
     <div className="flex flex-col rounded-lg border border-border bg-card p-3 shadow-xs transition-colors hover:border-border/80">
@@ -87,7 +91,7 @@ const SubagentTile: React.FC<SubagentTileProps> = ({ child, status, directory, o
             <span
               className={`size-2 shrink-0 rounded-full ${
                 isWorking
-                  ? 'animate-pulse bg-emerald-500'
+                  ? `bg-emerald-500 ${workingBlink ?? ''}`
                   : status === 'done'
                     ? 'bg-emerald-500'
                     : status === 'failed'

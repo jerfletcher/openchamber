@@ -23,6 +23,7 @@ type TerminalEvent =
   | { type: 'dispose' };
 const terminalEvents: TerminalEvent[] = [];
 let selectedText = '';
+let screenText = '';
 let reportMouse = false;
 let focusCount = 0;
 let surfaceOptions: Parameters<TerminalSurfaceFactory>[1] | null = null;
@@ -52,7 +53,7 @@ class TerminalSurfaceDouble implements TerminalSurface {
     return selectedText;
   }
   getScreenText() {
-    return '';
+    return screenText;
   }
   async pasteFromClipboard(readText: () => Promise<string>, isCurrent: () => boolean = () => true) {
     const data = await readText();
@@ -180,6 +181,7 @@ describe('TerminalViewport integration', () => {
   beforeEach(() => {
     terminalEvents.length = 0;
     selectedText = '';
+    screenText = '';
     reportMouse = false;
     focusCount = 0;
     surfaceOptions = null;
@@ -354,12 +356,22 @@ describe('TerminalViewport integration', () => {
     expect(focusCount).toBeGreaterThan(beforeClose);
   });
 
-  test('disables Copy without a selection and pastes through the terminal surface', async () => {
-    await navigator.clipboard.writeText('echo hello\n');
+  test('offers Copy without a selection, falling back to the visible screen, and pastes through the terminal surface', async () => {
+    screenText = 'visible buffer\n';
     await renderViewport(root, []);
     await flushSurfaceLoad();
     await openContextMenu();
-    expect(menuItem('Copy').getAttribute('aria-disabled')).toBe('true');
+    // No selection: the item stays usable and copies the screen instead of
+    // being disabled, so a touch host or a TUI with no DOM selection can still
+    // copy what it can see.
+    const copy = menuItem('Copy');
+    expect(copy.getAttribute('aria-disabled')).not.toBe('true');
+    await act(async () => { copy.click(); });
+    await act(async () => { await Promise.resolve(); });
+    expect(await navigator.clipboard.readText()).toBe('visible buffer\n');
+
+    await navigator.clipboard.writeText('echo hello\n');
+    await openContextMenu();
     await act(async () => menuItem('Paste').click());
     expect(terminalEvents.filter((event) => event.type === 'paste')).toEqual([
       { type: 'paste', data: 'echo hello\n' },

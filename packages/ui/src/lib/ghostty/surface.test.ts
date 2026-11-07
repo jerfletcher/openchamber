@@ -108,10 +108,15 @@ describe('shortcuts and gestures', () => {
     expect(isTerminalCopyShortcut({ key: 'C', ctrlKey: true, metaKey: false, shiftKey: true }, 'Linux x86_64')).toBe(true);
   });
 
-  test('paste uses Cmd+V on macOS, Ctrl+Shift+V or Shift+Insert elsewhere', () => {
+  test('paste uses Cmd+V on macOS and Ctrl+V (with or without Shift) elsewhere', () => {
     expect(isTerminalPasteShortcut({ key: 'v', ctrlKey: false, metaKey: true, shiftKey: false }, 'MacIntel')).toBe(true);
-    expect(isTerminalPasteShortcut({ key: 'v', ctrlKey: true, metaKey: false, shiftKey: false }, 'Win32')).toBe(false);
+    // Non-mac hosts paste on plain Ctrl+V as well as the classic
+    // Ctrl+Shift+V: the fork copied the terminal's own convention, and every
+    // other desktop terminal accepts Ctrl+V.
+    expect(isTerminalPasteShortcut({ key: 'v', ctrlKey: true, metaKey: false, shiftKey: false }, 'Win32')).toBe(true);
     expect(isTerminalPasteShortcut({ key: 'v', ctrlKey: true, metaKey: false, shiftKey: true }, 'Win32')).toBe(true);
+    // A bare V without a modifier, or Ctrl+Alt+V, is still terminal input.
+    expect(isTerminalPasteShortcut({ key: 'v', ctrlKey: false, metaKey: false, shiftKey: false }, 'Win32')).toBe(false);
     expect(isTerminalPasteShortcut({ key: 'Insert', ctrlKey: false, metaKey: false, shiftKey: true }, 'Win32')).toBe(true);
   });
 

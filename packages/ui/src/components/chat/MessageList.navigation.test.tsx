@@ -57,7 +57,7 @@ test('quote reveal opens real folded Activity, including a source prepended from
     };
     const values = {
         window: dom, document: dom.document, navigator: dom.navigator, HTMLElement: dom.HTMLElement, Element: dom.Element,
-        Node: dom.Node, localStorage: dom.localStorage, sessionStorage: dom.sessionStorage,
+        Node: dom.Node, NodeList: dom.NodeList, localStorage: dom.localStorage, sessionStorage: dom.sessionStorage,
         getComputedStyle: dom.getComputedStyle.bind(dom), ResizeObserver: dom.ResizeObserver, MutationObserver: dom.MutationObserver,
         requestAnimationFrame, cancelAnimationFrame, Highlight: TestHighlight,
         CSS: { highlights, escape: (value: string) => value }, IS_REACT_ACT_ENVIRONMENT: true,
@@ -312,7 +312,7 @@ test('owns one anchor hold and removes its frame and input listeners on hide', a
     Object.assign(dom, { requestAnimationFrame, cancelAnimationFrame });
     const values = {
         window: dom, document: dom.document, navigator: dom.navigator, HTMLElement: dom.HTMLElement, Element: dom.Element,
-        Node: dom.Node, localStorage: dom.localStorage, sessionStorage: dom.sessionStorage,
+        Node: dom.Node, NodeList: dom.NodeList, localStorage: dom.localStorage, sessionStorage: dom.sessionStorage,
         getComputedStyle: dom.getComputedStyle.bind(dom), ResizeObserver: dom.ResizeObserver, MutationObserver: dom.MutationObserver,
         requestAnimationFrame, cancelAnimationFrame, IS_REACT_ACT_ENVIRONMENT: true,
     };
