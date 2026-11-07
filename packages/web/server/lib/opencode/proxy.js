@@ -419,12 +419,19 @@ export const registerOpenCodeProxy = (app, deps) => {
     // the host's own answers go out exactly as before spaces.
     mergeSpaceSessionList = null,
     spaceEventHub = null,
+    globalEventHub = null,
     // The folder trust check (`../opencode-trust`): requests for a folder
     // whose configuration runs code wait for the user's trust.
     openCodeTrust = null,
     // MCP OAuth from a browser on another machine (`mcp-oauth.js`).
     mcpOAuthSignIn = null,
+    acpSessionBridge = null,
   } = deps;
+
+  const acpEventHub = globalEventHub || spaceEventHub;
+  if (acpSessionBridge && acpEventHub) {
+    acpSessionBridge.setEventHub(acpEventHub);
+  }
 
   /**
    * `{ [sessionID]: archivedAt }` for the current instance, or `null` when the
@@ -738,6 +745,7 @@ export const registerOpenCodeProxy = (app, deps) => {
     let upstreamStallTimer = null;
     let didUpstreamStall = false;
     let unsubscribeSpaceEvents = null;
+    let unsubscribeAcpEvents = null;
     let writeQueue = Promise.resolve(true);
     const sseBoundary = createSseBoundaryTracker();
 
@@ -853,6 +861,12 @@ export const registerOpenCodeProxy = (app, deps) => {
           void flushSpaceBlocks();
         }, { spaces: true });
       }
+      if (acpSessionBridge) {
+        unsubscribeAcpEvents = acpSessionBridge.subscribeEvent((payload) => {
+          pendingSpaceBlocks.push(`data: ${JSON.stringify(payload)}\n\n`);
+          void flushSpaceBlocks();
+        });
+      }
 
       scheduleHeartbeat();
       resetUpstreamStallTimer();
@@ -893,6 +907,7 @@ export const registerOpenCodeProxy = (app, deps) => {
       }
     } finally {
       unsubscribeSpaceEvents?.();
+      unsubscribeAcpEvents?.();
       if (heartbeatTimer) {
         clearTimeout(heartbeatTimer);
         heartbeatTimer = null;
@@ -947,6 +962,36 @@ export const registerOpenCodeProxy = (app, deps) => {
     }
   };
 
+  /**
+   * The routed session id for the ACP checks that run ahead of the upstream read.
+   *
+   * Express fills `req.params` on a real request, but the route-level unit tests
+   * call these handlers directly with a bare request object, and every handler
+   * this merged into is path-driven (`getRequestUpstreamPath`) rather than
+   * params-driven. Reading the id off the path keeps the ACP checks from turning
+   * a missing `params` into a TypeError that escapes the route.
+   */
+  const sessionIdFromRequest = (req) => {
+    const routed = req.params?.sessionID;
+    if (typeof routed === 'string' && routed.length > 0) return routed;
+    const raw = typeof req.originalUrl === 'string' && req.originalUrl.length > 0
+      ? req.originalUrl
+      : (typeof req.url === 'string' ? req.url : '');
+    const match = /\/api\/session\/([^/?#]+)/.exec(raw);
+    return match ? decodeURIComponent(match[1]) : '';
+  };
+
+  /** The routed message id, with the same params-tolerant contract as `sessionIdFromRequest`. */
+  const messageIdFromRequest = (req) => {
+    const routed = req.params?.messageID;
+    if (typeof routed === 'string' && routed.length > 0) return routed;
+    const raw = typeof req.originalUrl === 'string' && req.originalUrl.length > 0
+      ? req.originalUrl
+      : (typeof req.url === 'string' ? req.url : '');
+    const match = /\/api\/session\/[^/?#]+\/message\/([^/?#]+)/.exec(raw);
+    return match ? decodeURIComponent(match[1]) : '';
+  };
+
   const getRequestUpstreamPath = async (req) => {
     const requestUrl = typeof req.originalUrl === 'string' && req.originalUrl.length > 0
       ? req.originalUrl
@@ -987,7 +1032,19 @@ export const registerOpenCodeProxy = (app, deps) => {
       const listQuery = new URL(upstreamPath, 'http://localhost').searchParams;
       const scopedToDirectory = Boolean(listQuery.get('directory') || req.get('x-opencode-directory'));
       const wantsSpaces = typeof mergeSpaceSessionList === 'function' && !listQuery.get('cursor') && !scopedToDirectory;
-      res.json(wantsSpaces ? await mergeSpaceSessionList(hostList) : hostList);
+      let finalResult = wantsSpaces ? await mergeSpaceSessionList(hostList) : hostList;
+
+      if (acpSessionBridge && !listQuery.get('cursor')) {
+        const filterDir = scopedToDirectory ? (listQuery.get('directory') || req.get('x-opencode-directory')) : null;
+        const acpList = acpSessionBridge.listSessions(filterDir);
+        if (Array.isArray(finalResult)) {
+          finalResult = [...acpList, ...finalResult];
+        } else if (finalResult && Array.isArray(finalResult.data)) {
+          finalResult = { ...finalResult, data: [...acpList, ...finalResult.data] };
+        }
+      }
+
+      res.json(finalResult);
     } catch (error) {
       const status = sessionRouteErrorStatus(error);
       if (status === null) {
@@ -1115,6 +1172,7 @@ export const registerOpenCodeProxy = (app, deps) => {
   // A move names its destination in the body, which reaches the proxy
   // unread. Parsed here, it goes upstream through `replayParsedBody`.
   const parseJsonBody = express.json({ limit: '64kb' });
+  const parsePromptJson = express.json({ limit: '50mb' });
   const readBody = (req, res) => new Promise((resolve, reject) => {
     parseJsonBody(req, res, (error) => (error ? reject(error) : resolve(req.body)));
   });
@@ -1199,6 +1257,239 @@ export const registerOpenCodeProxy = (app, deps) => {
     });
   }
 
+  // ACP Autonomous Session & Catalog routes
+  const forwardAcpCatalogOverlay = (kind) => async (req, res, next) => {
+    if (!acpSessionBridge || typeof acpSessionBridge.getCatalogAugmentation !== 'function') return next();
+    try {
+      const signal = createUpstreamReadSignal({ res, timeoutMs: SESSION_UPSTREAM_TIMEOUT_MS });
+      const upstreamPath = await getRequestUpstreamPath(req);
+      const result = await fetchSessionListPayload(upstreamPath, { req, signal });
+      res.status(result.upstream.status);
+      applyForwardProxyResponseHeaders(result.upstream.headers, res);
+      res.setHeader('content-type', result.contentType);
+      if (!result.isJson || result.parseError || !result.upstream.ok || !Array.isArray(result.payload?.data)) {
+        res.end(result.bodyText);
+        return;
+      }
+      const aug = acpSessionBridge.getCatalogAugmentation();
+      const list = result.payload.data.slice();
+      if (kind === 'agent') {
+        const seen = new Set(list.map((a) => a?.id || a?.name));
+        for (const agent of aug.agents) {
+          if (!seen.has(agent.id)) list.push(agent);
+        }
+      } else if (kind === 'provider') {
+        const seen = new Set(list.map((p) => p?.id));
+        for (const provider of aug.providers) {
+          if (!seen.has(provider.id)) list.push(provider);
+        }
+      } else if (kind === 'model') {
+        const byId = new Map(list.map((m, idx) => [m?.id || `${m?.providerID}/${m?.modelID}`, idx]));
+        for (const model of aug.models) {
+          const existingIdx = byId.get(model.id);
+          if (existingIdx === undefined) {
+            list.push(model);
+          } else if (!Array.isArray(list[existingIdx].variants) || list[existingIdx].variants.length === 0) {
+            list[existingIdx] = { ...list[existingIdx], variants: model.variants };
+          }
+        }
+      }
+      res.json({ ...result.payload, data: list });
+    } catch (error) {
+      const status = sessionRouteErrorStatus(error);
+      if (status === null) return;
+      next(error);
+    }
+  };
+
+  app.get('/api/agent', forwardAcpCatalogOverlay('agent'));
+  app.get('/api/provider', forwardAcpCatalogOverlay('provider'));
+  app.get('/api/model', forwardAcpCatalogOverlay('model'));
+
+  app.post('/api/session', parseJsonBody, (req, res, next) => {
+    const acpAgent = acpSessionBridge?.resolveAcpAgent?.({
+      agent: req.body?.agent || req.query?.agent,
+      providerID: req.body?.model?.providerID,
+      engine: req.body?.engine || req.query?.engine,
+    });
+    if (acpSessionBridge && acpAgent) {
+      const directory = req.body?.location?.directory || req.get('x-opencode-directory') || process.cwd();
+      const session = acpSessionBridge.createSession({
+        id: req.body?.id,
+        title: req.body?.title,
+        directory,
+        agent: acpAgent.id,
+        model: req.body?.model?.id || acpAgent.defaultModel,
+      });
+      return res.json({ data: session });
+    }
+    next();
+  });
+
+  app.post(['/api/session/:sessionID/prompt', '/api/session/:sessionID/message'], (req, res, next) => {
+    const sessionID = sessionIdFromRequest(req);
+    if (acpSessionBridge) {
+      return parsePromptJson(req, res, async (err) => {
+        if (err) return res.status(400).json({ error: err.message });
+        if (!acpSessionBridge.isAcpSession(sessionID)) {
+          const acpAgent = acpSessionBridge.resolveAcpAgent?.({
+            agent: req.body?.agent,
+            providerID: req.body?.model?.providerID,
+            agents: req.body?.agents,
+          });
+          if (acpAgent) {
+            const directory = req.body?.directory || req.get('x-opencode-directory') || process.cwd();
+            acpSessionBridge.createSession({ id: sessionID, agent: acpAgent.id, directory });
+          }
+        }
+        if (acpSessionBridge.isAcpSession(sessionID)) {
+          const promptData = {
+            id: req.body?.id,
+            text: req.body?.text || req.body?.prompt || '',
+            directory: req.body?.directory || req.get('x-opencode-directory'),
+            files: req.body?.files || req.body?.attachments || [],
+          };
+          if (req.body?.model?.variant) acpSessionBridge.switchModel(sessionID, req.body.model);
+          try {
+            const userMsg = await acpSessionBridge.startTurn(sessionID, promptData);
+            const userInbox = {
+              id: userMsg ? userMsg.id : (promptData.id || `msg_${Date.now()}`),
+              sessionID,
+              time: userMsg?.time || { created: Date.now() },
+              type: 'user',
+              payload: {
+                text: promptData.text || '',
+              },
+              delivery: 'express',
+            };
+            return res.json({ data: userInbox });
+          } catch (err) {
+            console.error('[proxy] ACP startTurn error:', err);
+            return res.status(500).json({ error: err.message });
+          }
+        }
+        next();
+      });
+    }
+    next();
+  });
+
+  app.post('/api/session/:sessionID/model', (req, res, next) => {
+    const sessionID = sessionIdFromRequest(req);
+    if (acpSessionBridge) {
+      return parseJsonBody(req, res, () => {
+        const providerID = req.body?.model?.providerID;
+        if (acpSessionBridge.isAcpProvider?.(providerID) && !acpSessionBridge.isAcpSession(sessionID)) {
+          const cfg = acpSessionBridge.getAgentConfig(providerID);
+          const directory = req.get('x-opencode-directory') || process.cwd();
+          acpSessionBridge.createSession({ id: sessionID, agent: cfg?.id || providerID, directory });
+        }
+        if (acpSessionBridge.isAcpSession(sessionID)) {
+          acpSessionBridge.switchModel(sessionID, req.body?.model);
+          return res.status(204).end();
+        }
+        next();
+      });
+    }
+    next();
+  });
+
+  app.post('/api/session/:sessionID/agent', (req, res, next) => {
+    const sessionID = sessionIdFromRequest(req);
+    if (acpSessionBridge) {
+      return parseJsonBody(req, res, () => {
+        const agentName = req.body?.agent;
+        if (acpSessionBridge.isAcpAgent?.(agentName) && !acpSessionBridge.isAcpSession(sessionID)) {
+          const directory = req.get('x-opencode-directory') || process.cwd();
+          acpSessionBridge.createSession({ id: sessionID, agent: agentName, directory });
+        }
+        if (acpSessionBridge.isAcpSession(sessionID)) {
+          acpSessionBridge.switchAgent(sessionID, req.body?.agent);
+          return res.status(204).end();
+        }
+        next();
+      });
+    }
+    next();
+  });
+
+  app.patch('/api/session/:sessionID', (req, res, next) => {
+    const sessionID = sessionIdFromRequest(req);
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      return parseJsonBody(req, res, () => {
+        acpSessionBridge.updateSession(sessionID, req.body || {});
+        return res.status(204).end();
+      });
+    }
+    next();
+  });
+
+  app.get('/api/session/:sessionID/inbox', (req, res, next) => {
+    const sessionID = sessionIdFromRequest(req);
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      return res.json({ data: [] });
+    }
+    next();
+  });
+
+  app.get('/api/session/:sessionID/context', (req, res, next) => {
+    const sessionID = sessionIdFromRequest(req);
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      return res.json({ data: {} });
+    }
+    next();
+  });
+
+  app.get('/api/session/:sessionID/diff', (req, res, next) => {
+    const sessionID = sessionIdFromRequest(req);
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      return res.json({ data: [] });
+    }
+    next();
+  });
+
+  app.post('/api/session/:sessionID/view', (req, res, next) => {
+    const sessionID = sessionIdFromRequest(req);
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      return res.status(204).end();
+    }
+    next();
+  });
+
+  app.post('/api/session/:sessionID/move', (req, res, next) => {
+    const sessionID = sessionIdFromRequest(req);
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      return res.status(204).end();
+    }
+    next();
+  });
+
+  app.post('/api/session/:sessionID/command', (req, res, next) => {
+    const sessionID = sessionIdFromRequest(req);
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      return res.status(204).end();
+    }
+    next();
+  });
+
+  app.post(['/api/session/:sessionID/abort', '/api/session/:sessionID/interrupt'], (req, res, next) => {
+    const sessionID = sessionIdFromRequest(req);
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      const interrupted = acpSessionBridge.abortTurn(sessionID);
+      return res.json({ interrupted: Boolean(interrupted), ok: true });
+    }
+    next();
+  });
+
+  app.delete('/api/session/:sessionID', (req, res, next) => {
+    const sessionID = sessionIdFromRequest(req);
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      acpSessionBridge.deleteSession(sessionID);
+      return res.status(204).end();
+    }
+    next();
+  });
+
   // V2 lists sessions across directories on every platform and owns pagination.
   app.get('/api/session', (req, res, next) => {
     return forwardSanitizedSessionListRequest(req, res, next);
@@ -1207,6 +1498,14 @@ export const registerOpenCodeProxy = (app, deps) => {
   // One session: the same overlay, so a detail read agrees with the list it
   // came from. Everything else about the record is forwarded untouched.
   app.get('/api/session/:sessionID', async function forwardSessionGetRequest(req, res, next) {
+    const sessionID = sessionIdFromRequest(req);
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      const session = acpSessionBridge.getSession(sessionID);
+      if (session) {
+        return res.json({ data: session });
+      }
+      return res.status(404).json({ error: 'Session not found' });
+    }
     if (
       typeof getArchivedSessions !== 'function'
       && typeof getStoredSessionMetadata !== 'function'
@@ -1253,9 +1552,24 @@ export const registerOpenCodeProxy = (app, deps) => {
     }
   });
 
+  app.get('/api/session/:sessionID/message/:messageID', (req, res, next) => {
+    const sessionID = sessionIdFromRequest(req);
+    const messageID = messageIdFromRequest(req);
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      const msg = acpSessionBridge.getMessage(sessionID, messageID);
+      if (msg) return res.json({ data: msg });
+      return res.status(404).json({ error: 'Message not found' });
+    }
+    next();
+  });
+
   // A client that asks for it gets message pages with finished tool results
   // shelled (see message-shells.js); anyone else reaches OpenCode untouched.
   app.get('/api/session/:sessionID/message', async function forwardMessageListRequest(req, res, next) {
+    const sessionID = sessionIdFromRequest(req);
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      return res.json(acpSessionBridge.getMessages(sessionID, req.query));
+    }
     const keepWhole = parsePartShellsHeader(req.get(PART_SHELLS_HEADER));
     if (!keepWhole) return next();
     try {

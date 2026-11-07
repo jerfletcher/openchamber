@@ -3,7 +3,7 @@ import { listedChildren } from './listedChildren';
 import type { SessionFolder, SessionFoldersMap } from '@/stores/useSessionFoldersStore';
 import { compareSessionsByLifecycleOrder, EMPTY_SESSION_ORDER_RANKS } from '@/sync/session-ordering';
 import { isSessionPinned } from '@/lib/sessionPins';
-import type { GroupSearchData, SessionGroup, SessionNode } from './types';
+import { getAcpSessionFolderMeta, getAutoAgentFolderAgentId, type AcpAgentFolderMeta, type GroupSearchData, type SessionGroup, type SessionNode } from './types';
 import type { ProjectSection } from './projects/sessionProjectRender';
 import { buildGroupRenderDescriptors } from './projects/sessionProjectRender';
 import { normalizeFolderRoots, selectFolderIdsForProjection, selectFolderRootNodes, type BlockingBadgeSessionScope } from './sessions/sessionNodeItemUtils';
@@ -768,6 +768,50 @@ export const buildSessionSidebarRowModel = (args: SessionSidebarRowModelArgs): S
         nodes: selectFolderRootNodes(folder.sessionIds, indexed.byId).sort((left, right) => compareNodes(left, right, pinned, args.sessionOrderIndex)),
       }))
     ));
+
+    const acpBuckets = new Map<string, { meta: AcpAgentFolderMeta; nodes: SessionNode[] }>();
+    for (const node of sourceNodes) {
+      const meta = getAcpSessionFolderMeta(node.session);
+      if (!meta) continue;
+      const bucket = acpBuckets.get(meta.agentId);
+      if (bucket) bucket.nodes.push(node);
+      else acpBuckets.set(meta.agentId, { meta, nodes: [node] });
+    }
+    for (const { meta, nodes: acpNodes } of acpBuckets.values()) {
+      const existingEntry = folderEntries.find((entry) => entry.folder.name.toLowerCase() === meta.folderName.toLowerCase());
+      const acpSessionIdSet = new Set(acpNodes.map((n) => n.session.id));
+      for (const entry of folderEntries) {
+        if (entry !== existingEntry) {
+          entry.nodes = entry.nodes.filter((node) => !acpSessionIdSet.has(node.session.id));
+        }
+      }
+      if (existingEntry) {
+        existingEntry.nodes = acpNodes;
+        existingEntry.folder = {
+          ...existingEntry.folder,
+          sessionIds: acpNodes.map((n) => n.session.id),
+        };
+      } else {
+        const primaryScope = getSessionFolderScopes(group)[0] ?? {
+          scopeKey: group.folderScopeKey ?? group.directory ?? meta.agentId,
+          directory: group.directory ?? null,
+        };
+        const autoFolderId = `${meta.folderIdPrefix}:${primaryScope.scopeKey}`;
+        const autoFolder: SessionFolder = {
+          id: autoFolderId,
+          name: meta.folderName,
+          sessionIds: acpNodes.map((n) => n.session.id),
+          createdAt: 0,
+        };
+        folderEntries.push({
+          folder: autoFolder,
+          scopeKey: primaryScope.scopeKey,
+          scopeDirectory: primaryScope.directory,
+          ownerKey,
+          nodes: acpNodes,
+        });
+      }
+    }
     const visibleFolderKeys = selectFolderIdsForProjection(folderEntries.map((entry) => ({
       id: entry.folder.id,
       name: entry.folder.name,
@@ -841,7 +885,8 @@ export const buildSessionSidebarRowModel = (args: SessionSidebarRowModelArgs): S
         && !group.isArchivedBucket
         && !isArchivedFolderScope(entry.scopeKey)
         && authority?.complete === true
-        && authority.scopeKeys.includes(entry.scopeKey);
+        && authority.scopeKeys.includes(entry.scopeKey)
+        && !getAutoAgentFolderAgentId(entry.folder);
       push({
         kind: 'folder-header', key: folderKey, estimateSize: HEADER_ESTIMATE, depth: contentDepth, group,
         folder: entry.folder, displayName, scopeKey: entry.scopeKey, scopeDirectory: entry.scopeDirectory,

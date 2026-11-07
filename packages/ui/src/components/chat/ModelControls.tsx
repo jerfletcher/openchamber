@@ -447,6 +447,20 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         : currentVariantSelection.override ?? effectiveCurrentVariant;
     if (selection) currentVariant = selection.variant ?? undefined;
     const currentAgentName = useConfigStore((state) => selection ? selection.agent : state.currentAgentName);
+    const dedicatedAgentProviderId = React.useMemo(() => {
+        if (!currentAgentName) return null;
+        if (currentAgentName === 'antigravity') return 'antigravity';
+        const match = providers.find((p) => p.id === currentAgentName);
+        return match ? match.id : null;
+    }, [currentAgentName, providers]);
+    const isAntigravityAgent = Boolean(dedicatedAgentProviderId);
+    const effectiveProviders = React.useMemo(() => {
+        if (dedicatedAgentProviderId) {
+            const matched = providers.filter((p) => p.id === dedicatedAgentProviderId);
+            if (matched.length > 0) return matched;
+        }
+        return providers;
+    }, [dedicatedAgentProviderId, providers]);
     const settingsDefaultModel = useConfigStore((state) => state.settingsDefaultModel);
     const settingsDefaultVariant = useConfigStore((state) => state.settingsDefaultVariant);
     const getDefaultVariantForModel = useConfigStore((state) => state.getDefaultVariantForModel);
@@ -557,6 +571,19 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     // Separate state for agent selector to avoid conflict with model selector
     const [isAgentSelectorOpen, setIsAgentSelectorOpen] = React.useState(false);
     const { favoriteModelsList, recentModelsList } = useModelLists(catalogDirectory);
+    const effectiveFavoriteModels = React.useMemo(() => {
+        if (dedicatedAgentProviderId) {
+            return favoriteModelsList.filter((m) => m.providerID === dedicatedAgentProviderId);
+        }
+        return favoriteModelsList;
+    }, [dedicatedAgentProviderId, favoriteModelsList]);
+
+    const effectiveRecentModels = React.useMemo(() => {
+        if (dedicatedAgentProviderId) {
+            return recentModelsList.filter((m) => m.providerID === dedicatedAgentProviderId);
+        }
+        return recentModelsList;
+    }, [dedicatedAgentProviderId, recentModelsList]);
     // Auto routing: the server resolves `openchamber/auto` into a real model per
     // send. Offered only while the server says it can honour it, in the main
     // composer and in controlled selections (BTW) alike.
@@ -1554,6 +1581,24 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             }
             setAgent(agentName);
             addRecentAgent(agentName);
+            const dedicatedProvider = providers.find((p) => p.id === agentName);
+            const targetProviderId = dedicatedProvider?.id || (agentName === 'antigravity' ? 'antigravity' : null);
+            if (targetProviderId && currentProviderId !== targetProviderId) {
+                const agentDef = agents.find((a) => a.name === agentName);
+                // `AgentInfo.model` is an SDK `ModelRef`, whose model identifier is
+                // `id` (the field was `modelID` before the 2.2 client upgrade that
+                // landed upstream while the ACP branch was in flight).
+                const defaultModelId = agentDef?.model?.id
+                    || dedicatedProvider?.models?.[0]?.id
+                    || (targetProviderId === 'antigravity' ? 'gemini-3.8-flash' : '');
+                if (defaultModelId) {
+                    tryApplyModelSelection(targetProviderId, defaultModelId, agentName);
+                    const pickedSessionId = selection ? controlledSessionId : currentSessionId;
+                    if (pickedSessionId) {
+                        useSelectionStore.getState().pickSessionModel(pickedSessionId, targetProviderId, defaultModelId);
+                    }
+                }
+            }
             if (options?.closeModelSelector ?? true) {
                 setAgentMenuOpen(false);
             }
@@ -1980,17 +2025,17 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                 scrollContent={false}
             >
                 <ModelPickerList
-                    providers={providers}
+                    providers={effectiveProviders}
                     providerOrder={providerOrder}
-                    favoriteModels={favoriteModelsList}
-                    recentModels={recentModelsList}
+                    favoriteModels={effectiveFavoriteModels}
+                    recentModels={effectiveRecentModels}
                     hiddenModels={hiddenModels}
                     searchQuery={mobileModelQuery}
                     onSearchQueryChange={setMobileModelQuery}
                     onSelect={(entry) => handleMobileModelApply(entry.providerID, entry.modelID)}
                     labels={modelPickerLabels}
                     selectedModel={currentProviderId && currentModelId ? { providerID: currentProviderId, modelID: currentModelId } : null}
-                    leadingEntry={autoEntry}
+                    leadingEntry={isAntigravityAgent ? null : autoEntry}
                     isFavorite={(entry) => isFavoriteModel(entry.providerID, entry.modelID)}
                     onToggleFavorite={(entry) => toggleFavoriteModel(entry.providerID, entry.modelID)}
                     onEntryDetails={(entry) => {
@@ -2414,16 +2459,16 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
                             onKeyDownCapture={handleModelShortcutKeyDownCapture}
                         >
                             <ModelPickerList
-                                providers={providers}
-                                favoriteModels={favoriteModelsList}
-                                recentModels={recentModelsList}
+                                providers={effectiveProviders}
+                                favoriteModels={effectiveFavoriteModels}
+                                recentModels={effectiveRecentModels}
                                 searchQuery={desktopModelQuery}
                                 onSearchQueryChange={setDesktopModelQuery}
                                 onSelect={handleSharedModelSelect}
                                 labels={modelPickerLabels}
                                 selectedModel={currentProviderId && currentModelId ? { providerID: currentProviderId, modelID: currentModelId } : null}
-                                leadingEntry={autoEntry}
-                                searchAction={selection ? null : { label: t('chat.modelControls.addNewProvider'), icon: 'add', onSelect: openAddProviderSettings }}
+                                leadingEntry={isAntigravityAgent ? null : autoEntry}
+                                searchAction={isAntigravityAgent || selection ? null : { label: t('chat.modelControls.addNewProvider'), icon: 'add', onSelect: openAddProviderSettings }}
                                 leadingAction={onRunInParallel ? {
                                     label: t('chat.modelControls.runInParallel'),
                                     icon: <ArrowsMerge className="h-3.5 w-3.5 flex-shrink-0" />,

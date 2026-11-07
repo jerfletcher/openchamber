@@ -8,6 +8,7 @@ export const createBootstrapRuntime = (dependencies) => {
     registerCommonRequestMiddleware,
     registerAuthAndAccessRoutes,
     registerTtsRoutes,
+    registerAcpRoutes = () => {},
     registerNotificationRoutes,
     registerOpenChamberRoutes,
     registerAgentToolRoutes = () => {},
@@ -133,6 +134,7 @@ export const createBootstrapRuntime = (dependencies) => {
     notificationEmitRoutes.registerApiRoute();
 
     registerTtsRoutes(app, { sayTTSCapability });
+    registerAcpRoutes(app);
 
     registerNotificationRoutes(app, {
       uiAuthController,

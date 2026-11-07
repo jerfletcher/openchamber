@@ -709,7 +709,10 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
 
   const requireApiAuth = async (req, res, next) => {
     const pathname = (req.originalUrl || '').split('?')[0];
-    if (selfAuthenticatedApiPaths.has(pathname)) return next();
+    // `/api/acp/v1` is the ACP bridge's own OpenAI-compatible surface and answers
+    // unauthenticated by design (acp-routes.js); every other ACP route stays
+    // behind this gate.
+    if (selfAuthenticatedApiPaths.has(pathname) || pathname.startsWith('/api/acp/v1')) return next();
     if (isGuestOauthCallback(req) || isMcpOauthCallback(req) || isFilePreviewRead(req) || isGuestFrameFileRead(req)) {
       return next();
     }

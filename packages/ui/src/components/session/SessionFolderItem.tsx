@@ -52,6 +52,8 @@ interface SessionFolderItemProps<TSessionNode> {
   canExpand?: boolean;
   /** Hide folder action buttons (rename/delete/new) */
   hideActions?: boolean;
+  /** Hide rename and delete buttons for auto-managed/system folders */
+  disableManage?: boolean;
   /** Whether folder belongs to archived section */
   archivedBucket?: boolean;
 }
@@ -83,6 +85,7 @@ const SessionFolderItemBase = <TSessionNode,>({
   depth = 0,
   canExpand = true,
   hideActions = false,
+  disableManage = false,
   archivedBucket = false,
 }: SessionFolderItemProps<TSessionNode>) => {
   const { t } = useI18n();
@@ -307,7 +310,7 @@ const SessionFolderItemBase = <TSessionNode,>({
                   <Icon name="add" className="h-3.5 w-3.5" />
                 </button>
               ) : null}
-              {!archivedBucket ? (
+              {!archivedBucket && !disableManage ? (
                 <button
                   type="button"
                   onClick={(event) => {
@@ -320,19 +323,21 @@ const SessionFolderItemBase = <TSessionNode,>({
                   <Icon name="pencil-ai" className="h-3 w-3" />
                 </button>
               ) : null}
-              <button
-                type="button"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onDelete();
-                }}
-                className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:text-destructive hover:bg-interactive-hover/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                aria-label={archivedBucket
-                  ? t('sessions.sidebar.folderItem.deleteArchivedInFolderAria', { folderName: folder.name })
-                  : t('sessions.sidebar.folderItem.deleteFolderAria', { folderName: folder.name })}
-              >
-                <Icon name="delete-bin" className="h-3 w-3" />
-              </button>
+              {!disableManage ? (
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    onDelete();
+                  }}
+                  className="inline-flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground hover:text-destructive hover:bg-interactive-hover/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-label={archivedBucket
+                    ? t('sessions.sidebar.folderItem.deleteArchivedInFolderAria', { folderName: folder.name })
+                    : t('sessions.sidebar.folderItem.deleteFolderAria', { folderName: folder.name })}
+                >
+                  <Icon name="delete-bin" className="h-3 w-3" />
+                </button>
+              ) : null}
             </div>
           </div>
         ) : null}

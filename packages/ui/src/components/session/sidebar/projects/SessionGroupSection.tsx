@@ -15,10 +15,11 @@ import { sessionTreeRowPaddingLeft } from '../sessions/sessionTreeGeometry';
 import { cn } from '@/lib/utils';
 import { sessionEvents } from '@/lib/sessionEvents';
 import { useUIStore } from '@/stores/useUIStore';
+import { useConfigStore } from '@/stores/useConfigStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { SessionFolderItem } from '../../SessionFolderItem';
 import { DroppableFolderWrapper, SessionFolderDndScope } from '../folders/sessionFolderDnd';
-import type { GroupSearchData, SessionGroup, SessionNode } from '../types';
+import { getAcpSessionFolderMeta, getAutoAgentFolderAgentId, type AcpAgentFolderMeta, type GroupSearchData, type SessionGroup, type SessionNode } from '../types';
 import { isBranchDifferentFromLabel, normalizePath, renderHighlightedText } from '../utils';
 import { compareSessionsByLifecycleOrder, EMPTY_SESSION_ORDER_RANKS } from '@/sync/session-ordering';
 import {
@@ -31,7 +32,7 @@ import {
   selectFolderIdsForProjection,
   selectFolderRootNodes,
 } from '../sessions/sessionNodeItemUtils';
-import { useSessionFoldersStore } from '@/stores/useSessionFoldersStore';
+import { useSessionFoldersStore, type SessionFolder } from '@/stores/useSessionFoldersStore';
 
 type FolderScope = { scopeKey: string; directory: string | null };
 import { useOpenTrackerItem } from '@/components/sourceBoard/openTrackerItem';
@@ -415,10 +416,55 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
     return map;
   }, [sourceGroupNodes]);
 
-  const allFoldersForGroupBase = React.useMemo(() => scopeFolders.map(({ folder, scopeKey, scopeDirectory }) => {
-    const nodes = selectFolderRootNodes(folder.sessionIds, nodeBySessionId).sort(compareSessionNodes);
-    return { folder, scopeKey, scopeDirectory, nodes };
-  }), [scopeFolders, nodeBySessionId, compareSessionNodes]);
+  const allFoldersForGroupBase = React.useMemo(() => {
+    const folders = scopeFolders.map(({ folder, scopeKey, scopeDirectory }) => {
+      const nodes = selectFolderRootNodes(folder.sessionIds, nodeBySessionId).sort(compareSessionNodes);
+      return { folder, scopeKey, scopeDirectory, nodes };
+    });
+    const acpBuckets = new Map<string, { meta: AcpAgentFolderMeta; nodes: SessionNode[] }>();
+    for (const node of sourceGroupNodes) {
+      const meta = getAcpSessionFolderMeta(node.session);
+      if (!meta) continue;
+      const bucket = acpBuckets.get(meta.agentId);
+      if (bucket) bucket.nodes.push(node);
+      else acpBuckets.set(meta.agentId, { meta, nodes: [node] });
+    }
+    for (const { meta, nodes: acpNodes } of acpBuckets.values()) {
+      const existingEntry = folders.find((entry) => entry.folder.name.toLowerCase() === meta.folderName.toLowerCase());
+      const acpSessionIdSet = new Set(acpNodes.map((n) => n.session.id));
+      for (const entry of folders) {
+        if (entry !== existingEntry) {
+          entry.nodes = entry.nodes.filter((node) => !acpSessionIdSet.has(node.session.id));
+        }
+      }
+      if (existingEntry) {
+        existingEntry.nodes = acpNodes;
+        existingEntry.folder = {
+          ...existingEntry.folder,
+          sessionIds: acpNodes.map((n) => n.session.id),
+        };
+      } else {
+        const primaryScope = folderScopes[0] ?? {
+          scopeKey: folderScopeKey ?? group.directory ?? meta.agentId,
+          directory: group.directory ?? null,
+        };
+        const autoFolderId = `${meta.folderIdPrefix}:${primaryScope.scopeKey}`;
+        const autoFolder: SessionFolder = {
+          id: autoFolderId,
+          name: meta.folderName,
+          sessionIds: acpNodes.map((n) => n.session.id),
+          createdAt: 0,
+        };
+        folders.push({
+          folder: autoFolder,
+          scopeKey: primaryScope.scopeKey,
+          scopeDirectory: primaryScope.directory,
+          nodes: acpNodes,
+        });
+      }
+    }
+    return folders;
+  }, [scopeFolders, nodeBySessionId, compareSessionNodes, sourceGroupNodes, folderScopes, folderScopeKey, group.directory]);
 
   const allFoldersForGroup = React.useMemo(() => {
     const visibleFolderIds = selectFolderIdsForProjection(
@@ -641,6 +687,8 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
     const { folder, scopeKey, scopeDirectory, nodes } = entry;
     const folderSessionsForDelete = folderSessionsForDeleteById.get(folder.id) ?? [];
     const isRenamingFolder = folderRename?.folderId === folder.id && folderRename?.scopeKey === scopeKey;
+    const autoFolderAgentId = getAutoAgentFolderAgentId(folder);
+    const isAgyFolder = Boolean(autoFolderAgentId);
 
     const isFolderCollapsed = hasSessionSearchQuery ? false : collapsedFolderIds.has(folder.id);
     const item = (collapsedActivityState: ReturnType<typeof useCollapsedSessionActivityState>) => (
@@ -653,6 +701,7 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
             isCollapsed={isFolderCollapsed}
             collapsedActivityState={collapsedActivityState}
             onToggle={() => toggleFolderCollapse(folder.id)}
+            disableManage={isAgyFolder}
             onRename={(name) => {
               renameFolder(scopeKey, folder.id, name);
             }}
@@ -701,12 +750,15 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
             onNewSession={() => {
               if (projectId && projectId !== activeProjectId) setActiveProjectIdOnly(projectId);
               if (mobileVariant) setSessionSwitcherOpen(false);
-               openNewSessionDraft({
-                 selectedProjectId: projectId,
-                 directoryOverride: scopeDirectory ?? group.directory,
-                 targetFolderId: folder.id,
-                 target: group.draftTarget,
-               });
+              if (autoFolderAgentId) {
+                useConfigStore.getState().setAgent(autoFolderAgentId);
+              }
+              openNewSessionDraft({
+                selectedProjectId: projectId,
+                directoryOverride: scopeDirectory ?? group.directory,
+                targetFolderId: folder.id,
+                target: group.draftTarget,
+              });
             }}
             hideActions={false}
             archivedBucket={group.isArchivedBucket === true}

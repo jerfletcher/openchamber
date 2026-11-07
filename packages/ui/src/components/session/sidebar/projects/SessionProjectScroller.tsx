@@ -15,6 +15,7 @@ import { useI18n } from '@/lib/i18n';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { sessionEvents } from '@/lib/sessionEvents';
 import { CHAT_DRAFT_PROJECT_ID } from '@/lib/chatDirectories';
+import { useConfigStore } from '@/stores/useConfigStore';
 import { useSessionFoldersStore } from '@/stores/useSessionFoldersStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useChildStoreManager } from '@/sync/sync-context';
@@ -30,7 +31,7 @@ import { DroppableFolderWrapper, SessionFolderOwnersProvider } from '../folders/
 import { sessionFolderCollision } from '../folders/sessionFolderCollision';
 import { applySessionFolderDrop, resolveCurrentSessionFolderDropSource, resolveCurrentSessionFolderDropTarget } from '../folders/sessionFolderDrop';
 import { FolderDeleteConfirmDialog, type DeleteFolderConfirmState } from '../shell/ConfirmDialogs';
-import type { SessionGroup } from '../types';
+import { getAutoAgentFolderAgentId, type SessionGroup } from '../types';
 import { SessionSidebarRows, type SessionSidebarHeldRow } from '../SessionSidebarRows';
 import { copyDragSource, keepRowInList, ROW_DRAG_AUTO_SCROLL, useRowDragSensors } from '../rowDrag';
 import { RowDragPreview } from '../RowDragPreview';
@@ -438,12 +439,15 @@ function SessionProjectScrollerComponent({ model, view, actions }: SessionProjec
     if (row.kind === 'folder-header') {
       const renaming = model.groupProps.folderRename?.folderId === row.folder.id && model.groupProps.folderRename.scopeKey === row.scopeKey;
       const folderProject = row.mixed ? model.projectSections.find((section) => section.project.id === row.projectId)?.project : undefined;
+      const autoFolderAgentId = getAutoAgentFolderAgentId(row.folder);
+      const isAgyFolder = Boolean(autoFolderAgentId);
       return <DroppableFolderWrapper folderId={row.folder.id} scopeKey={row.scopeKey} ownerKey={row.ownerKey} disabled={!row.dropEnabled}>
         {(droppableRef, isDropTarget) => <SessionSidebarFolderItem
           activityNodes={row.activityNodes}
           folder={row.folder} displayName={row.displayName} sessions={row.nodes} memberCount={row.memberCount} depth={row.depth}
           projectLabel={folderProject ? getProjectLabel(folderProject, view.homeDirectory) : undefined} canExpand={!row.empty}
           isCollapsed={row.collapsed} onToggle={row.forceExpanded ? () => undefined : () => toggleFolderCollapse(row.folder.id)}
+          disableManage={isAgyFolder}
           onRename={(name) => renameFolder(row.scopeKey, row.folder.id, name)}
           onDelete={() => {
             if (row.archived) {
@@ -469,6 +473,9 @@ function SessionProjectScrollerComponent({ model, view, actions }: SessionProjec
               setActiveProjectIdOnly: actions.setActiveProjectIdOnly,
               setSessionSwitcherOpen: actions.setSessionSwitcherOpen,
             });
+            if (autoFolderAgentId) {
+              useConfigStore.getState().setAgent(autoFolderAgentId);
+            }
             actions.openNewSessionDraft({ selectedProjectId: row.projectId, directoryOverride: row.scopeDirectory ?? row.group.directory, targetFolderId: row.folder.id, target: row.group.draftTarget });
           }}
           archivedBucket={row.archived}
