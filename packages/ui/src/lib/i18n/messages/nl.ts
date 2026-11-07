@@ -240,6 +240,7 @@ export const dict = {
   'terminalView.toast.copyFailed': 'Kan niet kopiëren',
   'terminalView.actions.copy': 'Kopiëren',
   'terminalView.actions.paste': 'Plakken',
+  'terminalView.actions.pastePrompt': 'Tekst in de terminal plakken:',
   'terminalView.toast.pasteFailed': 'Kan het klembord niet lezen. Gebruik de sneltoets voor plakken.',
   'terminalView.toast.pasteFailedTouch': 'Kan het klembord niet lezen.',
   'terminalView.actions.restart': 'Terminal herstarten',

@@ -251,6 +251,7 @@ export const dict: Record<I18nKey, string> = {
   'terminalView.toast.copyFailed': 'Error al copiar',
   'terminalView.actions.copy': 'Copiar',
   'terminalView.actions.paste': 'Pegar',
+  'terminalView.actions.pastePrompt': 'Pegar texto en el terminal:',
   'terminalView.toast.pasteFailed': 'No se pudo leer el portapapeles. Usa el atajo de teclado para pegar.',
   'terminalView.toast.pasteFailedTouch': 'No se pudo leer el portapapeles.',
   'terminalView.actions.restart': 'Reiniciar terminal',

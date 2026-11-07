@@ -241,6 +241,7 @@ export const dict: Record<I18nKey, string> = {
   'terminalView.toast.copyFailed': 'コピーに失敗しました',
   'terminalView.actions.copy': 'コピー',
   'terminalView.actions.paste': '貼り付け',
+  'terminalView.actions.pastePrompt': 'ターミナルにテキストを貼り付け:',
   'terminalView.toast.pasteFailed': 'クリップボードを読み取れませんでした。貼り付けのキーボードショートカットを使用してください。',
   'terminalView.toast.pasteFailedTouch': 'クリップボードを読み取れませんでした。',
   'terminalView.actions.restart': 'ターミナルを再起動',

@@ -251,6 +251,7 @@ export const dict: Record<I18nKey, string> = {
   'terminalView.toast.copyFailed': 'Falha ao copiar',
   'terminalView.actions.copy': 'Copiar',
   'terminalView.actions.paste': 'Colar',
+  'terminalView.actions.pastePrompt': 'Colar texto no terminal:',
   'terminalView.toast.pasteFailed': 'Não foi possível ler a área de transferência. Use o atalho de teclado para colar.',
   'terminalView.toast.pasteFailedTouch': 'Não foi possível ler a área de transferência.',
   'terminalView.actions.restart': 'Reiniciar terminal',

@@ -240,6 +240,7 @@ export const dict = {
   'terminalView.toast.copyFailed': 'Échec de la copie',
   'terminalView.actions.copy': 'Copier',
   'terminalView.actions.paste': 'Coller',
+  'terminalView.actions.pastePrompt': 'Coller le texte dans le terminal :',
   'terminalView.toast.pasteFailed': 'Impossible de lire le presse-papiers. Utilisez le raccourci clavier pour coller.',
   'terminalView.toast.pasteFailedTouch': 'Impossible de lire le presse-papiers.',
   'terminalView.actions.restart': 'Redémarrer le terminal',

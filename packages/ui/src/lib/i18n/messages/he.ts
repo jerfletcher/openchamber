@@ -177,6 +177,7 @@ export const dict = {
   'terminalView.toast.copyFailed': 'ההעתקה נכשלה',
   'terminalView.actions.copy': 'העתק',
   'terminalView.actions.paste': 'הדבק',
+  'terminalView.actions.pastePrompt': 'הדבק טקסט במסוף:',
   'terminalView.toast.pasteFailed': 'לא ניתן היה לקרוא את הלוח. יש להשתמש בקיצור המקשים להדבקה.',
   'terminalView.toast.pasteFailedTouch': 'לא ניתן היה לקרוא את הלוח.',
   'terminalView.actions.restart': 'הפעל מחדש את המסוף',

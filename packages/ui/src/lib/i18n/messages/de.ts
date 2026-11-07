@@ -3318,6 +3318,7 @@ export const dict = {
   'terminalView.toast.copyFailed': 'Kopieren fehlgeschlagen',
   'terminalView.actions.copy': 'Kopieren',
   'terminalView.actions.paste': 'Einfügen',
+  'terminalView.actions.pastePrompt': 'Text in das Terminal einfügen:',
   'terminalView.toast.pasteFailed': 'Die Zwischenablage konnte nicht gelesen werden. Verwende die Tastenkombination zum Einfügen.',
   'terminalView.toast.pasteFailedTouch': 'Die Zwischenablage konnte nicht gelesen werden.',
   'terminalView.actions.restart': 'Terminal neu starten',

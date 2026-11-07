@@ -1161,6 +1161,20 @@ export class GhosttyTerminalSurface {
     if (encoded.length > 0) this.options.onData(encoded);
   }
 
+  /**
+   * Deliver already-read text to the shell as a paste. The prompt fallback the
+   * dock shows when the async clipboard read is refused uses this so its text
+   * takes the same bracketed-paste path as {@link pasteFromClipboard}: it must
+   * reach the PTY through `onData`, not `write` (which paints program output
+   * into the emulator and would never reach the shell). `core` stays private,
+   * so this is the only public encoding seam the viewport needs.
+   */
+  pasteText(text: string): void {
+    if (this.disposed || text.length === 0) return;
+    const encoded = this.core.encodePaste(text);
+    if (encoded.length > 0) this.options.onData(encoded);
+  }
+
   hasSelection(): boolean {
     return this.core.selectionText().length > 0;
   }

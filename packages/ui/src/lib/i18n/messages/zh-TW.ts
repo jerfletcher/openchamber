@@ -241,6 +241,7 @@ export const dict: Record<I18nKey, string> = {
   'terminalView.toast.copyFailed': '複製失敗',
   'terminalView.actions.copy': '複製',
   'terminalView.actions.paste': '貼上',
+  'terminalView.actions.pastePrompt': '貼上文字到終端機：',
   'terminalView.toast.pasteFailed': '無法讀取剪貼簿。請使用貼上快捷鍵。',
   'terminalView.toast.pasteFailedTouch': '無法讀取剪貼簿。',
   'terminalView.actions.restart': '重新啟動終端',

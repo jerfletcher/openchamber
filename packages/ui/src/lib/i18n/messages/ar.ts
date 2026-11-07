@@ -177,6 +177,7 @@ export const dict = {
   'terminalView.toast.copyFailed': 'تعذّر النسخ',
   'terminalView.actions.copy': 'نسخ',
   'terminalView.actions.paste': 'لصق',
+  'terminalView.actions.pastePrompt': 'لصق النص في الطرفية:',
   'terminalView.toast.pasteFailed': 'تعذّرت قراءة الحافظة. استخدم اختصار لوحة المفاتيح للصق.',
   'terminalView.toast.pasteFailedTouch': 'تعذّرت قراءة الحافظة.',
   'terminalView.actions.restart': 'إعادة تشغيل الطرفية',
