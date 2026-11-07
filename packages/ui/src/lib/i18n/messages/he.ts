@@ -24,6 +24,7 @@ import { compactionSettingsI18n } from './compaction-settings.i18n';
 import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
+import { usageToolI18n } from './usage-tool.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
 import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
@@ -716,6 +717,9 @@ export const dict = {
   'chat.backgroundShells.stopAll': 'עצור הכול',
   'chat.backgroundShells.stopAria': 'עצור את {command}',
   'chat.backgroundShells.elapsed': 'פועלת כבר {duration}',
+  'chat.backgroundWork.aria': 'עבודה ברקע',
+  'chat.backgroundWork.count': 'ברקע: {count}',
+  'chat.backgroundImages.generating': 'יוצר תמונה',
   'sessions.sidebar.session.menu.share': 'שתף',
   'sessions.sidebar.session.menu.copied': 'הועתק',
   'sessions.sidebar.session.menu.copyLink': 'העתק קישור',
@@ -755,6 +759,7 @@ export const dict = {
   'sessions.sidebar.session.status.unread': 'עדכונים שלא נקראו',
   'sessions.sidebar.session.status.backgroundSubagent': 'סוכן משנה פועל ברקע',
   'sessions.sidebar.session.status.backgroundCommand': 'פקודה פועלת ברקע',
+  'sessions.sidebar.session.status.backgroundImage': 'תמונה נוצרת ברקע',
   'sessions.sidebar.session.status.waitingOnPullRequest': 'ממתין לבדיקות או לסקירה',
   'sessions.sidebar.session.status.pinned': 'הפעלה מוצמדת',
   'sessions.sidebar.session.status.movingToWorktree': 'ההפעלה מועברת לעץ עבודה חדש',
@@ -1768,6 +1773,7 @@ export const dict = {
   'contextSidebar.empty.openSession': 'יש לפתוח הפעלה כדי לבדוק את ההקשר.',
   'contextSidebar.section.context': 'הקשר',
   'contextSidebar.section.lastAssistantMessage': 'ההודעה האחרונה של העוזר',
+  'contextSidebar.section.sessionTotals': 'סיכום ההפעלה',
   'contextSidebar.section.rawMessages': 'הודעות גולמיות',
   'contextSidebar.context.percentUsed': '{percent}% בשימוש',
   'contextSidebar.breakdown.user': 'משתמש',
@@ -3917,6 +3923,7 @@ export const dict = {
   ...heapSnapshotI18n.he,
   ...consoleBudgetsI18n.he,
   ...imageToolI18n.he,
+  ...usageToolI18n.he,
   ...agentStatusI18n.he,
   ...snippetsI18n.he,
   ...sidebarWorkI18n.he,

@@ -25,6 +25,7 @@ import { compactionSettingsI18n } from './compaction-settings.i18n';
 import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
+import { usageToolI18n } from './usage-tool.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
 import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
@@ -200,6 +201,7 @@ export const dict: Record<I18nKey, string> = {
   ...heapSnapshotI18n.ko,
   ...consoleBudgetsI18n.ko,
   ...imageToolI18n.ko,
+  ...usageToolI18n.ko,
   ...agentStatusI18n.ko,
   ...snippetsI18n.ko,
   ...sidebarWorkI18n.ko,
@@ -782,6 +784,9 @@ export const dict: Record<I18nKey, string> = {
   'chat.backgroundShells.stopAll': '모두 중지',
   'chat.backgroundShells.stopAria': '{command} 중지',
   'chat.backgroundShells.elapsed': '{duration} 동안 실행 중',
+  'chat.backgroundWork.aria': '백그라운드 작업',
+  'chat.backgroundWork.count': '백그라운드: {count}',
+  'chat.backgroundImages.generating': '이미지 생성 중',
   'sessions.sidebar.session.menu.share': '공유',
   'sessions.sidebar.session.menu.copied': '복사됨',
   'sessions.sidebar.session.menu.copyLink': '링크 복사',
@@ -821,6 +826,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.session.status.unread': '읽지 않은 업데이트',
   'sessions.sidebar.session.status.backgroundSubagent': '하위 에이전트가 백그라운드에서 실행 중',
   'sessions.sidebar.session.status.backgroundCommand': '명령이 백그라운드에서 실행 중',
+  'sessions.sidebar.session.status.backgroundImage': '백그라운드에서 이미지 생성 중',
   'sessions.sidebar.session.status.waitingOnPullRequest': '검사 또는 리뷰 대기 중',
   'sessions.sidebar.session.status.pinned': '고정된 세션',
   'sessions.sidebar.session.status.movingToWorktree': '세션을 새 worktree로 이동하는 중',
@@ -1849,6 +1855,7 @@ export const dict: Record<I18nKey, string> = {
   'contextSidebar.empty.openSession': '컨텍스트를 볼 세션을 여세요.',
   'contextSidebar.section.context': '컨텍스트',
   'contextSidebar.section.lastAssistantMessage': '마지막 어시스턴트 메시지',
+  'contextSidebar.section.sessionTotals': '세션 합계',
   'contextSidebar.section.rawMessages': '원본 메시지',
   'contextSidebar.context.percentUsed': '{percent}% 사용됨',
   'contextSidebar.breakdown.user': '사용자',

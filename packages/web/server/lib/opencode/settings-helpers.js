@@ -933,8 +933,8 @@ export const createSettingsHelpers = (dependencies) => {
     if (candidate.agentSecretToolEnabled === true || candidate.agentSecretToolEnabled === false) {
       result.agentSecretToolEnabled = candidate.agentSecretToolEnabled;
     }
-    if (typeof candidate.agentToolsCodeMode === 'boolean') {
-      result.agentToolsCodeMode = candidate.agentToolsCodeMode;
+    if (candidate.agentUsageToolEnabled === true || candidate.agentUsageToolEnabled === false) {
+      result.agentUsageToolEnabled = candidate.agentUsageToolEnabled;
     }
     if (typeof candidate.isolatedSpacesEnabled === 'boolean') {
       result.isolatedSpacesEnabled = candidate.isolatedSpacesEnabled;

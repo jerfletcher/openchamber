@@ -24,6 +24,7 @@ import { compactionSettingsI18n } from './compaction-settings.i18n';
 import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
+import { usageToolI18n } from './usage-tool.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
 import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
@@ -716,6 +717,9 @@ export const dict = {
   'chat.backgroundShells.stopAll': 'إيقاف الكل',
   'chat.backgroundShells.stopAria': 'إيقاف {command}',
   'chat.backgroundShells.elapsed': 'قيد التشغيل منذ {duration}',
+  'chat.backgroundWork.aria': 'عمل في الخلفية',
+  'chat.backgroundWork.count': 'في الخلفية: {count}',
+  'chat.backgroundImages.generating': 'جارٍ إنشاء صورة',
   'sessions.sidebar.session.menu.share': 'مشاركة',
   'sessions.sidebar.session.menu.copied': 'تم النسخ',
   'sessions.sidebar.session.menu.copyLink': 'نسخ الرابط',
@@ -755,6 +759,7 @@ export const dict = {
   'sessions.sidebar.session.status.unread': 'تحديثات غير مقروءة',
   'sessions.sidebar.session.status.backgroundSubagent': 'وكيل فرعي يعمل في الخلفية',
   'sessions.sidebar.session.status.backgroundCommand': 'أمر يعمل في الخلفية',
+  'sessions.sidebar.session.status.backgroundImage': 'صورة قيد الإنشاء في الخلفية',
   'sessions.sidebar.session.status.waitingOnPullRequest': 'بانتظار الفحوصات أو مراجعة',
   'sessions.sidebar.session.status.pinned': 'جلسة مثبّتة',
   'sessions.sidebar.session.status.movingToWorktree': 'جارٍ نقل الجلسة إلى شجرة عمل جديدة',
@@ -1768,6 +1773,7 @@ export const dict = {
   'contextSidebar.empty.openSession': 'افتح جلسة لفحص السياق.',
   'contextSidebar.section.context': 'السياق',
   'contextSidebar.section.lastAssistantMessage': 'آخر رسالة من المساعد',
+  'contextSidebar.section.sessionTotals': 'إجماليات الجلسة',
   'contextSidebar.section.rawMessages': 'الرسائل الخام',
   'contextSidebar.context.percentUsed': '{percent}% مستخدم',
   'contextSidebar.breakdown.user': 'المستخدم',
@@ -3917,6 +3923,7 @@ export const dict = {
   ...heapSnapshotI18n.ar,
   ...consoleBudgetsI18n.ar,
   ...imageToolI18n.ar,
+  ...usageToolI18n.ar,
   ...agentStatusI18n.ar,
   ...snippetsI18n.ar,
   ...sidebarWorkI18n.ar,

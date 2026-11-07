@@ -15,6 +15,7 @@ import {
   isWebTool,
   normalizeToolName,
   openChamberToolCall,
+  soleOpenChamberCall,
   renderedPage,
   requestedSecret,
   subagentSessionId,
@@ -93,6 +94,10 @@ describe("tool row description", () => {
       .toEqual({ kind: "text", value: "browser.snapshot" })
     expect(toolDescription("openchamber_notify", { title: "Review ready" }, undefined))
       .toEqual({ kind: "text", value: "Review ready" })
+    expect(toolDescription("openchamber_usage", { action: "usage.read", parameters: { providerId: "claude" } }, undefined))
+      .toEqual({ kind: "text", value: "usage.read · claude" })
+    expect(toolDescription("openchamber_usage", { action: "usage.read", parameters: {} }, undefined))
+      .toEqual({ kind: "text", value: "usage.read" })
   })
 
   test("shell shows the first line of the command", () => {
@@ -422,5 +427,17 @@ describe("openChamberToolCall", () => {
     expect(openChamberToolCall("openchamber_render", { action: "render.page", awaitAnswer: "true" })?.action).toBe("render.page")
     // An explicit parameters object wins on a conflict, as it does in the plugin.
     expect(openChamberToolCall("openchamber_render", { action: "render.page", awaitAnswer: "true", parameters: { awaitAnswer: "false" } })?.awaitsAnswer).toBe(false)
+  })
+})
+
+describe("soleOpenChamberCall", () => {
+  test("is the one OpenChamber call of a script, and nothing for any other script", () => {
+    const call = (tool: string) => ({ tool, status: "completed", input: { action: "memory.save", parameters: { title: "Uses bun" } } })
+    expect(soleOpenChamberCall({ toolCalls: [call("openchamber_memory")] })).toEqual({ tool: "openchamber_memory", input: { action: "memory.save", parameters: { title: "Uses bun" } } })
+    expect(soleOpenChamberCall({ toolCalls: [{ tool: "openchamber", status: "completed" }] })).toEqual({ tool: "openchamber", input: {} })
+    expect(soleOpenChamberCall({ toolCalls: [call("openchamber_memory"), call("openchamber_notify")] })).toBeUndefined()
+    expect(soleOpenChamberCall({ toolCalls: [call("cloud_dns_record_list")] })).toBeUndefined()
+    expect(soleOpenChamberCall({ toolCalls: [] })).toBeUndefined()
+    expect(soleOpenChamberCall(undefined)).toBeUndefined()
   })
 })

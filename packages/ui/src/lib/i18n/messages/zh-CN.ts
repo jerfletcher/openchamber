@@ -25,6 +25,7 @@ import { compactionSettingsI18n } from './compaction-settings.i18n';
 import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
+import { usageToolI18n } from './usage-tool.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
 import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
@@ -200,6 +201,7 @@ export const dict: Record<I18nKey, string> = {
   ...heapSnapshotI18n['zh-CN'],
   ...consoleBudgetsI18n['zh-CN'],
   ...imageToolI18n['zh-CN'],
+  ...usageToolI18n['zh-CN'],
   ...agentStatusI18n['zh-CN'],
   ...snippetsI18n['zh-CN'],
   ...sidebarWorkI18n['zh-CN'],
@@ -782,6 +784,9 @@ export const dict: Record<I18nKey, string> = {
   'chat.backgroundShells.stopAll': '全部停止',
   'chat.backgroundShells.stopAria': '停止 {command}',
   'chat.backgroundShells.elapsed': '已运行 {duration}',
+  'chat.backgroundWork.aria': '后台工作',
+  'chat.backgroundWork.count': '后台：{count}',
+  'chat.backgroundImages.generating': '正在生成图片',
   'sessions.sidebar.session.menu.share': '分享',
   'sessions.sidebar.session.menu.copied': '已复制',
   'sessions.sidebar.session.menu.copyLink': '复制链接',
@@ -821,6 +826,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.session.status.unread': '有未读更新',
   'sessions.sidebar.session.status.backgroundSubagent': '子智能体正在后台运行',
   'sessions.sidebar.session.status.backgroundCommand': '命令正在后台运行',
+  'sessions.sidebar.session.status.backgroundImage': '图片正在后台生成',
   'sessions.sidebar.session.status.waitingOnPullRequest': '正在等待检查或审查',
   'sessions.sidebar.session.status.pinned': '已置顶会话',
   'sessions.sidebar.session.status.movingToWorktree': '正在将会话移至新工作树',
@@ -1815,6 +1821,7 @@ export const dict: Record<I18nKey, string> = {
   'contextSidebar.empty.openSession': '请先打开会话以查看上下文。',
   'contextSidebar.section.context': '上下文',
   'contextSidebar.section.lastAssistantMessage': '最近一条助手消息',
+  'contextSidebar.section.sessionTotals': '会话总计',
   'contextSidebar.section.rawMessages': '原始消息',
   'contextSidebar.context.percentUsed': '已使用 {percent}%',
   'contextSidebar.breakdown.user': '用户',

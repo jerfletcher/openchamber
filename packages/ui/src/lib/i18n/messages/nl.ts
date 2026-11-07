@@ -24,6 +24,7 @@ import { compactionSettingsI18n } from './compaction-settings.i18n';
 import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
+import { usageToolI18n } from './usage-tool.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
 import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
@@ -199,6 +200,7 @@ export const dict = {
   ...heapSnapshotI18n.nl,
   ...consoleBudgetsI18n.nl,
   ...imageToolI18n.nl,
+  ...usageToolI18n.nl,
   ...agentStatusI18n.nl,
   ...snippetsI18n.nl,
   ...sidebarWorkI18n.nl,
@@ -776,6 +778,9 @@ export const dict = {
   'chat.backgroundShells.stopAll': 'Alles stoppen',
   'chat.backgroundShells.stopAria': '{command} stoppen',
   'chat.backgroundShells.elapsed': 'Loopt al {duration}',
+  'chat.backgroundWork.aria': 'Werk op de achtergrond',
+  'chat.backgroundWork.count': 'Op de achtergrond: {count}',
+  'chat.backgroundImages.generating': 'Afbeelding wordt gemaakt',
   'sessions.sidebar.session.menu.share': 'Delen',
   'sessions.sidebar.session.menu.copied': 'Gekopieerd',
   'sessions.sidebar.session.menu.copyLink': 'Link kopiëren',
@@ -815,6 +820,7 @@ export const dict = {
   'sessions.sidebar.session.status.unread': 'Ongelezen updates',
   'sessions.sidebar.session.status.backgroundSubagent': 'Subagent draait op de achtergrond',
   'sessions.sidebar.session.status.backgroundCommand': 'Opdracht draait op de achtergrond',
+  'sessions.sidebar.session.status.backgroundImage': 'Afbeelding wordt op de achtergrond gemaakt',
   'sessions.sidebar.session.status.waitingOnPullRequest': 'Wacht op controles of een review',
   'sessions.sidebar.session.status.pinned': 'Vastgezette sessie',
   'sessions.sidebar.session.status.movingToWorktree': 'Sessie wordt verplaatst naar een nieuwe worktree',
@@ -1844,6 +1850,7 @@ export const dict = {
   'contextSidebar.empty.openSession': 'Open een sessie om de context te bekijken.',
   'contextSidebar.section.context': 'Context',
   'contextSidebar.section.lastAssistantMessage': 'Laatste assistentbericht',
+  'contextSidebar.section.sessionTotals': 'Sessietotalen',
   'contextSidebar.section.rawMessages': 'Ruwe berichten',
   'contextSidebar.context.percentUsed': '{percent}% gebruikt',
   'contextSidebar.breakdown.user': 'Gebruiker',

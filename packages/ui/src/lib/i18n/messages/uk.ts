@@ -25,6 +25,7 @@ import { compactionSettingsI18n } from './compaction-settings.i18n';
 import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
+import { usageToolI18n } from './usage-tool.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
 import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
@@ -210,6 +211,7 @@ export const dict: Record<I18nKey, string> = {
   ...heapSnapshotI18n.uk,
   ...consoleBudgetsI18n.uk,
   ...imageToolI18n.uk,
+  ...usageToolI18n.uk,
   ...agentStatusI18n.uk,
   ...snippetsI18n.uk,
   ...sidebarWorkI18n.uk,
@@ -786,6 +788,9 @@ export const dict: Record<I18nKey, string> = {
   "chat.backgroundShells.stopAll": "Зупинити всі",
   "chat.backgroundShells.stopAria": "Зупинити {command}",
   "chat.backgroundShells.elapsed": "Працює {duration}",
+  "chat.backgroundWork.aria": "Робота у фоні",
+  "chat.backgroundWork.count": "У фоні: {count}",
+  "chat.backgroundImages.generating": "Генерується картинка",
   "sessions.sidebar.session.menu.share": "Поділитися",
   "sessions.sidebar.session.menu.copied": "Скопійовано",
   "sessions.sidebar.session.menu.copyLink": "Копіювати посилання",
@@ -825,6 +830,7 @@ export const dict: Record<I18nKey, string> = {
   "sessions.sidebar.session.status.unread": "Непрочитані оновлення",
   "sessions.sidebar.session.status.backgroundSubagent": "Субагент працює у фоні",
   "sessions.sidebar.session.status.backgroundCommand": "Команда працює у фоні",
+  "sessions.sidebar.session.status.backgroundImage": "Картинка генерується у фоні",
   'sessions.sidebar.session.status.waitingOnPullRequest': 'Чекає на перевірки або ревʼю',
   "sessions.sidebar.session.status.pinned": "Закріплена сесія",
   "sessions.sidebar.session.status.movingToWorktree": "Перенесення сесії в новий worktree",
@@ -1805,6 +1811,7 @@ export const dict: Record<I18nKey, string> = {
   "contextSidebar.empty.openSession": "Відкрийте сесію, щоб перевірити контекст.",
   "contextSidebar.section.context": "Контекст",
   "contextSidebar.section.lastAssistantMessage": "Останнє повідомлення асистента",
+  "contextSidebar.section.sessionTotals": "Підсумки сесії",
   "contextSidebar.section.rawMessages": "Необроблені повідомлення",
   "contextSidebar.context.percentUsed": "{percent}% використано",
   "contextSidebar.breakdown.user": "Користувач",

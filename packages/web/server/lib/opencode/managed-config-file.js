@@ -63,7 +63,7 @@ const BUILTIN_IMAGE_PLUGIN = '-opencode.tool.image-generate';
  * @param {() => Promise<string[]>} [dependencies.listExtensionSkillDirectories] skill folders of active extensions
  * @param {() => Promise<string[]>} [dependencies.listExtensionPluginDirectories] OpenCode plugin folders of active extensions
  * @param {string} [dependencies.openchamberVersion] the running app, which the extension-writing skill pins its SDK to
- * @param {() => { action: string, resource: string, effect: string }[]} [dependencies.readPluginDenials] the plugins switched off in OpenChamber; throws when they cannot be established
+ * @param {() => { action: string, resource: string, effect: string }[]} [dependencies.readPluginDenials] the plugins switched off in OpenChamber
  */
 export const createManagedConfigRuntime = ({
   fsPromises,
@@ -117,13 +117,13 @@ export const createManagedConfigRuntime = ({
     const includeRender = settings?.agentRenderToolEnabled !== false;
     const includeImage = settings?.agentImageToolEnabled === true;
     const includeSecret = settings?.agentSecretToolEnabled !== false;
+    const includeUsage = settings?.agentUsageToolEnabled === true;
     const includeWorkflow = settings?.agentWorkflowToolEnabled === true;
-    const codeMode = settings?.agentToolsCodeMode === true;
 
     const directories = [];
     let permissions = [];
-    if (agentToolRuntime && (includeControl || includeSchedule || includeWeb || includeMemory || includeKnowledge || includeNotify || includeRender || includeImage || includeSecret || includeWorkflow)) {
-      directories.push(await agentToolRuntime.materializePlugin({ includeControl, includeSchedule, includeWeb, includeMemory, includeKnowledge, includeNotify, includeRender, includeImage, includeSecret, includeWorkflow, codeMode }));
+    if (agentToolRuntime && (includeControl || includeSchedule || includeWeb || includeMemory || includeKnowledge || includeNotify || includeRender || includeImage || includeSecret || includeUsage || includeWorkflow)) {
+      directories.push(await agentToolRuntime.materializePlugin({ includeControl, includeSchedule, includeWeb, includeMemory, includeKnowledge, includeNotify, includeRender, includeImage, includeSecret, includeUsage, includeWorkflow }));
       permissions = managedPermissionRules({ includeWorkflow });
     }
     // Only while an option is on: otherwise every limit error would cost the

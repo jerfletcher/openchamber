@@ -1200,10 +1200,6 @@ const sessionKnowledgeRuntime = createSessionKnowledgeRuntime({
     // Declared further down; only ever called after startup.
     return isWorkflowToolEnabled();
   },
-  areAgentToolsInCodeMode: async () => {
-    const settings = await readSettingsFromDiskMigrated().catch(() => null);
-    return settings?.agentToolsCodeMode === true;
-  },
   readSessionMetadata: readStoredSessionMetadata,
   // Pins are read from and written to OpenChamber's own store.
   persistSessionMetadata: (sessionID, directory, patch) => persistSessionMetadataPatch(sessionID, patch, { directory }),
@@ -2178,6 +2174,10 @@ const serviceHostApi = createServiceHostApi({
   control: {
     execute: (...args) => openChamberControlService.execute(...args),
     resolveSessionDirectory: (sessionID) => openChamberControlService.resolveSessionDirectory(sessionID),
+    stopSession: (sessionID) => openChamberControlService.stopSession(sessionID),
+    answerPermission: (input) => openChamberControlService.answerPermission(input),
+    answerForm: (input) => openChamberControlService.answerForm(input),
+    dismissOpenForms: (sessionID) => openChamberControlService.dismissOpenForms(sessionID),
   },
   instructions: guestInstructions,
   readSettings: async (guest) => (await getGuestAuth(guest.id, guestAuthPersistPath(OPENCHAMBER_DATA_DIR)))?.settings ?? {},
@@ -2294,6 +2294,9 @@ const openChamberControlService = createOpenChamberControlService({
   prWatch: prWatchRuntime,
   workflowRuntime,
   archiveStore: openChamberSessionService.archiveStore,
+  // The module the quota routes load, loaded on the first read: the same
+  // instance, extension providers included.
+  loadQuota: () => import('./lib/quota/index.js'),
 });
 
 const ensureGlobalWatcherStarted = async () => {

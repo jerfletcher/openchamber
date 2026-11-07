@@ -168,6 +168,7 @@ const inputSchema = z
         text: optionalText,
         selector: optionalText,
         taskId: optionalText,
+        providerId: optionalText,
         link: z.object({ identifier: optionalText, title: optionalText }).optional().catch(undefined),
       })
       .optional()
@@ -330,6 +331,22 @@ export function lastExecuteToolCall(metadata: Metadata | undefined): { tool: str
     if (call?.tool) return { tool: call.tool, input: call.input }
   }
   return undefined
+}
+
+/**
+ * The one OpenChamber tool call an `execute` script made, or `undefined` when
+ * it made none, several, or called anything else. Most of OpenChamber's tools
+ * sit behind Code Mode (`agent-tool/runtime.js`), and a script almost always
+ * makes exactly this one call; the chat then shows the row as that tool's own,
+ * with its action, detail and icon.
+ */
+export function soleOpenChamberCall(metadata: Metadata | undefined): { tool: string; input: { [key: string]: JsonValue } } | undefined {
+  const calls = executeRawCallSchema.parse(metadata ?? {}).toolCalls ?? []
+  if (calls.length !== 1 || !calls[0]?.tool) return undefined
+  const { tool, input } = calls[0]
+  const call = openChamberToolCall(tool, input)
+  if (!call) return undefined
+  return { tool: call.tool, input: input && typeof input === "object" && !Array.isArray(input) ? input : {} }
 }
 
 /** `JSON.stringify` that answers `undefined` for anything it cannot serialize. */
@@ -530,8 +547,8 @@ const OPENCHAMBER_SECRET_TOOL = "openchamber_secret"
 const OPENCHAMBER_WORKFLOW_TOOL = "openchamber_workflow"
 const OPENCHAMBER_IMAGE_TOOL = "openchamber_image"
 
-/** The control, schedule, browser, memory, knowledge, notify, render, image, secret and workflow tools OpenChamber gives a session. */
-const OPENCHAMBER_TOOLS = new Set(["openchamber", "openchamber_schedule", "openchamber_web", "openchamber_memory", "openchamber_knowledge", "openchamber_notify", OPENCHAMBER_RENDER_TOOL, OPENCHAMBER_IMAGE_TOOL, OPENCHAMBER_SECRET_TOOL, OPENCHAMBER_WORKFLOW_TOOL])
+/** The control, schedule, browser, memory, knowledge, notify, usage, render, image, secret and workflow tools OpenChamber gives a session. */
+const OPENCHAMBER_TOOLS = new Set(["openchamber", "openchamber_schedule", "openchamber_web", "openchamber_memory", "openchamber_knowledge", "openchamber_notify", "openchamber_usage", OPENCHAMBER_RENDER_TOOL, OPENCHAMBER_IMAGE_TOOL, OPENCHAMBER_SECRET_TOOL, OPENCHAMBER_WORKFLOW_TOOL])
 
 // The result envelope the agent tool returns as text (`agent-tool/runtime.js`).
 const proposedWorkflowResultSchema = z.object({
@@ -656,7 +673,7 @@ export function openChamberToolCall(toolName: ToolName, input: JsonValue | undef
 
 /**
  * The action an OpenChamber tool call ran and the one detail that tells calls
- * apart: what was linked, created, saved, opened or asked. Notifications have
+ * apart: what was linked, created, saved, opened, asked or read. Notifications have
  * no action, so their title stands alone.
  */
 function describeOpenChamberTool(parsed: ParsedInput): ToolDescription | null {
@@ -673,6 +690,7 @@ function describeOpenChamberTool(parsed: ParsedInput): ToolDescription | null {
     || parameters?.selector
     || parameters?.prompt?.split("\n")[0]
     || parameters?.taskId
+    || parameters?.providerId
     || parsed.title
   const label = [parsed.action, detail].filter(Boolean).join(" · ")
   return label ? { kind: "text", value: label.slice(0, MAX_COMMAND_LENGTH) } : null

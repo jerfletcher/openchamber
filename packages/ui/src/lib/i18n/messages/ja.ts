@@ -25,6 +25,7 @@ import { compactionSettingsI18n } from './compaction-settings.i18n';
 import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
+import { usageToolI18n } from './usage-tool.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
 import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
@@ -200,6 +201,7 @@ export const dict: Record<I18nKey, string> = {
   ...heapSnapshotI18n.ja,
   ...consoleBudgetsI18n.ja,
   ...imageToolI18n.ja,
+  ...usageToolI18n.ja,
   ...agentStatusI18n.ja,
   ...snippetsI18n.ja,
   ...sidebarWorkI18n.ja,
@@ -782,6 +784,9 @@ export const dict: Record<I18nKey, string> = {
   'chat.backgroundShells.stopAll': 'すべて停止',
   'chat.backgroundShells.stopAria': '{command} を停止',
   'chat.backgroundShells.elapsed': '{duration} 実行中',
+  'chat.backgroundWork.aria': 'バックグラウンドの作業',
+  'chat.backgroundWork.count': 'バックグラウンド: {count}',
+  'chat.backgroundImages.generating': '画像を生成中',
   'sessions.sidebar.session.menu.share': '共有',
   'sessions.sidebar.session.menu.copied': 'コピーしました',
   'sessions.sidebar.session.menu.copyLink': 'リンクをコピー',
@@ -821,6 +826,7 @@ export const dict: Record<I18nKey, string> = {
   'sessions.sidebar.session.status.unread': '未読の更新',
   'sessions.sidebar.session.status.backgroundSubagent': 'サブエージェントがバックグラウンドで実行中',
   'sessions.sidebar.session.status.backgroundCommand': 'コマンドがバックグラウンドで実行中',
+  'sessions.sidebar.session.status.backgroundImage': 'バックグラウンドで画像を生成中',
   'sessions.sidebar.session.status.waitingOnPullRequest': 'チェックまたはレビューを待機中',
   'sessions.sidebar.session.status.pinned': 'ピン留めされたセッション',
   'sessions.sidebar.session.status.movingToWorktree': 'セッションを新しいworktreeへ移動中',
@@ -1845,6 +1851,7 @@ export const dict: Record<I18nKey, string> = {
   'contextSidebar.empty.openSession': 'セッションを開いてコンテキストを確認します。',
   'contextSidebar.section.context': 'コンテキスト',
   'contextSidebar.section.lastAssistantMessage': '最後のアシスタントメッセージ',
+  'contextSidebar.section.sessionTotals': 'セッション合計',
   'contextSidebar.section.rawMessages': '生メッセージ',
   'contextSidebar.context.percentUsed': '{percent}%使用',
   'contextSidebar.breakdown.user': 'ユーザー',

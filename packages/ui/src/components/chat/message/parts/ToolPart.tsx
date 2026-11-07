@@ -98,6 +98,7 @@ import {
     subagentDescription,
     isWriteTool,
     normalizeToolName,
+    soleOpenChamberCall,
     toolDescription, type ToolDescription,
     toolInputPath,
     toolFileDiffs,
@@ -1146,6 +1147,7 @@ const ToolExpandedContent: React.FC<ToolExpandedContentProps> = React.memo(({
         || part.tool === 'openchamber_memory'
         || part.tool === 'openchamber_knowledge'
         || part.tool === 'openchamber_notify'
+        || part.tool === 'openchamber_usage'
         || part.tool === 'openchamber_render'
         || part.tool === 'openchamber_image'
         || part.tool === 'openchamber_secret'
@@ -2376,8 +2378,28 @@ const SubagentToolPartContent: React.FC<ToolPartProps> = (props) => {
     return <ToolPartContent {...props} part={part} header={header} subagentSessionId={childSessionID} />;
 };
 
-const ToolPart: React.FC<ToolPartProps> = (props) => {
+/**
+ * Most of OpenChamber's own tools run behind Code Mode, so their calls arrive
+ * as `execute` parts. A script that made just one of those calls reads as that
+ * tool's own row: its action, detail and icon, instead of "execute" and a
+ * list of tool names. Everything else about the part stays the script's.
+ */
+const useShownToolPart = (part: ToolPartProps['part']): ToolPartProps['part'] => {
+    const metadata = 'metadata' in part.state ? part.state.metadata : undefined;
+    const sole = React.useMemo(
+        () => (isExecuteTool(part.tool) ? soleOpenChamberCall(metadata) : undefined),
+        [metadata, part.tool],
+    );
+    return React.useMemo(
+        () => (sole ? { ...part, tool: sole.tool, state: { ...part.state, input: sole.input } } : part),
+        [part, sole],
+    );
+};
+
+const ToolPart: React.FC<ToolPartProps> = (incoming) => {
     const { t } = useI18n();
+    const part = useShownToolPart(incoming.part);
+    const props = part === incoming.part ? incoming : { ...incoming, part };
     const toolName = normalizeToolName(props.part.tool) || 'tool';
     const displayName = getToolMetadata(toolName).displayName;
     const backgroundShellID = isShellTool(toolName) ? readBackgroundShellID(props.part) : undefined;

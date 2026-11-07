@@ -25,6 +25,7 @@ import { compactionSettingsI18n } from './compaction-settings.i18n';
 import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
+import { usageToolI18n } from './usage-tool.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
 import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
@@ -210,6 +211,7 @@ export const dict: Record<I18nKey, string> = {
   ...heapSnapshotI18n['pt-BR'],
   ...consoleBudgetsI18n['pt-BR'],
   ...imageToolI18n['pt-BR'],
+  ...usageToolI18n['pt-BR'],
   ...agentStatusI18n['pt-BR'],
   ...snippetsI18n['pt-BR'],
   ...sidebarWorkI18n['pt-BR'],
@@ -786,6 +788,9 @@ export const dict: Record<I18nKey, string> = {
   "chat.backgroundShells.stopAll": "Parar todos",
   "chat.backgroundShells.stopAria": "Parar {command}",
   "chat.backgroundShells.elapsed": "Em execução há {duration}",
+  "chat.backgroundWork.aria": "Trabalho em segundo plano",
+  "chat.backgroundWork.count": "Em segundo plano: {count}",
+  "chat.backgroundImages.generating": "Gerando uma imagem",
   "sessions.sidebar.session.menu.share": "Compartilhar",
   "sessions.sidebar.session.menu.copied": "Copiado",
   "sessions.sidebar.session.menu.copyLink": "Copiar link",
@@ -825,6 +830,7 @@ export const dict: Record<I18nKey, string> = {
   "sessions.sidebar.session.status.unread": "Atualizações não lidas",
   "sessions.sidebar.session.status.backgroundSubagent": "Subagente em execução em segundo plano",
   "sessions.sidebar.session.status.backgroundCommand": "Comando em execução em segundo plano",
+  "sessions.sidebar.session.status.backgroundImage": "Imagem sendo gerada em segundo plano",
   'sessions.sidebar.session.status.waitingOnPullRequest': 'Aguardando verificações ou uma revisão',
   "sessions.sidebar.session.status.pinned": "Sessão fixada",
   "sessions.sidebar.session.status.movingToWorktree": "Movendo a sessão para um novo worktree",
@@ -1805,6 +1811,7 @@ export const dict: Record<I18nKey, string> = {
   "contextSidebar.empty.openSession": "Abrir uma sessão para inspecionar o contexto.",
   "contextSidebar.section.context": "Contexto",
   "contextSidebar.section.lastAssistantMessage": "Última mensagem do assistente",
+  "contextSidebar.section.sessionTotals": "Totais da sessão",
   "contextSidebar.section.rawMessages": "Mensagens brutas",
   "contextSidebar.context.percentUsed": "{percent}% usado",
   "contextSidebar.breakdown.user": "Usuário",

@@ -907,6 +907,14 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     isAvailable: (ctx) => !ctx.isVSCode,
   },
   {
+    id: 'sessions.agent-usage-tool',
+    page: 'general',
+    titleKey: 'settings.openchamber.tools.field.agentUsageTool',
+    descriptionKey: 'settings.openchamber.tools.field.agentUsageToolInfo',
+    keywords: ['agent', 'tool', 'usage', 'quota', 'limit', 'reset', 'openchamber'],
+    isAvailable: (ctx) => !ctx.isVSCode,
+  },
+  {
     id: 'sessions.agent-image-tool',
     page: 'general',
     titleKey: 'settings.openchamber.tools.field.agentImageTool',
@@ -1000,14 +1008,6 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     descriptionKey: 'settings.routing.token.info',
     keywords: ['jev', 'typesafe', 'api key', 'token', 'routing'],
     isAvailable: (ctx) => !ctx.isVSCode && ctx.routingAvailable,
-  },
-  {
-    id: 'sessions.agent-tools-code-mode',
-    page: 'general',
-    titleKey: 'settings.openchamber.tools.field.agentToolsCodeMode',
-    descriptionKey: 'settings.openchamber.tools.field.agentToolsCodeModeInfo',
-    keywords: ['agent', 'tool', 'code mode', 'codemode', 'execute', 'openchamber'],
-    isAvailable: (ctx) => !ctx.isVSCode,
   },
   {
     id: 'routing.enabled',

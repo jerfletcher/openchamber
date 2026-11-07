@@ -24,6 +24,7 @@ import { compactionSettingsI18n } from './compaction-settings.i18n';
 import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
+import { usageToolI18n } from './usage-tool.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
 import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
@@ -199,6 +200,7 @@ export const dict = {
   ...heapSnapshotI18n.de,
   ...consoleBudgetsI18n.de,
   ...imageToolI18n.de,
+  ...usageToolI18n.de,
   ...agentStatusI18n.de,
   ...snippetsI18n.de,
   ...sidebarWorkI18n.de,
@@ -698,6 +700,9 @@ export const dict = {
   'chat.backgroundShells.stopAll': 'Alle stoppen',
   'chat.backgroundShells.stopAria': '{command} stoppen',
   'chat.backgroundShells.elapsed': 'Läuft seit {duration}',
+  'chat.backgroundWork.aria': 'Arbeit im Hintergrund',
+  'chat.backgroundWork.count': 'Im Hintergrund: {count}',
+  'chat.backgroundImages.generating': 'Bild wird erstellt',
   'sessions.sidebar.session.menu.share': 'Teilen',
   'sessions.sidebar.session.menu.copied': 'Kopiert',
   'sessions.sidebar.session.menu.copyLink': 'Link kopieren',
@@ -722,6 +727,7 @@ export const dict = {
   'sessions.sidebar.session.status.unread': 'Ungelesene Updates',
   'sessions.sidebar.session.status.backgroundSubagent': 'Subagent läuft im Hintergrund',
   'sessions.sidebar.session.status.backgroundCommand': 'Befehl läuft im Hintergrund',
+  'sessions.sidebar.session.status.backgroundImage': 'Bild wird im Hintergrund erstellt',
   'sessions.sidebar.session.status.waitingOnPullRequest': 'Wartet auf Prüfungen oder ein Review',
   'sessions.sidebar.session.status.pinned': 'Angeheftete Sitzung',
   'sessions.sidebar.session.status.permissionRequired': 'Berechtigung erforderlich',
@@ -1585,6 +1591,7 @@ export const dict = {
   'contextSidebar.empty.openSession': 'Öffnen Sie eine Sitzung, um den Kontext zu prüfen.',
   'contextSidebar.section.context': 'Kontext',
   'contextSidebar.section.lastAssistantMessage': 'Letzte Assistentennachricht',
+  'contextSidebar.section.sessionTotals': 'Sitzung insgesamt',
   'contextSidebar.section.rawMessages': 'Rohmeldungen',
   'contextSidebar.context.percentUsed': '{percent}% verwendet',
   'contextSidebar.breakdown.user': 'Benutzer',
