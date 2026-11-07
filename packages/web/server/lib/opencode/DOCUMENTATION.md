@@ -24,6 +24,7 @@ Diagnostic logging for the timeline export (`proxy.js` error lines, the lifecycl
 - `packages/web/server/lib/opencode/network-runtime.js`: OpenCode URL construction, health-probe readiness checks, and API prefix runtime.
 - `packages/web/server/lib/opencode/project-directory-runtime.js`: request-scoped and settings-backed project directory resolution/validation runtime.
 - `packages/web/server/lib/opencode/config-entity-routes.js`: route registration for agent/command/MCP config orchestration. OpenCode 2 watches these files, so a write is live as soon as it lands and the route answers plain success.
+- `packages/web/server/lib/opencode/mcp-oauth.js`: MCP OAuth from a browser on another machine: the start interception, the generated redirects, and the public callback. See "Remote MCP OAuth" below.
 - `packages/web/server/lib/opencode/websearch-config.js`: writes OpenCode's `websearch` choice (`PUT /api/config/websearch` in `routes.js`; body `{ selection: false | null | "random" | "<provider id>" }`, `null` removes the key, so OpenCode falls back to the answer given in its chat consent form, which it keeps in its own store) to `OPENCODE_CONFIG` when set, else the user config. `GET /api/config/websearch` returns `{ projectPath }`: the project config whose `websearch` overrides that write (see the load order below), so Settings disables the choice and names the file instead of letting it snap back; `findWebSearchProjectOverride` in `config-v2.js` holds the rule. The pure transform is `writeWebSearchSelection` in `config-v2.js`, shared with the VS Code bridge (`api:config/websearch`). The same file writes OpenCode's compaction settings (`PUT /api/config/compaction`; body `{ auto?, buffer?, keepTokens?, background? }`, token counts (for `buffer` also a share of the window such as `"20%"`, the form Settings writes, which needs OpenCode 2.2.4) or `null` to remove the key and booleans written as they are, so `false` also overrides a `true` in a lower config layer; they set `compaction.auto`, `compaction.buffer`, `compaction.keep.tokens` and `experimental.background_compaction`) to the same target; `compactionUpdateSchema` and `writeCompactionSettings` in `config-v2.js` are shared with the bridge (`api:config/compaction`). Settings reads the global values back from OpenCode's config, not from the file. A project config can still set any of these for itself; Settings says so in one line and does not look for project overrides, since whoever wrote one knows it is there.
 
 OpenCode 2 loads the user config, then `OPENCODE_CONFIG`, then project `opencode.json[c]` files from the filesystem root down, then `.opencode/opencode.json[c]` files the same way (`getFolderConfigPaths` in `shared.js`); the last file that sets a key wins, so a project file beats `OPENCODE_CONFIG` too. `findWebSearchProjectOverride` follows that order.
@@ -43,8 +44,9 @@ OpenCode 2 loads the user config, then `OPENCODE_CONFIG`, then project `opencode
 - `packages/web/server/lib/opencode/startup-pipeline-runtime.js`: server startup tail orchestration runtime for terminal/proxy/static/start-listen flow.
 - `packages/web/server/lib/opencode/startup-performance.js`: opt-in startup phase diagnostics with fixed labels and numeric metadata allowlists.
 - `packages/web/server/lib/agent-tool/runtime.js`: managed OpenCode custom-tool materialization, environment injection, same-machine authentication (loopback, or the bound address for a concrete bind), and fixed CLI action dispatch.
-- `packages/web/server/lib/opencode/managed-plugin-config.js`: the `OPENCODE_CONFIG_CONTENT` merge used only on the fallback path, when the user's own environment owns `OPENCODE_CONFIG`.
-- `packages/web/server/lib/opencode/managed-config-file.js`: the managed OpenCode config layer — materializes the enabled OpenChamber plugins (agent tools, the limit failover reporter from `../limit-failover/` while a fallback model or an account switch is set, and the session title prompt, always) and publishes them in a file OpenCode watches.
+- `packages/web/server/lib/opencode/managed-plugin-config.js`: the `OPENCODE_CONFIG_CONTENT` merge used only on the fallback path, when the user's own environment owns `OPENCODE_CONFIG`; it appends managed plugin directories, plugin-switch policies and permission rules.
+- `packages/web/server/lib/opencode/managed-config-file.js`: the managed OpenCode config layer — materializes the enabled OpenChamber plugins (agent tools, the limit failover reporter from `../limit-failover/` while a fallback model or an account switch is set, and the session title prompt, always), writes the plugin-switch denials into `policies`, and publishes them in a file OpenCode watches.
+- `packages/web/server/lib/opencode/plugin-switches.js`: OpenChamber's own record of the plugins switched off in its UI, stored under `<data-dir>/plugin-switches.json` and applied only to the managed OpenCode child.
 - `packages/web/server/lib/opencode/session-title-plugin.js`: the plugin that gives OpenCode's hidden `title` agent OpenChamber's title style and names a session started with attached context alone from that context. See "Session title prompt" below.
 - `packages/web/server/lib/opencode/instance-dir.js`: this server's own folder under `<data-dir>/run/instances/<pid>/` for the files its managed OpenCode reads, and removal of folders left by servers that are gone.
 
@@ -186,8 +188,8 @@ picks them up. OpenChamber never writes session rows itself.
 It runs from `lifecycle.js` immediately before the MANAGED OpenCode is spawned:
 never for an external, user-started OpenCode, and never while a managed one is
 running, because the write would race OpenCode's own loop. Failure is never
-fatal to startup. It opens `<data>/opencode.db` (or `OPENCODE_DB`) read-write
-through `node:sqlite` on Node or `bun:sqlite` on Bun, and skips silently on
+fatal to startup. It opens `<data>/opencode.db` (or `OPENCODE_DB`), resolved
+from the environment the managed process starts with, read-write through `node:sqlite` on Node or `bun:sqlite` on Bun, and skips silently on
 neither. It returns
 `{ status: 'skipped' | 'scheduled' | 'unsafe' | 'unavailable', missing, revisited, reason? }`
 and logs one line; there is no HTTP route and no UI.
@@ -245,7 +247,7 @@ Hard rules, verified against v2.0.8 (the completion stamp against v2.0.16)
 - `getConfigPaths(workingDirectory)`, `readConfigLayers(workingDirectory)`, `readConfig(workingDirectory)`: Config file operations with layer merging (user, project, custom). `readConfigLayers` isolates `INVALID_JSONC` per layer: a broken file is omitted from the merge (`{}` for that layer only), recorded on `layerErrors`, and does not block valid sibling layers. Writes still refuse to overwrite the broken file.
 - `readConfigFile(filePath)`: Reads one config file. Missing, whitespace-only, and comment-only files return `{}`; a comment-only file is recognized by `ValueExpected` being the only parse error. A `jsonc-parser` error that produces a partial or non-object tree throws `INVALID_JSONC` — partial parse trees must never be treated as authoritative (avoids rewriting a `$schema`-only stub over a full config). Content that yields no JSON value for any other reason (YAML, plain text) also throws instead of reading as empty.
 - `readConfigLayer(filePath)`: Same parse as `readConfigFile`, but isolates `INVALID_JSONC` to `{ config: {}, error }` so plugin/MCP/agent readers can skip one broken layer without aborting valid siblings. Writes still refuse to overwrite the broken file.
-- `writeConfig(config, filePath)`: Writes config with automatic backup, replacing the file atomically through `writeFileAtomic` so a watcher or a crash never sees a partial config. Refuses to overwrite an existing non-empty file that fails the same JSONC parse check. Existing files are edited structurally, so comments, formatting, and line endings outside the changed values survive. Equal-length arrays are diffed by index, including objects and nested arrays, unless a retained value moves between changed positions; resized arrays are replaced whole. Comment-only files keep their comments with the serialized config appended below, and the edited text must re-parse to exactly the intended config or the write falls back to a normalized rewrite.
+- `writeConfig(config, filePath)`: Writes config with automatic backup, replacing the file atomically through `writeFileAtomic` so a watcher or a crash never sees a partial config. Refuses to overwrite an existing non-empty file that fails the same JSONC parse check. Existing files are edited structurally, so comments, formatting, and line endings outside the changed values survive. Equal-length arrays are diffed by index, including objects and nested arrays, unless a retained value moves between changed positions; an array that only grew at its end or only lost elements is edited per element, and other resized arrays are replaced whole. Comment-only files keep their comments with the serialized config appended below, and the edited text must re-parse to exactly the intended config or the write falls back to a normalized rewrite.
 - `getJsonEntrySource(layers, sectionKind, entryName)`: Resolves which config layer provides an entry. `sectionKind` is `agents`, `commands`, `providers`, or `mcp`, and both the v2 and the v1 spelling are searched (v2 wins). The result carries `sectionKey` (the spelling that actually held the entry) and `legacy`, so a writer can rewrite the same file in v2 shape. A failed custom or user layer throws `INVALID_JSONC` instead of treating that file as empty. A failed project layer is skipped so a valid user/custom entry can still be found.
 - `getJsonWriteTarget(layers, preferredScope)`: Determines write target for config updates. Throws `INVALID_JSONC` when the chosen target file is the unparseable layer.
 - `getFolderConfigPaths(workingDirectory)`: Every `opencode.json(c)` and `.opencode/opencode.json(c)` OpenCode 2 finds walking up from the project folder to the filesystem root, lowest priority first in OpenCode's order (`core/src/config/discovery.ts`): plain files outermost folder first, `.jsonc` after `.json`, then the `.opencode/` files the same way. Global config files are left out. Only MCP reads use it so far; agents, commands and providers still read the single project file.
@@ -260,7 +262,7 @@ Hard rules, verified against v2.0.8 (the completion stamp against v2.0.16)
 
 ### Why array edits keep existing positions
 
-Replacing an entire array discards comments inside untouched entries, so equal-length arrays use edits at the changed indices. A value retained at another changed index triggers whole-array replacement to avoid leaving a moved entry's comments at its old position. Length changes and the legacy `plugin` to `plugins` conversion still replace the array and can discard its internal comments.
+Replacing an entire array discards comments inside untouched entries, so equal-length arrays use edits at the changed indices. A value retained at another changed index triggers whole-array replacement to avoid leaving a moved entry's comments at its old position. An array that only grew at its end or only lost elements, such as `policies` under the skill switch, gets one edit per element: an appended element goes on its own line at the last element's indentation, because `jsonc-parser`'s insertion reformats the line it lands on, and a removed element takes its line with it when nothing else is on it. Comments next to a removed element stay. Any other length change and the legacy `plugin` to `plugins` conversion still replace the array and can discard its internal comments.
 
 ## Public exports (routes.js)
 - `registerOpenCodeRoutes(app, dependencies)`: Registers OpenCode-owned HTTP routes and internal module runtime:
@@ -653,6 +655,100 @@ highest-priority existing one (`.opencode/opencode.json` for a new file), so
 an entry that lives only in a lower file is visible through the resolved
 catalog but not editable here.
 
+### Remote MCP OAuth
+
+OpenCode's MCP client listens on `127.0.0.1` and, without configuration, registers
+a loopback redirect. That is correct when the browser runs on the OpenCode
+machine, and wrong when OpenChamber is opened from another one: the provider
+sends the browser to the viewer's own `127.0.0.1`, and nothing reaches the
+listener. The supported path is a browser with a direct connection to
+OpenChamber and an OpenCode on the same machine as OpenChamber, managed or
+external.
+
+The work happens at the start of a sign-in (`mcp-oauth.js`, wired in
+`proxy.js`), so an existing entry needs no edit and an entry nobody signs in to
+is never changed. `POST /api/integration/mcp_*/connect/oauth` reads the server's
+name from OpenCode's integration and then takes one of these paths:
+
+| Situation | What happens |
+| --- | --- |
+| `oauth: false`, a local server, or a server with no config entry here | Forwarded untouched. |
+| `redirect_uri` or `callback_port` written by a person | Forwarded untouched, whatever the origin and whatever OpenCode runs. It is that person's route. |
+| OpenCode on another machine, nothing configured | Refused with a 400 naming the problem, before consent. |
+| Relay client, nothing configured | Refused with a 400 naming the problem, before consent. |
+| Browser on loopback, nothing generated | Forwarded untouched, so CIMD and the ephemeral listener stay. This includes an SSH-forwarded address. |
+| Browser on another machine | `oauth.redirect_uri` becomes `<origin>/api/mcp/oauth/<name>/callback` and `oauth.callback_port` a free loopback port. The attempt is then bound. |
+| Generated redirect already in place, any browser | The attempt is bound, so a loopback or relay browser follows the address generated last. |
+
+Same-machine is decided from the address OpenChamber connects to: loopback or
+one of this machine's interface addresses. A hostname that resolves here counts
+as another machine, because the mistake then is a clear error and the other way
+round is a callback sent to the wrong listener.
+
+The relay is detected by `x-openchamber-relay-connection`, which the dispatcher
+sets on every request it forwards. Its requests arrive with a loopback `host`,
+so the origin alone would read as a local browser. The refusal stands until the
+relay can give the provider an address that reaches a NAT-hidden server.
+
+**Ownership.** `mcp-oauth-assignments.json` in the data directory records each
+generated redirect by port. Only an entry whose `redirect_uri` and
+`callback_port` match a record is ours to move; path equality proves nothing,
+since a reverse proxy can use the same path. The record is written before the
+config, so a failed config write leaves a reserved port and never a generated
+entry that reads as a person's. An unreadable file fails the sign-in. Records of
+deleted servers stay and only reserve their ports.
+
+**Ports.** Preparation runs one at a time in this process, and a new port
+excludes every record in the store, in any project, the ports of the entries
+visible from this folder, and those of live attempts. A generated port that a
+listener or another entry holds at the next sign-in is replaced, which is the
+recovery from a collision; a person's port is never replaced. Two OpenChamber
+servers over one data directory are not coordinated beyond that bind check.
+
+**A save during preparation.** Preparation rests on the entry the plan read. A
+save that lands while a sign-in waits in the queue or allocates a port sends it
+back to planning, so a custom redirect saved at that moment stays and the
+sign-in goes to the proxy. After 3 rounds the start answers 503. The last check
+and both writes run with no await between them.
+
+**The directory.** The route reads the folder by OpenCode's rule: the
+`location[directory]` query, then the `x-opencode-directory` header decoded once.
+The SDK sends that header encoded with no marker, so it is decoded before
+`resolveProjectDirectory` and encoded exactly once for upstream. A named folder
+that does not resolve is refused, because global config would answer for it.
+
+**Picking up the write.** OpenCode applies config through its file watcher. The
+authorization URL OpenCode returns names the redirect it really uses, so an
+attempt on another redirect is cancelled and started again for up to 8 seconds,
+then the start answers 503. Each stale start can register a client with the
+provider, so the wait between starts doubles.
+
+**The callback.** `GET /api/mcp/oauth/:name/callback` is open without a session.
+The state value in OpenCode's authorization URL binds an in-memory attempt to its
+server, port, path, and expiry. Only a live state for that server reaches the
+loopback listener, once. A missing, wrong, expired, cancelled or replayed state
+gets a 400 with no loopback request, so an outside caller cannot fail the
+legitimate attempt through OpenCode's own state check. The route reads neither
+the current project nor config, so a client that changes project during consent
+does not affect it. It forwards only the query keys an OAuth redirect carries,
+and it does not follow a redirect from the listener. A restart of OpenChamber
+ends the bound attempts, and their callbacks are refused.
+
+A second start for the same server cancels the first attempt, because a fixed
+port holds one listener.
+
+**Costs of a generated redirect.**
+
+- Setting `oauth.redirect_uri` turns off OpenCode's Client ID Metadata Document
+  path. The provider must support dynamic client registration or have this URI
+  pre-registered. This lasts after returning to localhost, because the entry
+  keeps the generated redirect.
+- OpenCode reuses a client registered by an earlier login, and that client's
+  registered redirect is the old one. A provider that compares redirects exactly
+  rejects the first sign-in after a move until the saved connection is removed.
+- A UI save rebuilds the `oauth` block from what the page loaded, so a page left
+  open can drop the generated fields. The next sign-in writes them again.
+
 ### v1 read fallback policy
 
 Readers accept the v2 spelling first and fall back to the v1 spelling, because
@@ -702,6 +798,67 @@ a local path, or a control entry. Anything else is refused with `UNLOADABLE_SPEC
 answers as 400 with `code`, and the add dialog shows under the field. An
 existing entry keeps its spec when only its options change, so a config that
 already holds an unloadable spec stays editable.
+
+#### Switching a plugin off
+
+The switch is OpenChamber's, not OpenCode's: it keeps its state in
+`<data-dir>/plugin-switches.json` and never writes a new switch into the user's
+config. The managed OpenCode OpenChamber starts reads the denials from its own
+config layer, so a plain `opencode` process, the TUI or an external server is
+unaffected.
+
+The resource is what OpenCode's plugin loader checks: for a package or Git entry
+the spec up to its last `@` (`leakshield`, `@acme/plugin`,
+`git+ssh://git@github.com/acme/plugin.git#plugin`), and the absolute path for a
+local plugin file or package directory. The managed layer carries:
+
+```jsonc
+{ "policies": [{ "action": "integration.use", "resource": "plugin:leakshield", "effect": "deny" }] }
+```
+
+OpenCode drops a denied plugin however it was configured, so the entry and its
+options stay where the user put them while the plugin does not load in
+OpenChamber. The switch is OpenChamber-wide: the store keys only by resource, so
+switching off a project-scope entry denies that plugin in every project the
+managed OpenCode serves, and the page says so. A `file://` spec is matched by OpenCode as the path it
+names, so the deny carries that path; any other `file:` spelling names nothing
+OpenCode loads and gets no switch. Statements require OpenCode 2.0.29 or newer,
+where `policies` is a top-level key.
+
+The switch reads and writes the store, not a config file, so a rule the user
+wrote is never removed; when one already denies the entry the page shows the
+switch as blocked. A runtime OpenChamber did not start (`isExternalOpenCode`,
+`OPENCODE_SKIP_START`) has no managed layer to apply the switch, so the plugin
+routes report `unavailable` and refuse a change with `SWITCH_UNAVAILABLE`. When
+the user owns `OPENCODE_CONFIG`, the managed runtime can only merge the policies
+into `OPENCODE_CONFIG_CONTENT`, which the child reads at launch; the route answers
+`requiresManualRestart`, and so does a rewrite that fails after the store write,
+because the store is the durable state.
+
+An unreadable store reports every switch `unavailable`, and `denials()` throws.
+A rewrite then keeps the managed file as it was, and a fresh managed launch fails
+with the store's path. Starting anyway would load every plugin the user switched
+off, and they would learn it from the plugin running.
+
+OpenCode decides by the earliest-loaded config with a matching statement, so a
+`plugin.use` allow that loads ahead of the denial beats it. The managed file loads
+right after the global config files, and `OPENCODE_CONFIG_CONTENT` after every
+file. `isPluginDenialOverridden` applies that order to the files OpenChamber can
+read: the row reports `overridden`, and switching it off is refused with
+`SWITCH_OVERRIDDEN` and writes nothing. Turning a stored switch back on stays
+allowed. System and Console policies are outside those files; the page catches
+them through `/api/config` (`packages/ui/src/components/sections/DOCUMENTATION.md`).
+
+The switch is disabled until the policy read succeeds, and stays disabled when
+the read fails: from the client, a denied plugin and an enabled one look the
+same. Listing reads every config file OpenCode reads (both global files,
+`OPENCODE_CONFIG`, and the folder configs above the project) and never creates
+`.opencode`, so opening Settings in a project without a config, or in a
+read-only checkout, still lists every plugin.
+
+The VS Code extension applies the same rule from its own store and managed layer
+in extension storage, through the same `plugin-switches.js` helpers; an external
+OpenCode server (`openchamber.apiUrl`) reports every switch as unavailable.
 
 #### Why rewrite a plain `https://` repository address and not refuse it
 
@@ -865,6 +1022,13 @@ fails the request.
 `POST` / `PATCH` / `DELETE /api/config/mcp/:name` — body is an `McpEntity`
 (plus `scope` on create). Answers `{ success: true, message, path }`.
 
+`GET /api/mcp/oauth/:name/callback` — the provider's redirect target, open
+without a UI session. A state value bound to a live attempt forwards `code`,
+`state`, `error`, `error_description`, `error_uri` and `iss` to that attempt's
+loopback listener and relays its status and body; anything else answers 400
+without a loopback request. It answers 502 when the listener is gone. See
+"Remote MCP OAuth".
+
 `PUT /api/provider` — body accepts either spelling: v2 `{ package, settings,
 headers }` or v1 `{ npm, options }`. The stored entry is always a
 `ProviderEntity` under `providers`. Answers `{ providerId, path, config }`.
@@ -878,6 +1042,10 @@ headers }` or v1 `{ npm, options }`. The stored entry is always a
   - Snippets: `/api/config/snippets`, `/api/config/snippets/:name`, and `/api/config/snippets/expand`
 - Snippet writes keep every trigger unique. A new snippet, or a rename, under a name or alias another snippet already answers to fails with 409 and writes nothing, so a second file never shadows the first. `PATCH /api/config/snippets/:name` renames with `name` and moves between the global and project folder with `scope`; the file is renamed in place (copied and removed across volumes), and a case-only rename is a rename of the same file. `POST /api/config/snippets/expand` expands a prompt from `text`, or with `content` previews an unsaved snippet body exactly as `#name` would send it once saved. The VS Code extension host (`packages/vscode/src/opencodeConfig.ts`) carries the same rules, and its webview answers a taken name with 409 too.
 - Agent/command/MCP write routes persist config to disk and return plain success. OpenCode 2 watches those files and rebuilds the affected entity itself, so there is nothing left to apply.
+
+## Public exports (mcp-oauth.js)
+- `createMcpOAuthSignIn(dependencies)`: the sign-in state for one server process. `registerCallbackRoute(app)` registers the public callback, and `registerStartRoutes(app, { readBody })` the start and cancel interception in front of the generic proxy.
+- `isSameMachineUrl(url, addresses?)`: whether an OpenCode address is this machine.
 
 ## Public exports (config-mutation-response.js)
 - `buildAppliedResponse(message, details?)`: success payload for a config mutation that is already live (`{ success: true, message }`, no restart flags). `details` carries the file the write landed in (`{ path, scope, source }`) so the caller can name the config file that changed, including a v1 file rewritten in place in v2 shape.
@@ -910,7 +1078,7 @@ headers }` or v1 `{ npm, options }`. The stored entry is always a
    - `POST /api/auth/reset`
    - `GET /connect`
    - `POST /api/system/probe-url`
-   - `app.use('/api', ...)` auth/tunnel guard
+   - `app.use('/api', ...)` auth/tunnel guard. It lets through only the repository credential helper, guest/tracker OAuth callbacks, the MCP OAuth callback, html previews and extension frame reads, each by its exact GET path; the owning route then checks the grant, secret or state.
 - `registerSettingsUtilityRoutes(app, dependencies)`: registers small settings utility endpoints:
   - `GET /api/config/themes`
   - `POST /api/config/reload` — restarts OpenCode on request. Config edits no longer need it; it stays for the changes that cannot be hot-applied (OpenCode binary, port, managed/external switch) and as a manual recovery. Managed OpenCode restarts and returns `requiresReload: true`. External OpenCode returns `requiresManualRestart: true` (changes are already on disk; the connected server must be restarted outside OpenChamber).
@@ -1073,7 +1241,7 @@ within a ten-minute overall deadline.
   - The list shares discovery's parsed markdown by exact file path within the request. OpenCode's selected path wins even when local discovery picks another copy with the same name; a path absent from the parse map is read normally. Each request gets a new map, and source lookup still checks whether the selected file exists.
   - Create, edit and rename run one at a time per process, so an existence check cannot go stale before its own write; create also writes `SKILL.md` with `wx` and reports an existing file as "already exists" instead of overwriting it
   - `disableModelInvocation` (detail `sources.md`, create/update body) is "run only when called": it writes both `disable-model-invocation: true` and `metadata.opencode/autoinvoke: false` so every supported OpenCode 2.x and Claude Code honour it, reads back the way OpenCode resolves the pair (`opencode/autoinvoke` wins), and clearing it removes both keys while keeping other `metadata`. The VS Code runtime mirrors this in `opencodeConfig.ts`
-  - `PUT /api/config/skill-switch` with `{ id, enabled, scope }` turns a skill off or back on for agents through `skill-switch.js`. Off writes one exact `integration.use` deny for `skill:<id>` into the top-level `policies` of the skill's own scope (`getJsonWriteTarget`, so `OPENCODE_CONFIG` when set); on removes the exact deny for the id, in `policies` and the deprecated `experimental.policies`, from every config file OpenCode reads for the directory, skipping files it cannot parse. Wildcards, allows and other statements are never touched. The answer lists the files it changed. The pure edit is `writeSkillDisabled` in `config-v2.js`, shared with the VS Code bridge (`api:config/skill-switch`). OpenCode watches these files, so nothing restarts
+  - `PUT /api/config/skill-switch` with `{ id, enabled, scope }` turns a skill off or back on for agents through `skill-switch.js`. Off writes one exact `skill.use` deny for `<id>` into the top-level `policies` of the skill's own scope (`getJsonWriteTarget`, so `OPENCODE_CONFIG` when set), unless that file's last exact statement for the id is already a deny: OpenCode applies the last matching statement, so a deny followed by an exact allow gets a new deny after it; on removes the exact deny for the id, as `skill.use` `<id>` or the legacy `integration.use` `skill:<id>` an older OpenChamber wrote, in `policies` and the deprecated `experimental.policies`, from every config file OpenCode reads for the directory, skipping files it cannot parse. Wildcards, allows and other statements are never touched. The answer lists the files it changed. The pure edit is `writeSkillDisabled` in `config-v2.js`, shared with the VS Code bridge (`api:config/skill-switch`). OpenCode watches these files, so nothing restarts
   - Skills catalog listing/source pagination, scan, and install routes
   - Supporting skill file read/write/delete routes
   - Directory resolution prefers an explicit request directory, then soft-falls
@@ -1130,6 +1298,10 @@ failing closed there would close every folder.
 
 This server gate covers web, Electron, hosted mobile, and Capacitor connections.
 The VS Code extension owns its separate Git and proxy implementation.
+
+### Why directory normalization preserves unsafe header values
+
+Marked directory headers decode before worktree and folder-trust checks only when Node's `http.validateHeaderValue` accepts the result. Values Node cannot carry stay encoded with their `uri` marker for OpenCode, while the guards read the decoded folder separately. Malformed escapes keep their raw value and lose the marker, matching the existing fallback and allowing trust checks for literal-percent folder names. The generic proxy must not decode again or remove a retained marker.
 
 ### Why a failed checkout stays closed to OpenCode
 
@@ -1217,8 +1389,11 @@ under a running child.
   stay on disk on purpose: an older OpenChamber running on the same data dir
   still reads and writes them, so deleting them as stale breaks that server's
   agent tools.
-  The file contains only `plugins`: `-opencode.browser` first, then the absolute
-  directory of every OpenChamber plugin currently switched on. OpenCode's
+  The file's `plugins` list is `-opencode.browser` first, then the absolute
+  directory of every OpenChamber plugin currently switched on, then the plugin
+  folders of active extensions (`contributes.opencodePlugin`, listed by
+  `guests/agent-context.js` `pluginDirectories`): OpenCode loads in list
+  order, so an extension never shadows a managed tool. OpenCode's
   built-in browser tools need OpenCode's own desktop app to attach a browser;
   OpenChamber does not, so they would always fail with `browser.disconnected`
   and steer agents away from `openchamber_web`. A project config listing
@@ -1234,13 +1409,32 @@ under a running child.
   a tool switched on later then reaches a process that can already call back.
 - `persistSettings` rewrites the file (temp + rename) whenever
   `agentControlToolEnabled`, `agentScheduleToolEnabled`, `agentWebToolEnabled`, `agentMemoryToolEnabled`,
-  `agentKnowledgeToolEnabled`, `agentNotifyToolEnabled`, `agentRenderToolEnabled`, `agentSecretToolEnabled`, `agentWorkflowToolEnabled` or `agentToolsCodeMode` changes. Plugin directories are written before the
+  `agentKnowledgeToolEnabled`, `agentNotifyToolEnabled`, `agentRenderToolEnabled`, `agentSecretToolEnabled`, `agentWorkflowToolEnabled` or `agentToolsCodeMode` changes, and the guest change listener rewrites it after an extension is installed, approved, paused, resumed, updated or removed. Plugin directories are written before the
   file names them, and a disabled plugin is removed from the list. OpenCode
-  reloads within a couple of seconds; no restart is involved.
+  reloads within a couple of seconds; no restart is involved. Writes run one at
+  a time: the catalog is read before the file is written, so two refreshes
+  could land in read order and bring back the folder of an extension that
+  was just paused; a refresh requested during a write runs the whole
+  read-then-write once more instead, so the file always ends with the newest
+  catalog (`refreshManagedConfigFile` and `buildManagedChildEnv` share that
+  runner). A policy change while the app runs also rewrites it
+  (`watchEnterprisePolicy` in `../enterprise-mode.js`, started by `index.js`):
+  without that, a folder the policy now refuses would stay loaded until the
+  next catalog event. A folder listed here and in the user's global config at
+  once is loaded once by OpenCode 2.2.5 (checked live), so nothing is filtered.
 - Fallback: when the user's own environment already sets `OPENCODE_CONFIG`,
-  OpenChamber does not take it over. It merges its plugin directories into
-  `OPENCODE_CONFIG_CONTENT` instead, and those installs keep the old behavior —
-  a managed-tool toggle needs an OpenCode restart to take effect.
+  OpenChamber does not take it over. It merges its plugin directories, the
+  extensions' plugin folders among them, into `OPENCODE_CONFIG_CONTENT`
+  instead, and those installs keep the old behavior: a managed-tool toggle or
+  an extension change needs an OpenCode restart to take effect. The extension
+  card then says so and offers "Add to global config" (`guests/DOCUMENTATION.md`),
+  which writes the folder into the user's global `opencode.json(c)` through
+  `plugins.js` `addGlobalPluginEntry`; OpenCode watches that file, so the
+  plugin loads without a restart, in every OpenCode on the machine.
+- An external OpenCode (connected by URL, not spawned) reads neither the file
+  nor the content; `refreshManagedConfigFile` still writes the file, which is
+  harmless. The card's delivery state (`guests/opencode-plugin.js`) tells the
+  user, and the same button is the way in.
 
 ### Session title prompt
 

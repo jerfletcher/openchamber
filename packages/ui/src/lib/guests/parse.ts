@@ -1,5 +1,9 @@
 import {
   GUEST_ACTIONS_MAX,
+  GUEST_BLOCKS_MAX,
+  GUEST_BLOCK_ARGS_MAX,
+  GUEST_BLOCK_ARG_NAME,
+  GUEST_BLOCK_NAME,
   GUEST_CAPABILITIES,
   GUEST_COMMANDS_MAX,
   GUEST_COMMAND_NAME,
@@ -39,6 +43,7 @@ const publicIntegrationSchema = z.object({
   settings: z.array(z.object({
     id: z.string().regex(PANEL_ID),
     label: z.string().trim().min(1),
+    secret: z.literal(true).optional(),
   })).optional(),
 });
 
@@ -61,6 +66,8 @@ const publicServiceSchema = z.object({
   // catalog: every other extension must keep working.
   provides: z.array(z.enum(GUEST_SERVICE_PROVIDES)).optional().catch(undefined),
   surface: z.literal(true).optional().catch(undefined),
+  keepRunning: z.literal(true).optional().catch(undefined),
+  schedule: z.array(z.object({ id: z.string(), cron: z.string(), timezone: z.string().optional() })).optional().catch(undefined),
 });
 
 // The Git host a source-control provider extension adds, as the approval
@@ -126,15 +133,25 @@ const guestActionSchema = z.object({
   id: z.string().regex(PANEL_ID),
   label: z.string().trim().min(1),
   icon: z.string().trim().min(1).optional(),
-  where: z.enum(['message', 'session']),
+  where: z.enum(['message', 'session', 'selection', 'file', 'diff']),
   mode: z.enum(['open', 'background']).optional(),
   roles: z.array(z.enum(['user', 'assistant'])).optional(),
   payload: z.array(z.enum(['messages'])).optional(),
+  display: z.enum(['label', 'icon', 'both']).optional(),
 });
 
 const guestCommandSchema = z.object({
   name: z.string().regex(GUEST_COMMAND_NAME),
   description: z.string().trim().min(1).optional(),
+});
+
+const guestBlockSchema = z.object({
+  name: z.string().regex(GUEST_BLOCK_NAME),
+  description: z.string().trim().min(1),
+  args: z.array(z.string().regex(GUEST_BLOCK_ARG_NAME)).max(GUEST_BLOCK_ARGS_MAX),
+  entry: z.string().trim().min(1),
+  height: z.number().int().positive().optional(),
+  answers: z.boolean().optional(),
 });
 
 const guestToolSchema = z.object({
@@ -194,6 +211,13 @@ const installedGuestSchema = z.object({
   notifications: publicNotificationsSchema.optional().catch(undefined),
   tracker: publicTrackerSchema.optional().catch(undefined),
   quota: publicQuotaSchema.optional().catch(undefined),
+  sessionControl: z.object({ content: z.boolean() }).optional().catch(undefined),
+  instructions: z.literal(true).optional().catch(undefined),
+  skills: z.literal(true).optional().catch(undefined),
+  opencodePlugin: z.literal(true).optional().catch(undefined),
+  mentions: z.object({ label: z.string().trim().min(1) }).optional().catch(undefined),
+  needsConfiguration: z.string().trim().min(1).optional().catch(undefined),
+  blocks: z.array(guestBlockSchema).max(GUEST_BLOCKS_MAX).optional(),
   actions: z.array(guestActionSchema).max(GUEST_ACTIONS_MAX).optional(),
   commands: z.array(guestCommandSchema).max(GUEST_COMMANDS_MAX).optional(),
   tools: z.array(guestToolSchema).max(GUEST_TOOLS_MAX).optional(),
@@ -213,8 +237,16 @@ const installedGuestSchema = z.object({
   update: guestUpdateSchema.optional(),
 });
 
+// A delivery state this build does not know draws nothing: the card would otherwise offer a button for a case it cannot describe.
+const openCodePluginsSchema = z.object({
+  delivery: z.enum(['file', 'restart', 'none', 'remote']),
+  globalConfigPath: z.string().nullable(),
+  inGlobalConfig: z.array(z.string()),
+});
+
 const catalogSchema = z.object({
   guests: z.array(z.unknown()),
+  opencodePlugins: openCodePluginsSchema.optional().catch(undefined),
 });
 
 // What Settings can still show of a row it cannot read, so the user can
@@ -234,7 +266,7 @@ export const parseGuestCatalogJson = (json: string): GuestCatalog | null => {
   try {
     const parsed = catalogSchema.safeParse(JSON.parse(json));
     if (!parsed.success) return null;
-    const catalog: GuestCatalog = { guests: [], unreadable: [] };
+    const catalog: GuestCatalog = { guests: [], unreadable: [], opencodePlugins: parsed.data.opencodePlugins ?? null };
     for (const row of parsed.data.guests) {
       const guest = installedGuestSchema.safeParse(row);
       if (guest.success) {

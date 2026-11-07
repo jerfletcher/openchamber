@@ -749,6 +749,9 @@ export const createSettingsHelpers = (dependencies) => {
     if (typeof candidate.sessionRetentionOnlyArchived === 'boolean') {
       result.sessionRetentionOnlyArchived = candidate.sessionRetentionOnlyArchived;
     }
+    if (candidate.sessionRetentionIncludeInWork === true || candidate.sessionRetentionIncludeInWork === false) {
+      result.sessionRetentionIncludeInWork = candidate.sessionRetentionIncludeInWork;
+    }
     if (typeof candidate.mergedWorktreeCleanupEnabled === 'boolean') {
       result.mergedWorktreeCleanupEnabled = candidate.mergedWorktreeCleanupEnabled;
     }
@@ -1011,6 +1014,9 @@ export const createSettingsHelpers = (dependencies) => {
     }
     if (typeof candidate.fontSize === 'number' && Number.isFinite(candidate.fontSize)) {
       result.fontSize = Math.max(50, Math.min(200, Math.round(candidate.fontSize)));
+    }
+    if (Number.isFinite(candidate.chatFontSize)) {
+      result.chatFontSize = Math.max(50, Math.min(200, Math.round(candidate.chatFontSize)));
     }
     if (typeof candidate.terminalFontSize === 'number' && Number.isFinite(candidate.terminalFontSize)) {
       result.terminalFontSize = Math.max(9, Math.min(52, Math.round(candidate.terminalFontSize)));

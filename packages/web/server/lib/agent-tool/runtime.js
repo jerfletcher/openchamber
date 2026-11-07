@@ -90,7 +90,7 @@ const MEMORY_ONLY_PARAMETER_NAMES = ['body', 'scope', 'memoryId', 'type'];
 const MEMORY_PARAMETER_NAMES = [...MEMORY_ONLY_PARAMETER_NAMES, 'title'];
 // The task inputs; the schedule tool shares the scope and the run settings
 // (prompt, model, agent, goal) with the control tool.
-const SCHEDULE_ONLY_PARAMETER_NAMES = ['taskId', 'name', 'targetSessionId', 'daily', 'weekly', 'once', 'time', 'cron', 'timezone', 'disabled'];
+const SCHEDULE_ONLY_PARAMETER_NAMES = ['taskId', 'name', 'targetSessionId', 'daily', 'weekly', 'once', 'time', 'cron', 'timezone', 'disabled', 'runInWorktree', 'baseBranch', 'cleanupWorktree'];
 const SCHEDULE_PARAMETER_NAMES = [...SCHEDULE_ONLY_PARAMETER_NAMES, 'projectId', 'directory', 'prompt', 'model', 'variant', 'agent', 'goal', 'goalTokenBudget'];
 
 /**
@@ -98,8 +98,8 @@ const SCHEDULE_PARAMETER_NAMES = [...SCHEDULE_ONLY_PARAMETER_NAMES, 'projectId',
  * picks them for every run, so the schedule tool says what they mean there.
  */
 const SCHEDULE_PARAMETER_OVERRIDES = {
-  model: { type: 'string', description: 'provider/model; required unless targetSessionId is set, which keeps that session\'s model' },
-  agent: { type: 'string', description: 'Only when the user asks. Default: build' },
+  model: { type: 'string', description: 'provider/model; required unless targetSessionId is set. With targetSessionId, the task\'s model becomes that session\'s model; create the task without one to keep the session\'s own. A named model is checked against the catalog when the task is written' },
+  agent: { type: 'string', description: 'Only when the user asks. Default: build for a new session. With targetSessionId, the task\'s agent becomes that session\'s agent; without one the session keeps its own' },
 };
 
 /**
@@ -163,6 +163,9 @@ const ALL_PARAMETER_PROPERTIES = {
   cron: { type: 'string' },
   timezone: { type: 'string', description: 'IANA' },
   disabled: { type: 'boolean' },
+  runInWorktree: { type: 'boolean', description: 'Run each run in a fresh worktree of the project (git only); conflicts with targetSessionId' },
+  baseBranch: { type: 'string', description: 'Source ref the isolated run branches from (git only); default the checked-out HEAD at run time' },
+  cleanupWorktree: { type: 'boolean', description: 'False keeps the run\'s worktree and branch for review; default removes them when the run settles (git only)' },
   path: { type: 'string', description: 'Absolute, or relative to the session directory' },
   url: { type: 'string', description: 'http(s)' },
   selector: { type: 'string', description: 'From browser.snapshot' },
@@ -258,7 +261,7 @@ const RENDER_PAGE_HTML_DESCRIPTION = [
 
 const RENDER_PAGE_AWAIT_DESCRIPTION = [
   "Wait for the user to choose, fill in fields, or both, on the page. With ui, the form adds its own Send button; add a Button only when the choice is between actions, and any Button sends the whole form. With html, give it one button whose click calls openchamber.submit(data, summary): data is the JSON your next step needs, summary the choice in a few words of the user's language, shown under the page. submit works only from a click on a waiting page and returns a promise; disable the button once it resolves.",
-  "The call returns summary and data, or answered: false when the user wrote in the chat instead; their message follows.",
+  "The call returns summary and data, or answered: false when the user declined or wrote in the chat instead; the note says which and what to do.",
   "Reloaded, the page gets openchamber.answer set to its data, to show the choice. Base classes: .oc-options (a grid), .oc-option on a <button> (aria-pressed=\"true\" when chosen), .oc-button (the send button; data-variant=\"outline\" for a secondary action, \"destructive\" for a dangerous one).",
 ].join(' ');
 

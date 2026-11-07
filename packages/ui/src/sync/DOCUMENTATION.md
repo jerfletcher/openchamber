@@ -225,8 +225,8 @@ second time `PROVIDER_REREAD_AFTER_CREDENTIAL_MS` after a credential change.
 | `agent` | — | agents store + config-store agents |
 | `command` | — | commands store |
 | `skill` | — | skills store + skills catalog |
-| `plugin` | — | plugins store |
-| `config` | `config` per named directory (plus `emitSyncConfigChanged`) | agents, commands, skills, MCP config, plugins, config-store providers |
+| `plugin` | — | plugins store + plugin policy readers |
+| `config` | `config` per named directory (plus `emitSyncConfigChanged`) | agents, commands, skills, MCP config, plugins + plugin policy readers, config-store providers |
 | `provider` / `model` / `credential` | — | config-store providers (metadata retained; the current list stays until the new one lands; `credential` reads twice) |
 | `project` | global project list | — |
 
@@ -318,9 +318,15 @@ instead of riding along with the next prompt, and the reverted user message is
 the first user message at or after the marker. Sending or compacting past the
 marker commits it: OpenCode deletes the boundary message and everything after
 it in one `session.revert.committed` event, with no `message.removed` per
-record. `events.ts` translates it into a `session.revert.committed` sync
-event, which the reducer applies by trimming messages and parts from the
-boundary and dropping the marker in one step, followed by the plain
+record. A UI block answer, a command run from a reply and a `!` command commit
+it first (`commitStagedRevert`): OpenCode admits them past the boundary without
+committing, so the next prompt's commit would delete them, and a block answer
+would not even start a turn. Committing makes the revert final the way a send
+does; refusing that input while a revert is staged would leave the user a block
+they cannot answer and no hint why. `events.ts` translates OpenCode's event
+into a `session.revert.committed` sync event, which the reducer applies by
+trimming messages and parts from the boundary and dropping the marker in one
+step, followed by the plain
 `revert: null` patch the global session list needs. The loaded window is
 always the transcript's tail, so a boundary the window does not hold is
 older than everything loaded: the reducer empties the window when the store's
@@ -333,6 +339,10 @@ shadows and prefetch coverage, and prevents an older response or the next empty
 fetch from restoring deleted messages. The remaining visible records stay in place
 while the loader establishes fresh coverage. Their optimistic shadows remain
 until an authoritative snapshot confirms them.
+
+### Why a send with context commits the revert first and a plain prompt does not
+
+OpenCode's commit also deletes every inbox item admitted after the boundary. Context goes in as synthetic messages before the prompt, so context admitted while the revert is staged lies past the boundary, and the prompt's own commit deletes it while the prompt survives. When a send admits any synthetic message, the prompt and command routes commit the revert themselves (`session.revert.commit`) right before the first one; the server-owned message queue and auto-review do the same for what they deliver. A plain prompt leaves the commit to OpenCode, which makes it only after the prompt's preparation succeeds, so a prompt that fails there keeps the revert staged. Once the send has committed the revert, a failed send no longer restores the marker or the reverted tail: the server has deleted both. When the commit's response was lost, the session record, read once the connection is back, says whether the revert is still staged; a failed read restores it, and the next send's commit of an already committed revert does nothing.
 
 ## Forking after an answer
 
@@ -473,7 +483,10 @@ Agent selection uses it before old per-agent choices or pinned models.
 agent choices. Both a named effort and explicit `Default` survive reload, with
 the same 150-session persistence bound as the existing selections. Old payloads
 without effort entries remain valid; malformed effort entries grant no authority.
-Session deletion clears these entries. A saved effort choice precedes older
+Session deletion clears these entries. A send saves the effort it carried for
+its session; only a send from the main chat reads the main composer's live
+selection, to tell an explicit Default from no choice, so a `/btw` fork or a
+pinned chat on the main chat's agent and model keeps its own effort. A saved effort choice precedes older
 message history so a reload cannot undo a saved picker change. While a live model
 pick is pending, it and its effort win over external switches. Otherwise the
 session record can switch to another model and effort. The store also
@@ -766,20 +779,36 @@ Turning it off leaves Delete selected and makes Archive available again. The
 setting uses the instance settings registry across web, desktop, VS Code and mobile.
 
 Both modes preserve the five most recent sessions in the selected scope, ranked
-by that scope's retention timestamp, plus the selected session, shared sessions,
-sessions with observed live activity, and sessions the user keeps: pinned on this
-client (pins live in local storage, so another device does not see them) or in
-the In work block. Parents with an attached `/btw` conversation also stay,
+by that scope's retention timestamp, plus the selected session,
+sessions with observed live activity, and sessions the user keeps: pinned or in
+the In work block. The opt-in `sessionRetentionIncludeInWork` setting lets
+retention take In work sessions too, the same way for Archive and Delete, and
+with sessions in work turned off (`sessionWorkEnabled`) the block keeps
+nothing. An archived session is never in the block, so open work left in its
+metadata does not keep it, and Settings disables the opt-in for that target. Pins keep their sessions either way; `inWorkKeepsSessions` is the one
+rule the Settings preview, the candidate list and the recheck before each
+request share. Parents with an attached `/btw` conversation also stay,
 because the canonical archive/delete actions remove that temporary fork.
 Sessions outside the selected scope remain protected. Because
 OpenCode cascades deletion, every ancestor of a retained session is protected
 too. Eligible deletions run children first and recheck current selection,
-activity, sharing, age, and child membership before each request. A failed child
+activity, age, and child membership before each request. A failed child
 blocks deletion of its ancestors while unrelated sessions continue.
 
 Cleanup uses the canonical archive/delete actions, including confirmed `404`
 deletion, persisted-state cleanup and runtime guards. Settings shares the run
 state and shows loading or fetch failure separately from an eligible count.
+
+### Why In work sessions stay unless the user includes them
+
+The In work block is work the user has not closed, and Done is how they release
+a session, so cleanup leaves it alone by default. Every sent message opens work,
+so someone who never presses Done would have every session protected; the
+opt-in lets them clean those up. A split between work a message opened and work
+tracked by hand was rejected: a session already in work offers no Track, so the
+user could not move it from one kind to the other. Without sessions in work
+nobody sees the block or can press Done, so stale work metadata protects
+nothing.
 
 ### Live cross-directory session/status view
 
@@ -999,12 +1028,18 @@ always whole, and so are calls arriving by the event stream, except `read` and
 reducer drops it the moment the call finishes (`withoutUnshownResult`), with
 the same marker.
 
-Tool completion checks existing transcript membership and a result shell before
-requesting `getToolContentMessage`. This dedicated adapter operation may read
+Tool completion checks the store the row renders from: membership and a result
+shell there gate the request, and the merge fills that same store. The read
+routes through the session's directory (`getToolContentMessage`, which may walk
 ancestors as described in `lib/opencode/DOCUMENTATION.md`; ordinary message
-reads remain session-strict. Completion writes only into the original store
-while the runtime and message are still current, so an evicted store or a
-removed message is never recreated by the response.
+reads remain session-strict). A chat can show a session in another directory's
+store than the session's own (a deep link without a directory, or a worktree
+beside the main checkout), so the row's store is the one that must hold the
+message and receive the result. A row finds that store through
+`useChatTranscriptDirectory`: its column's directory, or the fork's directory
+in a `/btw` transcript, which renders inside the parent's column. Both checks
+keep an evicted store or a removed message from being recreated, and a message
+outside the displayed transcript is never requested.
 
 A successful local session creation publishes its session record and calls `SessionMessageLoader.initializeCreatedSession` before selection starts navigation loading. The create response establishes an empty transcript only if no transcript has arrived yet. Initialization supersedes an earlier unresolved history load, preserves any messages or metadata received before the create response, and uses the server-returned directory. Opening that new session needs no history read; forced recovery and later eviction still use normal fetching. Creation responses from a previous runtime cannot select or initialize a session in the current runtime.
 
@@ -1155,7 +1190,7 @@ Rules:
 1. If an action mutates session list membership or visible session metadata, update `useGlobalSessionsStore` there.
 2. If an action targets a session by ID, resolve the **session's own directory**. Do not assume the current directory is correct.
 3. `session-ui-store.ts` should delegate to `session-actions.ts` for these mutations instead of duplicating SDK calls.
-4. Sending after a revert commits the new branch optimistically: remove the reverted tail and marker before inserting the new message, and restore both if the send is rejected.
+4. Sending after a revert commits the new branch optimistically: remove the reverted tail and marker before inserting the new message, and restore both if the send is rejected before the server committed the revert (see *Committing a revert*).
 5. Composer and queued sends carry their captured runtime, directory, and session through asynchronous preparation. A runtime change cancels the send instead of re-resolving it against the new runtime. Outside VS Code the queue itself is server-owned (`packages/web/server/lib/message-queue/`): the UI hands the server the captured send configuration, resolved text, attachments, and attached context at queue time and the server delivers on idle; the composer only sends a queued message itself after taking it back from the server (`takeForSend`). See the `messageQueueStore.ts` section in `stores/DOCUMENTATION.md`.
 6. A draft aimed at a worktree's root creates its session in the project's folder inside it (`resolveDraftStartDirectory`), and the composer's agent and model catalog is activated for that folder while the draft is open. The preview stays quiet; the send reports a fallback to the worktree root. After session creation, the directory returned by the server is authoritative over the requested draft directory. The server may canonicalize a worktree path, and the first prompt must use the same directory identity as the created session. A first send shows the message in the worktree root before that folder is resolved; when the session ends up elsewhere, `adoptSessionMove` carries the transcript there and the chat follows (see *A draft's first send*).
 7. Regular new-chat drafts that inherit the persisted current/last directory must not create a session against a confirmed-missing path. Fall back to the active project only when OpenChamber's directory stat reports the directory missing; keep explicit worktree targets, in-flight worktree creation, and unknown/offline probes unchanged, and do not persist the fallback until session creation succeeds. A concurrent draft rewrite to that same active-project fallback must not abort session creation while the draft is still open (`materializeOpenDraftSession`); a first send has already closed the draft, so its probe (`recoverMissingDraftDirectory`) has no draft change to check for.
@@ -1178,6 +1213,8 @@ Examples of global-store updates performed in `session-actions.ts`:
 - `session.moved` (an agent's `session_move`, another client, or the echo of our own move) -> `adoptSessionMove()` does the same store move, routing registration and open-chat directory switch. A move the event already applied is kept when the request's response lands later. Without this the chat kept reading the source store while sends went to the destination, so a new prompt never appeared until the session was reopened. A chat pinned in the side panel (a subagent opened from the parent) is not the open chat; it reads the directory its session record names (`usePinnedSessionDirectory`), so it follows the move too instead of freezing at the move step. In a flushed batch the move runs after the stores publish, so the batch cannot write the session back into the source. The move also drops the session's transcript and status from every other store and moves any pending permission or form they held into the destination; their session lists keep it, because a parent repository lists its worktrees' sessions. OpenCode reports the move's own steps (the delivered move notice) in the source directory in that same flush, and the transcript recovery they ask for runs after the move. A recovery for a session the store removed, no longer lists, and the global list places in another directory goes to that directory's store instead: read in the source, it put the transcript back into the store the session left, and the gap stayed in the one the chat reads.
 
 ### Blocking-request (form/permission) reply routing
+
+A form reply resumes the turn, so `replyToForm` first puts the session on its composer's selection through `applySendSelection`, the guarded entry the sends use (#6053). The main chat's session uses the app-wide composer. Any other session uses only what is held for it: its unsent model and agent picks and its saved effort, so a pinned chat or a `/btw` fork keeps its own selection, and a child session answered from its parent has nothing to apply and keeps what a workflow bound it to. A location-scoped form has no session to switch. A failed switch or an unavailable agent leaves the answer unsent and the form pending. Auto reaches the session as the sentinel, and the server routes the reply itself (`packages/web/server/lib/routing/DOCUMENTATION.md`). The reply captures the runtime instance before its first wait and rechecks it after the switches, so a switch away, even with a return, stops the answer; a late result from an old runtime touches no local form.
 
 `replyToForm`, `cancelForm`, `respondToPermission`, and `dismissPermission` route the reply through `resolveDirectoryForBlockingRequest`. The directory chosen decides which OpenCode instance resolves the pending request, so it must be the **session record's own server-confirmed directory** (ownership), never the containing child-store key (containment): a project store legitimately holds its worktree sessions, and a reply addressed to the parent instance makes the server answer `FormNotFoundError` while the form stays pending in the worktree instance — the session is then stuck on the running form tool with no recovery. When a form reply/cancel comes back not-found, the stale request is removed locally and a `settled-running-tool` tail materialization is enqueued so the trailing tool part converges to the server's actual state instead of leaving the UI on "asking question" forever. A permission reply/reject that comes back not-found only removes the request locally.
 

@@ -12,7 +12,6 @@ import { useContextStore } from '@/stores/contextStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
 import { useDeviceInfo } from '@/lib/device';
-import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { cn } from '@/lib/utils';
 import { useChatSurfaceMode } from './useChatSurfaceMode';
 
@@ -133,7 +132,6 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     const { isMobile, isTablet, hasTouchInput } = useDeviceInfo();
     const alwaysShowMessageActions = isMobile || isTablet;
     const canPinIntoContext = !isVSCodeRuntime();
-    const { currentTheme } = useThemeSystem();
     const messageContainerRef = React.useRef<HTMLDivElement | null>(null);
     // A long answer's later rows draw the rest of this message; they carry its
     // id for search and quotes, and name their slice so navigation and the
@@ -386,17 +384,6 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
     }, [isUser, normalizedParts]);
 
     const shouldHideUserMessage = isUser && visibleParts.length === 0;
-
-    const themeVariant = currentTheme?.metadata.variant;
-    const isDarkTheme = React.useMemo(() => {
-        if (themeVariant) {
-            return themeVariant === 'dark';
-        }
-        if (typeof document !== 'undefined') {
-            return document.documentElement.classList.contains('dark');
-        }
-        return false;
-    }, [themeVariant]);
 
     const shouldAnimateMessage = React.useMemo(() => {
         if (isUser) return false;
@@ -811,7 +798,6 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                                 footerModelName={headerModelName}
                                 footerAgentName={headerAgentName}
                                 footerVariant={headerVariant}
-                                isDarkTheme={isDarkTheme}
                                 extraActions={guestMessageActions}
                             />
 

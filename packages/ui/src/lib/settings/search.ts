@@ -153,6 +153,13 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     isAvailable: (ctx) => !ctx.isMobile,
   },
   {
+    id: 'appearance.chat-font-size',
+    page: 'appearance',
+    titleKey: 'settings.openchamber.visual.field.chatFontSize',
+    keywords: ['chat', 'font', 'text size', 'messages'],
+    isAvailable: (ctx) => !ctx.isMobile,
+  },
+  {
     id: 'appearance.interface-font-weight',
     page: 'appearance',
     titleKey: 'settings.openchamber.visual.field.interfaceFontWeight',
@@ -721,6 +728,15 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     keywords: ['archive', 'archived', 'only', 'delete', 'cleanup', 'retention'],
   },
   {
+    id: 'sessions.retention-include-in-work',
+    page: 'sessions',
+    titleKey: 'settings.openchamber.sessionRetention.field.includeInWork',
+    descriptionKey: 'settings.openchamber.sessionRetention.field.includeInWorkInfo',
+    keywords: ['in work', 'done', 'cleanup', 'retention', 'archive', 'delete'],
+    // The checkbox shows only while sessions in work are on.
+    isAvailable: () => useUIStore.getState().sessionWorkEnabled,
+  },
+  {
     id: 'sessions.retention-period',
     page: 'sessions',
     titleKey: 'settings.openchamber.sessionRetention.field.retentionPeriod',
@@ -1124,6 +1140,12 @@ const SETTINGS_SEARCH_ITEMS: readonly SettingsSearchItem[] = [
     page: 'projects',
     titleKey: 'settings.projects.shared.replaceMode',
     keywords: ['worktree', 'setup commands', 'shared', 'team', 'only mine'],
+  },
+  {
+    id: 'projects.worktree.teardown',
+    page: 'projects',
+    titleKey: 'settings.openchamber.worktrees.teardown.title',
+    keywords: ['worktree', 'teardown', 'cleanup', 'delete', 'docker', 'stop'],
   },
   {
     id: 'projects.environment',

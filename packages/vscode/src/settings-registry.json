@@ -238,6 +238,9 @@
     "sessionRetentionOnlyArchived": {
       "scope": "instance"
     },
+    "sessionRetentionIncludeInWork": {
+      "scope": "instance"
+    },
     "sessionRetentionAction": {
       "scope": "instance"
     },
@@ -621,6 +624,10 @@
       "scope": "profile"
     },
     "fontSize": {
+      "scope": "profile",
+      "perSurface": true
+    },
+    "chatFontSize": {
       "scope": "profile",
       "perSurface": true
     },

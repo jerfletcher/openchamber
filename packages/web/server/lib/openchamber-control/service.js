@@ -120,6 +120,30 @@ const buildSchedule = (input) => {
   return { kind: 'cron', cron, ...(timezone ? { timezone } : {}) };
 };
 
+/**
+ * Isolation fields (git only), checked before a task is written. The control
+ * route forwards raw JSON without the agent adapter's normalization, so a wrong
+ * type must fail here: read as false it turns isolation off, and read as empty
+ * it erases a stored branch. Empty and null stay the way to clear a branch.
+ * An existing session's own directory wins, so naming any of these on a task
+ * that runs there is refused instead of being stored and ignored.
+ */
+const assertWorktreeIsolation = (input, targetSessionId) => {
+  for (const field of ['runInWorktree', 'cleanupWorktree']) {
+    if (input[field] !== undefined && !isBoolean(input[field])) {
+      throw new OpenChamberControlError(`${field} must be a boolean`, 400);
+    }
+  }
+  const { baseBranch } = input;
+  if (baseBranch !== undefined && baseBranch !== null && baseBranch !== '' && !asNonEmptyString(baseBranch)) {
+    throw new OpenChamberControlError('baseBranch must be a branch name, or empty to clear it', 400);
+  }
+  const isolationNamed = ['runInWorktree', 'baseBranch', 'cleanupWorktree'].some((field) => input[field] !== undefined);
+  if (isolationNamed && asNonEmptyString(targetSessionId)) {
+    throw new OpenChamberControlError('runInWorktree, baseBranch and cleanupWorktree are not compatible with an existing session', 400);
+  }
+};
+
 const buildScheduledTask = (input) => {
   const name = asNonEmptyString(input.name);
   const prompt = asNonEmptyString(input.prompt);
@@ -134,6 +158,8 @@ const buildScheduledTask = (input) => {
   if (goalTokenBudget !== undefined && (!Number.isSafeInteger(goalTokenBudget) || goalTokenBudget < 1000 || goalTokenBudget > 100_000_000)) {
     throw new OpenChamberControlError('goalTokenBudget must be from 1000 to 100000000', 400);
   }
+  assertWorktreeIsolation(input, targetSessionId);
+  const baseBranch = asNonEmptyString(input.baseBranch);
   const task = {
     name,
     enabled: input.disabled !== true,
@@ -148,6 +174,9 @@ const buildScheduledTask = (input) => {
     },
   };
   if (input.targetSessionId !== undefined) task.targetSessionId = targetSessionId ?? input.targetSessionId;
+  if (input.runInWorktree === true) task.runInWorktree = true;
+  if (input.cleanupWorktree === false) task.cleanupWorktree = false;
+  if (baseBranch) task.baseBranch = baseBranch;
   return task;
 };
 
@@ -198,12 +227,33 @@ const patchScheduledTask = (existing, input) => {
     name = asNonEmptyString(input.name);
     if (!name) throw new OpenChamberControlError('name cannot be empty', 400);
   }
-  const replacesSchedule = ['daily', 'weekly', 'once', 'cron'].some((key) => asNonEmptyString(input[key]));
+  const selectors = ['daily', 'weekly', 'once', 'cron'].filter((key) => input[key] !== undefined);
+  if (selectors.length > 1 || (selectors.length === 1 && !asNonEmptyString(input[selectors[0]]))) {
+    throw new OpenChamberControlError('Provide exactly one nonempty daily, weekly, once, or cron selector', 400);
+  }
   const timezone = asNonEmptyString(input.timezone);
-  const schedule = replacesSchedule
+  let schedule = selectors.length === 1
     ? buildSchedule(input)
     : (timezone ? { ...existing.schedule, timezone } : existing.schedule);
-  return {
+  if (input.time !== undefined) {
+    const time = asNonEmptyString(input.time);
+    if (!time || !/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) {
+      throw new OpenChamberControlError('time must be HH:mm', 400);
+    }
+    if (schedule.kind === 'once') {
+      schedule = { ...schedule, time };
+    } else if (schedule.kind === 'weekly' && schedule.times.length === 1) {
+      schedule = { ...schedule, times: [time] };
+    } else {
+      throw new OpenChamberControlError('time requires a once or single-time weekly schedule; provide an explicit schedule to replace other schedules', 400);
+    }
+  }
+
+  assertWorktreeIsolation(
+    input,
+    input.targetSessionId === undefined ? existing.targetSessionId : input.targetSessionId,
+  );
+  const patch = {
     id: existing.id,
     targetSessionId: input.targetSessionId === undefined ? existing.targetSessionId : input.targetSessionId,
     name,
@@ -211,6 +261,11 @@ const patchScheduledTask = (existing, input) => {
     schedule,
     execution,
   };
+  if (input.runInWorktree !== undefined) patch.runInWorktree = input.runInWorktree;
+  if (input.cleanupWorktree !== undefined) patch.cleanupWorktree = input.cleanupWorktree;
+  // Empty or null clears the stored branch; absent leaves it to the store.
+  if (input.baseBranch !== undefined) patch.baseBranch = asNonEmptyString(input.baseBranch);
+  return patch;
 };
 
 export const createOpenChamberControlService = (dependencies) => {
@@ -469,27 +524,6 @@ export const createOpenChamberControlService = (dependencies) => {
     };
   };
 
-  // Only validate a named model so tasks with a removed model stay editable.
-  const assertNamedModelKnown = async (projectID, input, task) => {
-    if (input.model === undefined) return;
-    const parsed = parseModel(input.model);
-    const directory = await scheduledTaskService.resolveExecutionDirectory(projectID, task.targetSessionId);
-    const client = await getClient(directory);
-    const catalog = await client.model.list();
-    const entries = Array.isArray(catalog.data) ? catalog.data : [];
-    if (entries.length === 0) return;
-    // Same matcher as the session routes' `findCatalogModel`: a catalog entry
-    // may carry a display override in `id`, and the `modelID` is the upstream
-    // name the fire path dispatches and the UI's model strings carry, so
-    // either form names a model that will run.
-    const known = entries
-      .some((model) => model.providerID === parsed.providerID
-        && (model.id === parsed.modelID || model.modelID === parsed.modelID));
-    if (!known) {
-      throw new OpenChamberControlError(`unknown model: ${parsed.providerID}/${parsed.modelID}`, 400);
-    }
-  };
-
   // /api/session/active is global in v2 and reports only `{ type: 'running' }`.
   const activeSessions = async (client) => {
     const statuses = await client.session.active();
@@ -666,7 +700,7 @@ export const createOpenChamberControlService = (dependencies) => {
     }
   };
 
-  const executeSessionAction = async (action, input, contextDirectory, signal, contextSessionId) => {
+  const executeSessionAction = async (action, input, contextDirectory, signal, contextSessionId, startedByExtension) => {
     // The tool path forwards raw JSON, so a boolean parameter can arrive as the
     // string "true". Both of these are compared with `=== true` below, which
     // would read a string as false and silently drop the behavior: a dispatch
@@ -731,7 +765,7 @@ export const createOpenChamberControlService = (dependencies) => {
     const startedAt = now();
     let result;
     if (action === 'session.create') {
-      result = await sessionService.create(payload);
+      result = await sessionService.create(payload, ...(startedByExtension ? [{ startedByExtension }] : []));
     } else {
       if (!sessionID) throw new OpenChamberControlError('sessionId is required', 400);
       if (action === 'session.send') {
@@ -1021,7 +1055,6 @@ export const createOpenChamberControlService = (dependencies) => {
             return { scheduler: await scheduledTaskService.status(), tasks: await scheduledTaskService.list(projectID) };
           case 'schedule.create': {
             const task = buildScheduledTask(input);
-            await assertNamedModelKnown(projectID, input, task);
             const result = await scheduledTaskService.upsert(projectID, task);
             return { task: result.task, created: result.created };
           }
@@ -1029,7 +1062,6 @@ export const createOpenChamberControlService = (dependencies) => {
             const existing = (await scheduledTaskService.list(projectID)).find((task) => task.id === taskID);
             if (!existing) throw new OpenChamberControlError(`Scheduled task not found: ${taskID}`, 404);
             const task = patchScheduledTask(existing, input);
-            await assertNamedModelKnown(projectID, input, task);
             const result = await scheduledTaskService.upsert(projectID, task);
             return { task: result.task, updated: true };
           }
@@ -1048,7 +1080,7 @@ export const createOpenChamberControlService = (dependencies) => {
         }
       }
       if (action === 'session.create' || action === 'session.send' || action === 'session.fork') {
-        return executeSessionAction(action, input, contextDirectory, options.signal, options.contextSessionId);
+        return executeSessionAction(action, input, contextDirectory, options.signal, options.contextSessionId, options.startedByExtension);
       }
       if (action === 'session.link') {
         if (!sessionLinks) throw new OpenChamberControlError('Linking is not available on this server', 503);

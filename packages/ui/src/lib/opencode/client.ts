@@ -12,6 +12,7 @@
  * here when they are part of the same directory/session workflows.
  */
 
+import { AgentUnavailableError } from "./agent-unavailable-error"
 import { isLocationNotFoundError } from "./location-errors"
 import { ClientError, OpenCode, type OpenCodeClient } from "@opencode/client"
 import type {
@@ -159,13 +160,7 @@ export class OpencodeApiError extends Error {
   }
 }
 
-/** A send named an agent the session's folder does not have; nothing was sent. */
-export class AgentUnavailableError extends Error {
-  constructor(readonly agent: string, readonly directory: string | undefined) {
-    super(`Agent '${agent}' is not available in ${directory ?? "the session's folder"}`)
-    this.name = "AgentUnavailableError"
-  }
-}
+export { AgentUnavailableError }
 
 const taggedErrorSchema = z.object({ _tag: z.string(), message: z.string().optional(), ref: z.string().optional() })
 
@@ -329,7 +324,15 @@ const createTimeoutSignal = (timeoutMs: number): { signal: AbortSignal; cleanup:
  */
 const OPENCODE_REQUEST_TIMEOUT_MS = 30_000
 
+/**
+ * Usage stats aggregate every step in the range on the server, and on a large
+ * history a 30-day range takes minutes (#6366). They get the server proxy's
+ * default deadline instead, so the slow answer still arrives.
+ */
+const OPENCODE_STATS_REQUEST_TIMEOUT_MS = 4 * 60_000
+
 const isEventStreamUrl = (url: URL): boolean => url.pathname.endsWith("/event") || url.pathname.endsWith("/log")
+const isUsageStatsUrl = (url: URL): boolean => url.pathname.endsWith("/experimental/session/stats")
 
 /** Header the server reads to resolve a Location; the value is URI-encoded on both ends. */
 const OPENCODE_DIRECTORY_HEADER = "x-opencode-directory"
@@ -348,7 +351,7 @@ const toOpenCodeDirectory = (directory: string): string =>
 type RuntimeOpencodeClientConfig = {
   baseUrl: string
   directory?: string
-  /** Read-request timeout in ms. Overridable so tests can use short value. */
+  /** Read-request timeout in ms, except usage stats, which keep their own deadline. Overridable so tests can use short value. */
   requestTimeoutMs?: number
 }
 
@@ -377,7 +380,8 @@ export const createRuntimeOpencodeClient = (config: RuntimeOpencodeClientConfig)
     if (isEventStreamUrl(url) || requestMethodOf(input, init) === "POST") {
       return validateRuntimeResponse(await runtimeFetch(input, init))
     }
-    const timeout = createTimeoutSignal(requestTimeoutMs)
+    const timeoutMs = isUsageStatsUrl(url) ? OPENCODE_STATS_REQUEST_TIMEOUT_MS : requestTimeoutMs
+    const timeout = createTimeoutSignal(timeoutMs)
     const callerSignal = init?.signal !== undefined
       ? init.signal
       : input instanceof Request ? input.signal : undefined
@@ -424,7 +428,7 @@ export const createRuntimeOpencodeClient = (config: RuntimeOpencodeClientConfig)
       return response
     } catch (error) {
       if (timeout.signal.aborted && !callerSignal?.aborted) {
-        throw new Error(`OpenCode request timed out after ${requestTimeoutMs}ms`)
+        throw new Error(`OpenCode request timed out after ${timeoutMs}ms`)
       }
       throw error
     } finally {
@@ -1435,9 +1439,12 @@ class OpencodeService {
    *
    * OpenCode records an agent the session's folder does not have and fails
    * only the next turn, so the agent is checked first: a missing one stops the
-   * send before anything, the model included, is switched.
+   * send before anything, the model included, is switched. A form reply goes
+   * through here too, because its continuation is a turn. The runtime is checked
+   * once more after the last switch, so a caller never acts on a server it did
+   * not start with.
    */
-  private async applySendSelection(
+  async applySendSelection(
     sessionID: string,
     selection: { model?: ModelSelection; agent?: string },
     directory: string | null | undefined,
@@ -1455,6 +1462,7 @@ class OpencodeService {
       this.assertRuntimeUnchanged(runtimeKey)
       await this.switchSessionAgent(sessionID, selection.agent, directory)
     }
+    this.assertRuntimeUnchanged(runtimeKey)
   }
 
   /**
@@ -1516,6 +1524,12 @@ class OpencodeService {
      * this one.
      */
     beforeSend?: () => void
+    /**
+     * Commits the session's staged revert. Runs once, before the first
+     * synthetic message: one admitted while the revert is staged lies past its
+     * boundary, and the commit the prompt makes deletes it.
+     */
+    commitRevert?: () => Promise<void>
   }): Promise<string> {
     this.assertRuntimeUnchanged(params.runtimeKey)
 
@@ -1539,8 +1553,14 @@ class OpencodeService {
 
     assertProviderCircuitClosed(params.providerID)
 
+    let commitRevert = params.commitRevert
     const admitSynthetic = async (item: SyntheticContextInput) => {
       this.assertRuntimeUnchanged(params.runtimeKey)
+      if (commitRevert) {
+        await commitRevert()
+        commitRevert = undefined
+        this.assertRuntimeUnchanged(params.runtimeKey)
+      }
       await call("session.synthetic", () =>
         this.clientFor(params.directory).session.synthetic({
           sessionID: params.id,
@@ -1623,12 +1643,18 @@ class OpencodeService {
     directory?: string | null
     /** As `sendMessage`'s: runs right before the command request leaves. */
     beforeSend?: () => void
+    /** As `sendMessage`'s: commits the staged revert before the context is admitted. */
+    commitRevert?: () => Promise<void>
   }): Promise<void> {
     this.assertRuntimeUnchanged(params.runtimeKey)
     const files = await Promise.all((params.files ?? []).map((file) => this.toPromptFile(file)))
     await this.applySendSelection(params.id, { model: params.model, agent: params.agent }, params.directory, params.runtimeKey)
-    for (const item of params.context ?? []) {
-      if (!item.text.trim()) continue
+    const context = (params.context ?? []).filter((item) => item.text.trim())
+    if (context.length > 0 && params.commitRevert) {
+      this.assertRuntimeUnchanged(params.runtimeKey)
+      await params.commitRevert()
+    }
+    for (const item of context) {
       this.assertRuntimeUnchanged(params.runtimeKey)
       await call("session.synthetic", () =>
         this.clientFor(params.directory).session.synthetic({
@@ -1750,6 +1776,11 @@ class OpencodeService {
 
   async clearRevert(sessionId: string, directory?: string | null): Promise<void> {
     await call("session.revert.clear", () => this.clientFor(directory).session.revert.clear({ sessionID: sessionId }))
+  }
+
+  /** Commits a staged revert: OpenCode deletes the boundary message and everything after it. */
+  async commitRevert(sessionId: string, directory?: string | null): Promise<void> {
+    await call("session.revert.commit", () => this.clientFor(directory).session.revert.commit({ sessionID: sessionId }))
   }
 
   /** Compacts the transcript; the result arrives as a compaction message through events. */
@@ -2079,7 +2110,7 @@ class OpencodeService {
     return deniesAnyProvider(entries)
   }
 
-  /** The `integration.use` statements OpenCode's config applies to MCP servers and skills in a directory. */
+  /** The `mcp.use` and `skill.use` statements OpenCode's config applies to MCP servers and skills in a directory. */
   async getIntegrationPolicies(directory?: string | null): Promise<IntegrationPolicy[]> {
     const entries = await call("config.get", () => this.clientFor(this.resolveDirectory(directory)).config.get())
     return readIntegrationPolicies(entries)

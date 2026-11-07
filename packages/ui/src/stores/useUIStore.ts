@@ -1059,6 +1059,8 @@ interface UIStore {
   autoDeleteAfterDays: number;
   sessionRetentionAction: SessionRetentionAction;
   sessionRetentionOnlyArchived: boolean;
+  /** Retention also takes sessions in the In work block. Off by default: they stay until Done. */
+  sessionRetentionIncludeInWork: boolean;
   /** Archive a worktree's sessions and remove it once its PR is merged. Off by default. */
   mergedWorktreeCleanupEnabled: boolean;
   /** Done on a worktree in work also archives it. Off by default: Done then only takes it out of In work. */
@@ -1066,6 +1068,8 @@ interface UIStore {
   autoDeleteLastRunAt: number | null;
   messageLimit: number;
   fontSize: number;
+  /** Chat text size in percent of the interface size, so the chat can grow without the sidebar. */
+  chatFontSize: number;
   // Global draft welcome starters; null = unset (use the default built-in set).
   globalDraftStarters: DraftStarterRef[] | null;
   draftStartersVisible: boolean;
@@ -1392,9 +1396,11 @@ interface UIStore {
   setAutoDeleteAfterDays: (days: number) => void;
   setSessionRetentionAction: (value: SessionRetentionAction) => void;
   setSessionRetentionOnlyArchived: (value: boolean) => void;
+  setSessionRetentionIncludeInWork: (value: boolean) => void;
   setAutoDeleteLastRunAt: (timestamp: number | null) => void;
   setMessageLimit: (value: number) => void;
   setFontSize: (size: number) => void;
+  setChatFontSize: (size: number) => void;
   setGlobalDraftStarters: (refs: DraftStarterRef[]) => void;
   setDraftStartersVisible: (value: boolean) => void;
   setTerminalFontSize: (size: number) => void;
@@ -1662,11 +1668,13 @@ export const useUIStore = create<UIStore>()(
         autoDeleteAfterDays: 30,
         sessionRetentionAction: 'archive',
         sessionRetentionOnlyArchived: false,
+        sessionRetentionIncludeInWork: false,
         mergedWorktreeCleanupEnabled: false,
         worktreeArchiveOnDoneEnabled: false,
         autoDeleteLastRunAt: null,
         messageLimit: 200,
         fontSize: 100,
+        chatFontSize: 100,
         globalDraftStarters: null,
         terminalFontSize: 14,
         terminalShell: 'auto',
@@ -2876,6 +2884,10 @@ export const useUIStore = create<UIStore>()(
           }));
         },
 
+        setSessionRetentionIncludeInWork: (value) => {
+          set({ sessionRetentionIncludeInWork: value });
+        },
+
         setAutoDeleteLastRunAt: (timestamp) => {
           set({ autoDeleteLastRunAt: timestamp });
         },
@@ -2890,6 +2902,10 @@ export const useUIStore = create<UIStore>()(
           const clampedSize = Math.max(50, Math.min(200, size));
           set({ fontSize: clampedSize });
           get().applyTypography();
+        },
+
+        setChatFontSize: (size) => {
+          set({ chatFontSize: Math.max(50, Math.min(200, Math.round(size))) });
         },
 
         setGlobalDraftStarters: (refs) => {
@@ -3966,11 +3982,13 @@ export const useUIStore = create<UIStore>()(
           autoDeleteAfterDays: state.autoDeleteAfterDays,
           sessionRetentionAction: state.sessionRetentionAction,
           sessionRetentionOnlyArchived: state.sessionRetentionOnlyArchived,
+          sessionRetentionIncludeInWork: state.sessionRetentionIncludeInWork,
           mergedWorktreeCleanupEnabled: state.mergedWorktreeCleanupEnabled,
           worktreeArchiveOnDoneEnabled: state.worktreeArchiveOnDoneEnabled,
           autoDeleteLastRunAt: state.autoDeleteLastRunAt,
           messageLimit: state.messageLimit,
           fontSize: state.fontSize,
+          chatFontSize: state.chatFontSize,
           globalDraftStarters: state.globalDraftStarters,
           terminalFontSize: state.terminalFontSize,
           terminalShell: state.terminalShell,

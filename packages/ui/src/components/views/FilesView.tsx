@@ -4,6 +4,10 @@ import { runtimeFetch } from '@/lib/runtime-fetch';
 
 import { toast } from '@/components/ui';
 import { copyTextToClipboard } from '@/lib/clipboard';
+import { GuestIcon } from '@/components/layout/GuestRailIcon';
+import { useGuestActions } from '@/hooks/useGuestSurfaces';
+import { guestActionsWhere, type GuestActionEntry } from '@/lib/guests/actions';
+import { runGuestAction } from '@/lib/guests/run-action';
 import { getDisambiguatingFolders } from '@/lib/path-utils';
 
 import {
@@ -35,7 +39,7 @@ import { GitignoredToggleButton } from '@/components/layout/GitignoredToggleButt
 import { useZoneInteractive } from '@/components/layout/zoneInteractiveContext';
 import { MarkdownPreviewSearch } from './MarkdownPreviewSearch';
 import { createFileContentPoller } from './fileContentPoller';
-import { hasFileStatChanged, openFilePollStep } from './fileStatChange';
+import { fileStatSnapshotForRequestedPath, hasFileStatChanged, openFilePollStep, type FileStatSnapshot } from './fileStatChange';
 import { pendingFileNavigationStep } from './pendingFileNavigation';
 import { JsonTreeView } from '@/components/ui/JsonTreeView';
 import { SimpleMarkdownRenderer } from '@/components/chat/MarkdownRenderer';
@@ -60,9 +64,9 @@ import { useDebouncedValue } from '@/hooks/useDebouncedValue';
 import { useFileSearchStore } from '@/stores/useFileSearchStore';
 import { useDeviceInfo } from '@/lib/device';
 import { cn, getRevealLabelKey } from '@/lib/utils';
-import { getLanguageFromExtension, getImageMimeType, isAudioFile, isBinaryFile, isDelimitedTableFile, isDrawioFile, isExcalidrawFile, isFontFile, isImageFile, isMermaidFile, isOfficePreviewFile, isPdfFile, isSvgFile, isVideoFile, looksLikeBinaryText } from '@/lib/toolHelpers';
+import { getLanguageFromExtension, getImageMimeType, isAudioFile, isBinaryFile, isDelimitedTableFile, isDrawioFile, isExcalidrawFile, isFontFile, isImageFile, isMermaidFile, isArchiveFile, isDataFile, isNotebookFile, isOfficePreviewFile, isPdfFile, isSvgFile, isVideoFile, looksLikeBinaryText } from '@/lib/toolHelpers';
 import { shouldAllowFileDraftSave, shouldScheduleFileAutosave } from '@/lib/fileEditorAutosave';
-import { MAX_OFFICE_PREVIEW_BYTES, MAX_OPEN_FILE_BYTES } from '@/lib/fileOpenLimits';
+import { MAX_DATA_PREVIEW_BYTES, MAX_OFFICE_PREVIEW_BYTES, MAX_OPEN_FILE_BYTES } from '@/lib/fileOpenLimits';
 import { LARGE_FILE_CHAR_THRESHOLD, initialFileTextMode, makeFileContentCacheKey, prepareFileEditorContent, serializeEditorContent, type FileLineEnding } from './fileEditorContent';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { isRelayModeActive } from '@/lib/relay/runtime-tunnel';
@@ -77,7 +81,7 @@ import { GUEST_FILE_EDITOR_CONTENT_MAX } from '@openchamber/sdk';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { EditorView } from '@codemirror/view';
 import type { Extension } from '@codemirror/state';
-import { highlightSelectionMatches } from '@codemirror/search';
+import { getSearchQuery, highlightSelectionMatches, SearchQuery, setSearchQuery as setEditorSearchQuery } from '@codemirror/search';
 import { codeFolding } from '@/lib/codemirror/codeFolding';
 import { bracketAids, multipleCursors } from '@/lib/codemirror/editingAids';
 import { gitChangeGutter, setGitChangeBaseline } from '@/lib/codemirror/gitChangeGutter';
@@ -88,12 +92,17 @@ import { stickyScope } from '@/lib/codemirror/stickyScope';
 import { useThemeSystem } from '@/contexts/useThemeSystem';
 import { normalizeContextPanelDirectoryKey, useUIStore } from '@/stores/useUIStore';
 import { useFilesViewTabsStore } from '@/stores/useFilesViewTabsStore';
-import { useGitStatus, useGitStore } from '@/stores/useGitStore';
+import { useEffectiveGitDirectory, useGitStatus, useGitStore } from '@/stores/useGitStore';
 import { DirectoryRequests } from './files/directoryRequests';
+import { gitBaselineTarget } from './files/gitBaselineTarget';
 import { useFileTreeUpload } from './files/useFileTreeUpload';
 import { moveWorkspacePath } from './files/moveWorkspacePath';
 import { areDirectoryNodesEqual, buildFileTreeStatusIndex } from './files/fileTreeStatus';
 import { BinaryArtifact } from './files/previews/BinaryArtifact';
+import { delimiterForPath, parseDelimitedText } from './files/previews/delimitedText';
+import { ArchiveArtifact } from './files/previews/ArchiveArtifact';
+import { DataFileArtifact } from './files/previews/DataFileArtifact';
+import { NotebookArtifact } from './files/previews/NotebookArtifact';
 import { OfficeArtifact } from './files/previews/OfficeArtifact';
 import { PdfArtifact } from './files/previews/PdfArtifact';
 import { FontArtifact } from './files/previews/FontArtifact';
@@ -156,12 +165,6 @@ type FileNode = {
   type: 'file' | 'directory';
   extension?: string;
   relativePath?: string;
-};
-
-type FileStatSnapshot = {
-  path: string;
-  size: number;
-  mtimeMs?: number;
 };
 
 type SelectedLineRange = {
@@ -401,9 +404,11 @@ interface FileRowProps {
   onOpenDialog: (type: 'createFile' | 'createFolder' | 'rename' | 'delete', data: { path: string; name?: string; type?: 'file' | 'directory' }) => void;
   canUpload: boolean;
   onPickFiles: (directory: string) => void;
+  guestActions: GuestActionEntry[];
 }
 
 const FileRow: React.FC<FileRowProps> = ({
+  guestActions,
   node,
   root,
   isExpanded,
@@ -457,6 +462,8 @@ const FileRow: React.FC<FileRowProps> = ({
     setRightClickMenuPath(null);
     setContextMenuPath(node.path);
   }, [node.path, setContextMenuPath, setRightClickMenuPath]);
+
+  const fileActions = guestActionsWhere(guestActions, 'file');
 
   const renderMenuItems = ({
     Item,
@@ -523,6 +530,18 @@ const FileRow: React.FC<FileRowProps> = ({
           <Icon name="external-link" className="me-2 size-4" /> {t('sidebarFilesTree.menu.openInDefaultApp')}
         </Item>
       )}
+      {fileActions.length > 0 && <Separator />}
+      {fileActions.map((entry) => (
+        <Item
+          key={`${entry.guest.id}:${entry.action.id}`}
+          onClick={(e: React.MouseEvent) => {
+            e.stopPropagation();
+            void runGuestAction(entry, { kind: 'file', action: entry.action.id, directory: root || null, path: node.path, isDirectory: isDir }, t);
+          }}
+        >
+          <GuestIcon icon={entry.icon} iconSrc={entry.iconSrc} className="me-2 size-4" /> {entry.action.label}
+        </Item>
+      ))}
       {isDir && (canCreateFile || canCreateFolder || canUploadHere) && (
         <>
           <Separator />
@@ -767,6 +786,7 @@ const FilePositionEditor = ({
 
 export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = true, onCloseFile }) => {
   const { t } = useI18n();
+  const guestActions = useGuestActions();
   const { files, runtime, git } = useRuntimeAPIs();
   const { currentTheme, availableThemes, lightThemeId, darkThemeId } = useThemeSystem();
   const { isMobile, isTablet, screenWidth } = useDeviceInfo();
@@ -1291,8 +1311,9 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
     if (range) {
       setLineSelection(range);
     }
-    saveComment(text, finalRange);
-    setLineSelection(null);
+    const saved = saveComment(text, finalRange);
+    if (saved) setLineSelection(null);
+    return saved;
   }, [lineSelection, saveComment]);
 
   const mapDirectoryEntries = React.useCallback((dirPath: string, entries: Array<{ name: string; path: string; isDirectory: boolean }>): FileNode[] => {
@@ -1730,11 +1751,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
     if (files.statFile) {
       const options = resolveFileReadOptions(path);
       const result = await files.statFile(path, { ...options, directory: root || undefined });
-      return {
-        path: result.path,
-        size: result.size,
-        mtimeMs: result.mtimeMs,
-      };
+      return fileStatSnapshotForRequestedPath(normalizePath(path), result);
     }
     return null;
   }, [files, resolveFileReadOptions, root]);
@@ -1776,6 +1793,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
     }
     lastLoadedFileContentRef.current = content;
     lastLoadedFileRevisionRef.current += 1;
+    setFileContentRevision((revision) => revision + 1);
     setLoadedFileLineEnding(lineEnding);
     setFileContent(editorContent);
     diagramXmlRef.current = editorContent;
@@ -2089,6 +2107,15 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
     // pulled in whole; a file whose size is unknown is read as before.
     const sizeStat = await readFileStat(node.path).catch(() => null);
     if (!isCurrentLoad()) {
+      return;
+    }
+    if (sizeStat && sizeStat.size > MAX_OPEN_FILE_BYTES && isDelimitedTableFile(node.path)) {
+      // Too large for the editor, not for the table: it opens read-only, from its bytes.
+      setContentDetectedBinary(true);
+      setFileContent('');
+      setDraftContent('');
+      setLoadedFilePath(node.path);
+      setFileLoading(false);
       return;
     }
     if (sizeStat && sizeStat.size > MAX_OPEN_FILE_BYTES) {
@@ -2643,6 +2670,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
       return (
         <li key={node.path}>
           <FileRow
+            guestActions={guestActions}
             node={node}
             root={root}
             isExpanded={isExpanded}
@@ -2800,7 +2828,11 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
   // parties, so there a .drawio file opens as its XML like any text file.
   const isDrawio = !claimedByGuest && !enterpriseMode && Boolean(selectedFile?.path && isDrawioFile(selectedFile.path));
   const isMermaid = !claimedByGuest && Boolean(selectedFile?.path && isMermaidFile(selectedFile.path));
-  const isTable = !claimedByGuest && Boolean(selectedFile?.path && isDelimitedTableFile(selectedFile.path));
+  // One too large for the editor has no text here, only its table view.
+  const isTable = !claimedByGuest && !contentDetectedBinary && Boolean(selectedFile?.path && isDelimitedTableFile(selectedFile.path));
+  const isNotebook = !claimedByGuest && Boolean(selectedFile?.path && isNotebookFile(selectedFile.path));
+  // Both are text with a richer view that the same toggle switches.
+  const isTableView = isTable || isNotebook;
   const hasCanvas = claimedByGuest;
   // A binary editor checks the bytes it reads too; the stat size spares a read.
   const canMountCanvas = claimedByGuest && (binaryCanvas
@@ -2816,17 +2848,27 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
     && !(isHtml && htmlViewMode === 'preview')
     && !(isSelectedSvg && svgViewMode === 'preview')
     && !(isMermaid && mermaidViewMode === 'preview')
-    && !(isTable && tableViewMode === 'table');
+    && !(isTableView && tableViewMode === 'table');
   const isEditingFile = (isMarkdown && mdViewMode === 'edit')
     || (isHtml && htmlViewMode === 'edit')
     || (hasCanvas && (canvasViewMode === 'edit' || !canMountCanvas))
     || (isSelectedSvg && svgViewMode === 'edit')
     || (isMermaid && mermaidViewMode === 'edit')
-    || (isTable && tableViewMode === 'text')
+    || (isTableView && tableViewMode === 'text')
     || (isJson && jsonViewMode === 'text')
-    || (!isMarkdown && !isHtml && !isJson && !hasCanvas && !isSelectedSvg && !isMermaid && !isTable && textViewMode === 'edit');
+    || (!isMarkdown && !isHtml && !isJson && !hasCanvas && !isSelectedSvg && !isMermaid && !isTableView && textViewMode === 'edit');
   // The CodeMirror source is on screen. A draw.io file shows it whenever its diagram is not;
   // a read-only file in its source mode shows the code preview instead.
+  // The phone's find bar has no match options: one set on a wider layout must
+  // not keep narrowing the search with no way to clear it.
+  React.useEffect(() => {
+    const view = editorViewRef.current;
+    if (!isMobile || !isSearchOpen || !view) return;
+    const query = getSearchQuery(view.state);
+    if (!query.caseSensitive && !query.regexp && !query.wholeWord) return;
+    view.dispatch({ effects: setEditorSearchQuery.of(new SearchQuery({ search: query.search, replace: query.replace })) });
+  }, [isMobile, isSearchOpen]);
+
   const sourceEditorShown = (isDrawio ? drawioViewMode !== 'preview' : isEditingFile)
     && !(canUseShikiFileView && textViewMode === 'view');
   // Go to line and symbols drive that editor: they close when a preview replaces it.
@@ -3555,19 +3597,23 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
   const selectedRelativePath = selectedFile?.path && root && selectedFile.path.startsWith(`${root}/`)
     ? selectedFile.path.slice(root.length + 1)
     : null;
+  const selectedGitDirectory = useEffectiveGitDirectory(currentDirectory || null);
+  const gitTarget = gitBaselineTarget(selectedFile?.path, currentDirectory, selectedGitDirectory);
+  const gitDirectory = gitTarget?.directory ?? null;
+  const gitRelativePath = gitTarget?.relativePath ?? null;
   // Refetch when the file's own status or the branch changes (a commit,
   // checkout or stash moves its HEAD version), not on every status refresh:
   // the selector returns a string, so unrelated refreshes do not re-render.
   const gitBaselineKey = useGitStore((state) => {
-    if (!selectedRelativePath || !root) return null;
+    if (!gitRelativePath || !gitDirectory) return null;
     // Keyed like the tree's own git status lookup.
-    const status = state.directories.get(currentDirectory)?.status;
-    const entry = status?.files.find((file) => file.path === selectedRelativePath) ?? null;
-    return JSON.stringify([selectedRelativePath, status?.current ?? null, entry]);
+    const status = state.directories.get(gitDirectory)?.status;
+    const entry = status?.files.find((file) => file.path === gitRelativePath) ?? null;
+    return JSON.stringify([gitDirectory, gitRelativePath, status?.current ?? null, entry]);
   });
-  const [gitBaseline, setGitBaseline] = React.useState<{ path: string; text: string | null } | null>(null);
+  const [gitBaseline, setGitBaseline] = React.useState<{ path: string; directory: string; text: string | null } | null>(null);
   React.useEffect(() => {
-    if (!selectedRelativePath || !root || !gitBaselineKey) {
+    if (!selectedRelativePath || !gitRelativePath || !gitDirectory || !gitBaselineKey) {
       setGitBaseline(null);
       return;
     }
@@ -3576,32 +3622,31 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
       setGitBaseline(null);
       return;
     }
-    git.getGitFileDiff(root, { path: selectedRelativePath })
+    git.getGitFileDiff(gitDirectory, { path: gitRelativePath })
       .then((diff) => {
         if (cancelled) return;
-        const entry = useGitStore.getState().directories.get(currentDirectory)?.status?.files
-          .find((file) => file.path === selectedRelativePath);
+        const entry = useGitStore.getState().directories.get(gitDirectory)?.status?.files
+          .find((file) => file.path === gitRelativePath);
         const isNewInGit = entry !== undefined
           && (entry.index === '?' || entry.index === 'A' || entry.working_dir === '?');
         const usable = !diff.isBinary && !diff.submodule && (diff.original !== '' || isNewInGit);
-        setGitBaseline({ path: selectedRelativePath, text: usable ? diff.original : null });
+        setGitBaseline({ path: selectedRelativePath, directory: gitDirectory, text: usable ? diff.original : null });
       })
       .catch(() => {
-        if (!cancelled) setGitBaseline({ path: selectedRelativePath, text: null });
+        if (!cancelled) setGitBaseline({ path: selectedRelativePath, directory: gitDirectory, text: null });
       });
     return () => {
       cancelled = true;
     };
     // gitBaselineKey carries the status fields that decide a refetch.
-    // oxlint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentDirectory, git, gitBaselineKey, root]);
+  }, [git, gitBaselineKey, gitDirectory, gitRelativePath, selectedRelativePath]);
   const gitBaselineRef = React.useRef(gitBaseline);
   gitBaselineRef.current = gitBaseline;
   const applyGitBaseline = React.useCallback((view: EditorView | null) => {
     if (!view) return;
     const baseline = gitBaselineRef.current;
-    setGitChangeBaseline(view, baseline && baseline.path === selectedRelativePath ? baseline.text : null);
-  }, [selectedRelativePath]);
+    setGitChangeBaseline(view, baseline && baseline.path === selectedRelativePath && baseline.directory === gitDirectory ? baseline.text : null);
+  }, [gitDirectory, selectedRelativePath]);
   React.useEffect(() => {
     applyGitBaseline(editorViewRef.current);
   }, [applyGitBaseline, gitBaseline]);
@@ -3813,9 +3858,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
     </Tooltip>
   ) : null;
 
-  const fetchSelectedFile = React.useCallback(async (signal: AbortSignal): Promise<Response> => {
-    const path = selectedFilePathRef.current;
-    if (!path) throw new Error('No file is open.');
+  const fetchRawFile = React.useCallback(async (path: string, signal: AbortSignal): Promise<Response> => {
     const readOptions = resolveFileReadOptions(path);
     const response = await runtimeFetch('/api/fs/raw', {
       signal,
@@ -3831,18 +3874,76 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
   }, [resolveFileReadOptions, root, t]);
 
   const loadCanvasBytes = React.useCallback(async (): Promise<Uint8Array<ArrayBuffer>> => {
-    const response = await fetchSelectedFile(AbortSignal.timeout(60_000));
+    const path = selectedFilePathRef.current;
+    if (!path) throw new Error('No file is open.');
+    const response = await fetchRawFile(path, AbortSignal.timeout(60_000));
     return new Uint8Array(await response.arrayBuffer());
-  }, [fetchSelectedFile]);
+  }, [fetchRawFile]);
 
   // The stat that names the size can arrive after this read starts, so the
   // read is bounded itself and stops when the preview goes away.
-  const loadOfficeBytes = React.useCallback(async (cancel: AbortSignal): Promise<Uint8Array<ArrayBuffer>> => {
+  const maxDataBytes = isMobile ? MAX_OFFICE_PREVIEW_BYTES : MAX_DATA_PREVIEW_BYTES;
+  const loadOfficeBytes = React.useCallback(async (path: string, cancel: AbortSignal): Promise<Uint8Array<ArrayBuffer>> => {
     const signal = AbortSignal.any([cancel, AbortSignal.timeout(60_000)]);
-    const response = await fetchSelectedFile(signal);
+    const response = await fetchRawFile(path, signal);
     const blob = await readAssetBlob(response, MAX_OFFICE_PREVIEW_BYTES, signal);
     return new Uint8Array(await blob.arrayBuffer());
-  }, [fetchSelectedFile]);
+  }, [fetchRawFile]);
+
+  const loadDataBytes = React.useCallback(async (path: string, cancel: AbortSignal): Promise<Uint8Array<ArrayBuffer>> => {
+    const signal = AbortSignal.any([cancel, AbortSignal.timeout(300_000)]);
+    const response = await fetchRawFile(path, signal);
+    const blob = await readAssetBlob(response, maxDataBytes, signal);
+    return new Uint8Array(await blob.arrayBuffer());
+  }, [fetchRawFile, maxDataBytes]);
+
+  // Named by path: an edit can still be saving after the viewer moved on.
+  // An export lands next to its file, where the agent sees it too.
+  const exportDocument = async (format: 'docx' | 'pdf' | 'xlsx') => {
+    if (!selectedFile) return;
+    const { markdownToDocx, markdownToPrintableHtml, printHtml, rowsToXlsx } = await import('./files/previews/documentExport');
+    if (format === 'pdf') {
+      printHtml(markdownToPrintableHtml(draftContent, selectedFile.name));
+      return;
+    }
+    const table = isTable ? parseDelimitedText(draftContent, delimiterForPath(selectedFile.path), Number.MAX_SAFE_INTEGER) : null;
+    const bytes = table ? await rowsToXlsx(selectedFile.name, [table.header, ...table.rows]) : await markdownToDocx(draftContent);
+    const stem = selectedFile.path.replace(/\.[^./\\]+$/, '');
+    // A file already there is the user's: the export takes the next free name.
+    let target = `${stem}.${format}`;
+    for (let suffix = 2; suffix < 1000 && await readFileStat(target).catch(() => null); suffix += 1) {
+      target = `${stem} ${suffix}.${format}`;
+    }
+    const name = target.split(/[/\\]/).pop() ?? target;
+    if (!files.uploadFile) {
+      const url = URL.createObjectURL(new Blob([bytes]));
+      const link = Object.assign(document.createElement('a'), { href: url, download: name });
+      link.click();
+      URL.revokeObjectURL(url);
+      return;
+    }
+    try {
+      const written = await files.uploadFile(target, new Blob([bytes]), { overwrite: false });
+      if (!written?.success) throw new Error('write failed');
+      toast.success(t('filesView.export.saved', { name }));
+    } catch {
+      toast.error(t('filesView.toast.writeFileFailed'));
+    }
+  };
+
+  const saveOfficeBytes = React.useCallback(async (path: string, bytes: Uint8Array<ArrayBuffer>): Promise<boolean> => {
+    if (!files.uploadFile) return false;
+    // No baseline while writing: the poll records the new stat instead of
+    // reading our own write as an external change and reloading the preview.
+    if (selectedFilePathRef.current === path) lastLoadedFileStatRef.current = null;
+    const written = await files.uploadFile(path, new Blob([bytes]), { overwrite: true });
+    if (!written?.success) return false;
+    if (root && isPathWithinRoot(path, root)) {
+      const relativePath = getDisplayPath(root, path);
+      if (relativePath) sessionEvents.requestGitRefresh({ directory: root, paths: [relativePath] });
+    }
+    return true;
+  }, [files, root]);
 
   const openInDefaultAppButton = selectedFile && isDesktopLocalOriginActive() ? (
     <Tooltip>
@@ -3901,6 +4002,12 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
     }
     if (isUnsupportedBinary) {
       const officeTooLarge = artifactSize !== null && artifactSize > MAX_OFFICE_PREVIEW_BYTES;
+      if (isArchiveFile(file.path) && !officeTooLarge) {
+        return <ArchiveArtifact key={`${file.path}:${fileContentRevision}`} name={file.name} path={file.path} sizeBytes={artifactSize} loadBytes={loadOfficeBytes} actions={binaryFileActions} />;
+      }
+      if ((isDataFile(file.path) || isDelimitedTableFile(file.path)) && !(artifactSize !== null && artifactSize > maxDataBytes)) {
+        return <DataFileArtifact key={`${file.path}:${fileContentRevision}`} name={file.name} path={file.path} sizeBytes={artifactSize} loadBytes={loadDataBytes} actions={binaryFileActions} />;
+      }
       if (isOfficePreviewFile(file.path) && !officeTooLarge) {
         return (
           <OfficeArtifact
@@ -3910,6 +4017,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
             sizeBytes={artifactSize}
             loadBytes={loadOfficeBytes}
             actions={binaryFileActions}
+            onSave={files.uploadFile && !selectedFileIsOutsideWorkspace ? saveOfficeBytes : undefined}
           />
         );
       }
@@ -3919,12 +4027,23 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
           path={file.path}
           sizeBytes={artifactSize}
           download={binaryFileActions}
-          description={isOfficePreviewFile(file.path) ? t('filesView.artifact.office.tooLarge') : undefined}
+          description={isOfficePreviewFile(file.path) || isArchiveFile(file.path) || isDataFile(file.path) || isDelimitedTableFile(file.path) ? t('filesView.artifact.office.tooLarge') : undefined}
         />
       );
     }
+    if (isNotebook && tableViewMode === 'table') {
+      return <NotebookArtifact content={fileContent} sizeBytes={artifactSize} />;
+    }
     if (isTable && tableViewMode === 'table') {
-      return <TableArtifact path={file.path} content={fileContent} sizeBytes={artifactSize} />;
+      return (
+        <TableArtifact
+          key={file.path}
+          path={file.path}
+          content={canEdit ? draftContent : fileContent}
+          sizeBytes={artifactSize}
+          onContentChange={canEdit ? setDraftContent : undefined}
+        />
+      );
     }
     if (isMermaid && mermaidViewMode === 'preview') {
       return (
@@ -4323,7 +4442,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
       else if (isJson) saveJsonViewMode('text');
       else if (isSelectedSvg) saveSvgViewMode('edit');
       else if (isMermaid) saveMermaidViewMode('edit');
-      else if (isTable) saveTableViewMode('text');
+      else if (isTableView) saveTableViewMode('text');
       else saveTextViewMode('edit');
     };
 
@@ -4344,10 +4463,10 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
       : isHtml ? previewToggle(getHtmlViewMode() === 'preview', (on) => saveHtmlViewMode(on ? 'preview' : 'edit'))
       : isSelectedSvg ? previewToggle(svgViewMode === 'preview', (on) => saveSvgViewMode(on ? 'preview' : 'edit'))
       : isMermaid ? previewToggle(mermaidViewMode === 'preview', (on) => saveMermaidViewMode(on ? 'preview' : 'edit'))
-      : isTable ? {
+      : isTableView ? {
         id: 'mode',
-        label: t('documentToolbar.tableView'),
-        icon: 'table-2',
+        label: isNotebook ? previewLabel : t('documentToolbar.tableView'),
+        icon: isNotebook ? 'eye' : 'table-2',
         pressed: tableViewMode === 'table',
         onSelect: () => saveTableViewMode(tableViewMode === 'table' ? 'text' : 'table'),
         pinned: true,
@@ -4382,7 +4501,8 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
     } : null;
 
     const searchOpen = mdPreview ? mdPreviewFindOpen : (sourceEditorShown && isSearchOpen);
-    const searchAction: ToolbarAction | null = hasSourceEditor ? {
+    // A table has its own search, which filters rows.
+    const searchAction: ToolbarAction | null = hasSourceEditor && !(isTable && tableViewMode === 'table') ? {
       id: 'search',
       label: t('filesView.editor.findInFile'),
       icon: 'search',
@@ -4487,6 +4607,24 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
         label: t('filesView.editor.saveFile'),
         icon: 'download',
         onSelect: downloadSelectedFile,
+      },
+      isMarkdown && {
+        id: 'export-word',
+        label: t('filesView.export.word'),
+        icon: 'download',
+        onSelect: () => void exportDocument('docx'),
+      },
+      isMarkdown && !isMobile && {
+        id: 'export-pdf',
+        label: t('filesView.export.pdf'),
+        icon: 'download',
+        onSelect: () => void exportDocument('pdf'),
+      },
+      isTable && {
+        id: 'export-excel',
+        label: t('filesView.export.excel'),
+        icon: 'download',
+        onSelect: () => void exportDocument('xlsx'),
       },
     ];
 
@@ -4961,6 +5099,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
                       enableFileReferences={false}
                       allowRawHtml
                       windowed
+                      tableWidthScope={selectedFile.path}
                     />
                   </div>
                 </ErrorBoundary>
@@ -5047,7 +5186,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
                   readOnly={!canEdit}
                   vimMode={fileEditorKeymap === 'vim'}
                   extensions={editorExtensions}
-                  className="h-full"
+                  className={cn('h-full', isMobile && 'oc-compact-search')}
                   blockWidgets={blockWidgets}
                   onViewReady={(view) => {
                     editorViewRef.current = view;
@@ -5286,6 +5425,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
                     enableFileReferences={false}
                     allowRawHtml
                     windowed
+                    tableWidthScope={selectedFile.path}
                   />
                 </div>
               </ErrorBoundary>
@@ -5313,7 +5453,7 @@ export const FilesView: React.FC<FilesViewProps> = ({ mode = 'full', visible = t
                 readOnly={!canEdit}
                 vimMode={fileEditorKeymap === 'vim'}
                 extensions={editorExtensions}
-                className="h-full"
+                className={cn('h-full', isMobile && 'oc-compact-search')}
                 onViewReady={(view) => {
                   editorViewRef.current = view;
                   applyGitBaseline(view);
