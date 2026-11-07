@@ -224,6 +224,34 @@ describe('ReasoningTimelineBlock', () => {
     expect(markup).toContain('…');
   });
 
+  test('the collapsed header carries the full summary as its hover title, and only when collapsed', () => {
+    // The row truncates the preview, so the span that paints it is the only
+    // element in the header that carries `title` — that is how a reader sees
+    // the untruncated summary on hover. Keep a positive assertion here: the
+    // expanded-state absence below is only meaningful next to it.
+    const text = 'Reading the plan before answering.';
+    const collapsed = renderToStaticMarkup(
+      <TestProviders>
+        <ReasoningTimelineBlock
+          text={text}
+          blockId="reasoning-title-collapsed"
+          defaultExpanded={false}
+        />
+      </TestProviders>,
+    );
+    const expanded = renderToStaticMarkup(
+      <TestProviders>
+        <ReasoningTimelineBlock text={text} blockId="reasoning-title-expanded" />
+      </TestProviders>,
+    );
+
+    expect(collapsed).toContain(`title="${text}"`);
+    // Expanded traces move the text into the body, so no header summary span
+    // is painted (an empty one would still be a blank row) and nothing in the
+    // markup carries a title attribute.
+    expect(expanded).not.toContain('title="');
+  });
+
   test('omits trailing empty HTML comments from the header summary', () => {
     const markup = renderToStaticMarkup(
       <TestProviders>
@@ -350,7 +378,11 @@ describe('ReasoningPart streaming gating (issue #2020)', () => {
     expect(markup).toContain(BUSY_INDICATOR);
     expect(markup).toContain('role="button"');
     // Expanded by default, the text lives in the body and no header summary
-    // span is painted at all — an empty one would still be a blank row.
+    // span is painted at all — an empty one would still be a blank row. The
+    // summary span is the only element that carries `title`, so its absence is
+    // the intended assertion here, not a dropped capability: the collapsed
+    // counterpart (summary present, `title` present) is asserted in
+    // `ReasoningTimelineBlock` above.
     expect(markup).not.toContain('title="');
     expect(withText).not.toContain('title="');
   });
