@@ -26,6 +26,8 @@ import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
 import { usageToolI18n } from './usage-tool.i18n';
+import { openchamberToolOutputI18n } from './openchamber-tool-output.i18n';
+import { opencodeToolOutputI18n } from './opencode-tool-output.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
 import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
@@ -202,6 +204,8 @@ export const dict: Record<I18nKey, string> = {
   ...consoleBudgetsI18n.ja,
   ...imageToolI18n.ja,
   ...usageToolI18n.ja,
+  ...openchamberToolOutputI18n.ja,
+  ...opencodeToolOutputI18n.ja,
   ...agentStatusI18n.ja,
   ...snippetsI18n.ja,
   ...sidebarWorkI18n.ja,
@@ -1262,6 +1266,9 @@ export const dict: Record<I18nKey, string> = {
   'magicPrompts.toast.loadFailed': 'マジックプロンプトを読み込めませんでした。何も送信されていません。',
   'gitView.empty.notGitRepository': 'このディレクトリはGitリポジトリではありません',
   'gitView.empty.notGitRepositoryDescription': 'このディレクトリでGitを初期化するか、リポジトリを開いてください。',
+  'gitView.empty.repositoryUnreadable': 'Git がこのフォルダーを読み取れませんでした',
+  'gitView.empty.repositoryUnreadableDescription': 'Git からのメッセージは次のとおりです。問題を解決してから再試行してください。',
+  'gitView.empty.repositoryUnreadableRetry': '再試行',
   'gitView.empty.selectSessionOrDirectory': 'セッションまたはディレクトリを選択してGitステータスを表示',
   'gitView.empty.worktreeFeaturesUnavailable': 'このワークスペースモードではワークツリー機能は利用できません。',
   'gitView.empty.worktreeSetupDescription': 'ワークツリーのセットアップを完了し、リポジトリ状態を準備中。',

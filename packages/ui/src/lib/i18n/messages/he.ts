@@ -25,6 +25,8 @@ import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
 import { usageToolI18n } from './usage-tool.i18n';
+import { openchamberToolOutputI18n } from './openchamber-tool-output.i18n';
+import { opencodeToolOutputI18n } from './opencode-tool-output.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
 import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
@@ -1198,6 +1200,9 @@ export const dict = {
   'magicPrompts.toast.loadFailed': 'לא ניתן לטעון את הנחיות הקסם. דבר לא נשלח.',
   'gitView.empty.notGitRepository': 'התיקייה הזו אינה מאגר Git',
   'gitView.empty.notGitRepositoryDescription': 'אפשר לאתחל Git בתיקייה הזו או לפתוח מאגר.',
+  'gitView.empty.repositoryUnreadable': 'Git לא הצליח לקרוא את התיקייה הזו',
+  'gitView.empty.repositoryUnreadableDescription': 'זה מה ש-Git אמר. אפשר לתקן ולנסות שוב.',
+  'gitView.empty.repositoryUnreadableRetry': 'לנסות שוב',
   'gitView.empty.selectSessionOrDirectory': 'יש לבחור הפעלה או תיקייה כדי לראות את מצב Git',
   'gitView.empty.worktreeFeaturesUnavailable': 'תכונות עץ העבודה לא זמינות במצב סביבת העבודה הזה.',
   'gitView.empty.worktreeSetupDescription': 'מסיים את הגדרת עץ העבודה ומכין את מצב המאגר.',
@@ -3929,6 +3934,8 @@ export const dict = {
   ...consoleBudgetsI18n.he,
   ...imageToolI18n.he,
   ...usageToolI18n.he,
+  ...openchamberToolOutputI18n.he,
+  ...opencodeToolOutputI18n.he,
   ...agentStatusI18n.he,
   ...snippetsI18n.he,
   ...sidebarWorkI18n.he,

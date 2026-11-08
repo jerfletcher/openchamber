@@ -26,6 +26,8 @@ import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
 import { usageToolI18n } from './usage-tool.i18n';
+import { openchamberToolOutputI18n } from './openchamber-tool-output.i18n';
+import { opencodeToolOutputI18n } from './opencode-tool-output.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
 import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
@@ -202,6 +204,8 @@ export const dict: Record<I18nKey, string> = {
   ...consoleBudgetsI18n.ko,
   ...imageToolI18n.ko,
   ...usageToolI18n.ko,
+  ...openchamberToolOutputI18n.ko,
+  ...opencodeToolOutputI18n.ko,
   ...agentStatusI18n.ko,
   ...snippetsI18n.ko,
   ...sidebarWorkI18n.ko,
@@ -1266,6 +1270,9 @@ export const dict: Record<I18nKey, string> = {
   'magicPrompts.toast.loadFailed': '매직 프롬프트를 불러오지 못했습니다. 아무것도 전송되지 않았습니다.',
   'gitView.empty.notGitRepository': '이 디렉터리는 Git 레포지토리가 아닙니다',
   'gitView.empty.notGitRepositoryDescription': '이 디렉터리에서 Git을 초기화하거나 레포지토리를 여세요.',
+  'gitView.empty.repositoryUnreadable': 'Git이 이 폴더를 읽지 못했습니다',
+  'gitView.empty.repositoryUnreadableDescription': 'Git이 보낸 메시지입니다. 문제를 해결한 뒤 다시 시도하세요.',
+  'gitView.empty.repositoryUnreadableRetry': '다시 시도',
   'gitView.empty.selectSessionOrDirectory': 'Git 상태를 볼 세션 또는 디렉터리를 선택하세요',
   'gitView.empty.worktreeFeaturesUnavailable': '이 워크스페이스 모드에서는 워크트리 기능을 사용할 수 없습니다.',
   'gitView.empty.worktreeSetupDescription': '워크트리 설정을 마치고 레포지토리 상태를 준비하고 있습니다.',

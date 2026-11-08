@@ -26,6 +26,8 @@ import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
 import { usageToolI18n } from './usage-tool.i18n';
+import { openchamberToolOutputI18n } from './openchamber-tool-output.i18n';
+import { opencodeToolOutputI18n } from './opencode-tool-output.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
 import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
@@ -202,6 +204,8 @@ export const dict: Record<I18nKey, string> = {
   ...consoleBudgetsI18n['zh-CN'],
   ...imageToolI18n['zh-CN'],
   ...usageToolI18n['zh-CN'],
+  ...openchamberToolOutputI18n['zh-CN'],
+  ...opencodeToolOutputI18n['zh-CN'],
   ...agentStatusI18n['zh-CN'],
   ...snippetsI18n['zh-CN'],
   ...sidebarWorkI18n['zh-CN'],
@@ -1266,6 +1270,9 @@ export const dict: Record<I18nKey, string> = {
   'magicPrompts.toast.loadFailed': '无法加载魔法提示词。未发送任何内容。',
   'gitView.empty.notGitRepository': '当前目录不是 Git 仓库',
   'gitView.empty.notGitRepositoryDescription': '请在此目录初始化 Git，或打开一个 Git 仓库。',
+  'gitView.empty.repositoryUnreadable': 'Git 无法读取此文件夹',
+  'gitView.empty.repositoryUnreadableDescription': '以下是 Git 的输出。解决问题后重试。',
+  'gitView.empty.repositoryUnreadableRetry': '重试',
   'gitView.empty.selectSessionOrDirectory': '请选择会话或目录以查看 Git 状态',
   'gitView.empty.worktreeFeaturesUnavailable': '当前工作区模式下，工作树功能不可用。',
   'gitView.empty.worktreeSetupDescription': '正在完成工作树设置并准备仓库状态。',

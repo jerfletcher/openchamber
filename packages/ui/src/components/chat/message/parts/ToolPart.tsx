@@ -97,14 +97,22 @@ import {
     subagentAgent,
     subagentDescription,
     isWriteTool,
+    isOpenChamberTool,
     normalizeToolName,
-    soleOpenChamberCall,
+    openChamberCallSummary,
+    soleNamedCall,
+    executeNamespace,
     toolDescription, type ToolDescription,
     toolInputPath,
     toolFileDiffs,
 } from '@/lib/opencode/tools';
+import { toolContentShellEnvelope } from '@/lib/opencode/toolContentShells';
 import { parseWebSearchOutput, webSearchProviderOf } from '@/lib/opencode/websearch';
 import { ApplyPatchFileButtons } from './ApplyPatchFileButtons';
+import { OpenChamberToolOutput } from './OpenChamberToolOutput';
+import { OpencodeToolOutput } from './OpencodeToolOutput';
+import { opencodeCallSucceeded, opencodeToolVerb, parseOpencodeToolResult } from './opencodeToolResult';
+import { hasOpenChamberView, openChamberVerbKey, parseOpenChamberEnvelope } from './openChamberToolEnvelope';
 import { openApplyPatchFileInEditor } from './applyPatchEditorAction';
 import { WebSearchResults } from './WebSearchResults';
 import { toBackgroundShellPart, type BackgroundShellPhase } from './backgroundShellPart';
@@ -449,13 +457,10 @@ const getToolDescriptionPath = (part: ToolPartType, state: ToolStateUnion, curre
     return getRelativePath(described.value, currentDirectory);
 };
 
-type DescriptionTranslate = (
-    key: 'chat.toolPart.questionsAsked' | 'chat.toolPart.filesCount' | 'chat.toolPart.moreToolCalls',
-    params: { count: number },
-) => string;
+type DescriptionTranslate = ReturnType<typeof useI18n>['t'];
 
 /** Localized text for a tool description; paths are made relative to the project. */
-const describeTool = (described: ToolDescription | null, currentDirectory: string, t: DescriptionTranslate): string => {
+const describeTool = (described: ToolDescription | null, currentDirectory: string, t: DescriptionTranslate, namespace?: string): string => {
     if (!described) return '';
     switch (described.kind) {
         case 'path':
@@ -467,8 +472,25 @@ const describeTool = (described: ToolDescription | null, currentDirectory: strin
         case 'files':
             return t('chat.toolPart.filesCount', { count: described.count });
         case 'tools': {
-            const named = described.calls
-                .map(({ name, count }) => (count > 1 ? `${name} \u00d7${count}` : name))
+            // OpenCode's namespace tools fail their own call, so each call
+            // that completed is named by its verb ("Listed worktrees") and a
+            // failed one by the tool. OpenChamber's tools go by their row
+            // names: Code Mode reports their call completed even when the
+            // envelope says the action failed, so a verb would claim too much.
+            // Under a row already titled by the script's one namespace, the
+            // calls go by what they did inside it: an OpenChamber call by its
+            // action, any other by its name within the namespace.
+            const counts = new Map<string, number>();
+            const add = (label: string, count: number) => counts.set(label, (counts.get(label) ?? 0) + count);
+            for (const { name, count, completed, actions } of described.calls) {
+                const opencode = opencodeToolVerb(name);
+                if (opencode) add(completed ? t(opencode.key) : opencode.tool, count);
+                else if (isOpenChamberTool(name) && namespace && actions.length > 0) actions.forEach(({ action, count: times }) => add(action, times));
+                else if (isOpenChamberTool(name)) add(getToolMetadata(name).displayName, count);
+                else add(namespace && name.toLowerCase().startsWith(`${namespace}.`) ? name.slice(namespace.length + 1) : name, count);
+            }
+            const named = [...counts]
+                .map(([name, count]) => (count > 1 ? `${name} \u00d7${count}` : name))
                 .join(', ');
             return described.overflow > 0
                 ? `${named}, ${t('chat.toolPart.moreToolCalls', { count: described.overflow })}`
@@ -477,9 +499,50 @@ const describeTool = (described: ToolDescription | null, currentDirectory: strin
     }
 };
 
-const getToolDescription = (part: ToolPartType, state: ToolStateUnion, currentDirectory: string, t: DescriptionTranslate): string => {
+const getToolDescription = (part: ToolPartType, state: ToolStateUnion, currentDirectory: string, t: DescriptionTranslate, namespace?: string): string => {
     const stateWithData = state as ToolStateWithMetadata;
-    return describeTool(toolDescription(part.tool, stateWithData.input, stateWithData.metadata), currentDirectory, t);
+    return describeTool(toolDescription(part.tool, stateWithData.input, stateWithData.metadata), currentDirectory, t, namespace);
+};
+
+/**
+ * What one of OpenChamber's own tools did, once it did it: "Remembered ·
+ * Uses bun" rather than "memory.save · Uses bun". The tool's name stays the
+ * row's title. A call still running, one that failed, or an action without a
+ * verb keeps the action's own name.
+ */
+const describeOpenChamberRow = (
+    part: ToolPartType,
+    input: ToolInput | undefined,
+    output: string | undefined,
+    translate: ReturnType<typeof useI18n>['t'],
+): string | null => {
+    if (part.state.status !== 'completed') return null;
+    const summary = openChamberCallSummary(part.tool, input);
+    // A history page leaves the result out until the row opens, and says
+    // which action it answered instead.
+    const envelope = parseOpenChamberEnvelope(output) ?? toolContentShellEnvelope(part);
+    // The envelope names the action the server ran, a bare `link` included.
+    const key = openChamberVerbKey(envelope?.action);
+    if (!summary || !key || envelope?.ok !== true) return null;
+    const verb = translate(key);
+    return summary.detail ? `${verb} \u00b7 ${summary.detail.slice(0, 120)}` : verb;
+};
+
+/**
+ * The same for a tool of OpenCode's `opencode` namespace, titled "OpenCode":
+ * "Renamed the session · Voice models" once the call succeeded, the tool's
+ * own name (`session_rename`) while it runs or after it failed. Success is the
+ * call's status, which a history page keeps.
+ */
+const describeOpencodeRow = (
+    part: ToolPartType,
+    detail: string,
+    translate: ReturnType<typeof useI18n>['t'],
+): string | null => {
+    const verb = opencodeToolVerb(part.tool);
+    if (!verb) return null;
+    const action = opencodeCallSucceeded(part) ? translate(verb.key) : verb.tool;
+    return detail ? `${action} \u00b7 ${detail.slice(0, 120)}` : action;
 };
 
 interface ToolScrollableSectionProps {
@@ -1098,6 +1161,23 @@ const DiffPreview: React.FC<{ diff: string; diffViewMode: DiffViewMode }> = ({ d
     );
 };
 
+/** Switches an OpenChamber tool's row between its own view and the plain answer. */
+const RawAnswerToggle: React.FC<{ label: string; onToggle: () => void }> = ({ label, onToggle }) => (
+    <Button
+        variant="ghost"
+        size="xs"
+        className="text-muted-foreground hover:text-foreground"
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => {
+            event.stopPropagation();
+            onToggle();
+        }}
+    >
+        <Icon name="code-box" className="size-3.5" />
+        {label}
+    </Button>
+);
+
 interface ToolExpandedContentProps {
     part: ToolPartType;
     state: ToolStateUnion;
@@ -1134,24 +1214,30 @@ const ToolExpandedContent: React.FC<ToolExpandedContentProps> = React.memo(({
         allowTextReplacement: isStreamingBash,
     });
     const outputString = isStreamingBash ? throttledOutputString : rawOutputString;
+    const isMobile = useUIStore((store) => store.isMobile);
+    // OpenChamber's own tools answer an envelope the chat can show in their
+    // own terms; the plain answer stays one click away.
+    const openChamberEnvelope = React.useMemo(
+        () => (state.status === 'completed' && openChamberCallSummary(part.tool, input) ? parseOpenChamberEnvelope(rawOutputString) : null),
+        [input, part.tool, rawOutputString, state.status],
+    );
+    // OpenCode's `opencode` namespace answers its tool's structured output.
+    const opencodeResult = React.useMemo(() => {
+        const verb = opencodeToolVerb(part.tool);
+        return verb && opencodeCallSucceeded(part) ? parseOpencodeToolResult(verb.tool, rawOutputString) : null;
+    }, [part, rawOutputString]);
+    const [showRawToolAnswer, setShowRawToolAnswer] = React.useState(false);
     const attachments = stateWithData.attachments;
     const diffContent = getToolFallbackDiff(metadata) ?? null;
     const diffEntries = React.useMemo(
         () => getDiffPatchEntries(metadata, diffContent ?? undefined, (path) => getRelativePath(path, currentDirectory)),
         [currentDirectory, diffContent, metadata]
     );
-    // `execute` renders its script and its call list itself, below.
-    const hideToolInputPreview = part.tool === 'openchamber'
-        || part.tool === 'openchamber_schedule'
-        || part.tool === 'openchamber_web'
-        || part.tool === 'openchamber_memory'
-        || part.tool === 'openchamber_knowledge'
-        || part.tool === 'openchamber_notify'
-        || part.tool === 'openchamber_usage'
-        || part.tool === 'openchamber_render'
-        || part.tool === 'openchamber_image'
-        || part.tool === 'openchamber_secret'
-        || part.tool === 'openchamber_workflow'
+    // `execute` renders its script and its call list itself, below. An
+    // OpenCode namespace view says what the call did; the raw answer and a
+    // failed call keep the input beside it.
+    const hideToolInputPreview = isOpenChamberTool(part.tool)
+        || (opencodeResult !== null && !showRawToolAnswer)
         || isPatchTool(part.tool)
         || isEditTool(part.tool)
         || isExecuteTool(part.tool);
@@ -1457,6 +1543,40 @@ const ToolExpandedContent: React.FC<ToolExpandedContentProps> = React.memo(({
             );
         }
 
+        if (opencodeResult && !showRawToolAnswer) {
+            return renderScrollableBlock(
+                <div className="space-y-2">
+                    <OpencodeToolOutput
+                        result={opencodeResult}
+                        rawToggle={<RawAnswerToggle label={t('chat.toolPart.openchamber.raw.show')} onToggle={() => setShowRawToolAnswer(true)} />}
+                    />
+                </div>
+            );
+        }
+
+        if (openChamberEnvelope && !showRawToolAnswer) {
+            const showRaw = (
+                <RawAnswerToggle label={t('chat.toolPart.openchamber.raw.show')} onToggle={() => setShowRawToolAnswer(true)} />
+            );
+            if (!openChamberEnvelope.ok && openChamberEnvelope.errorMessage) {
+                return renderScrollableBlock(
+                    <div className="space-y-1.5">
+                        <div className="typography-meta whitespace-pre-wrap break-words" style={{ color: 'var(--status-error)' }}>
+                            {openChamberEnvelope.errorMessage}
+                        </div>
+                        <div className="-ms-2">{showRaw}</div>
+                    </div>
+                );
+            }
+            if (hasOpenChamberView(openChamberEnvelope)) {
+                return renderScrollableBlock(
+                    <div className="space-y-2">
+                        <OpenChamberToolOutput envelope={openChamberEnvelope} part={part} input={input} directory={currentDirectory} isMobile={isMobile} onShowPopup={onShowPopup} rawToggle={showRaw} />
+                    </div>
+                );
+            }
+        }
+
         if (hasStringOutput && outputString.trim()) {
             const output = (
                 <ToolScrollableTextOutput
@@ -1469,7 +1589,14 @@ const ToolExpandedContent: React.FC<ToolExpandedContentProps> = React.memo(({
             );
 
             return renderScrollableBlock(
-                output,
+                (openChamberEnvelope || opencodeResult) && showRawToolAnswer ? (
+                    <div className="space-y-2">
+                        <div className="-ms-2">
+                            <RawAnswerToggle label={t('chat.toolPart.openchamber.raw.hide')} onToggle={() => setShowRawToolAnswer(false)} />
+                        </div>
+                        {output}
+                    </div>
+                ) : output,
                 {
                     maxHeightClass: isShellTool(part.tool) ? 'max-h-[46vh]' : undefined,
                     followKey: isStreamingBash ? outputString : undefined,
@@ -1764,14 +1891,20 @@ const ToolPartContent: React.FC<ToolPartProps & { header?: ToolRowHeader; subage
     const isMultiFileApplyPatch = isPatchTool(normalizedPartTool) && Array.isArray(metadata?.files) && metadata.files.length > 1;
     const normalizedPart = normalizedPartTool !== part.tool ? ({ ...part, tool: normalizedPartTool } as ToolPartType) : part;
     const descriptionPath = getToolDescriptionPath(normalizedPart, state, currentDirectory);
-    const builtInDescription = getToolDescription(normalizedPart, state, currentDirectory, t);
     const stateOutput = typeof stateWithData.output === 'string' ? stateWithData.output : undefined;
+    // A script whose calls all went to one namespace is titled by it.
+    const scriptNamespace = isExecuteTool(part.tool) ? executeNamespace(metadata) : undefined;
+    const plainDescription = getToolDescription(normalizedPart, state, currentDirectory, t, scriptNamespace);
+    const builtInDescription = describeOpenChamberRow(normalizedPart, input, stateOutput, t)
+        ?? describeOpencodeRow(part, plainDescription, t)
+        ?? plainDescription;
     const guestHeader = React.useMemo(
         () => (presentation ? renderGuestToolHeader(presentation, { input, output: stateOutput, metadata }) : null),
         [input, metadata, presentation, stateOutput],
     );
     const description = guestHeader?.subtitle ?? builtInDescription;
-    const displayName = guestHeader?.title ?? getToolMetadata(normalizedPartTool || part.tool).displayName;
+    const rowTool = scriptNamespace ?? (normalizedPartTool || part.tool);
+    const displayName = guestHeader?.title ?? getToolMetadata(rowTool).displayName;
 
     // Opened, the body already carries the whole error and output.
     const failureDetail = isError && !isExpanded ? failureReason : undefined;
@@ -1970,7 +2103,7 @@ const ToolPartContent: React.FC<ToolPartProps & { header?: ToolRowHeader; subage
                                         'absolute inset-0 flex items-center justify-center transition-opacity',
                                         isExpanded ? 'opacity-0' : 'group-hover/tool:opacity-0',
                                     )} style={iconStyle}>
-                                        {getToolIcon(normalizedPartTool || part.tool, presentation)}
+                                        {getToolIcon(rowTool, presentation)}
                                     </span>
                                     <Icon
                                         name={isExpanded ? 'arrow-down-s' : 'arrow-right-s'}
@@ -2016,7 +2149,7 @@ const ToolPartContent: React.FC<ToolPartProps & { header?: ToolRowHeader; subage
                                     )}
                                     style={iconStyle}
                                 >
-                                    {getToolIcon(normalizedPartTool || part.tool, presentation)}
+                                    {getToolIcon(rowTool, presentation)}
                                 </div>
                                 <div
                                     className={cn(
@@ -2387,7 +2520,7 @@ const SubagentToolPartContent: React.FC<ToolPartProps> = (props) => {
 const useShownToolPart = (part: ToolPartProps['part']): ToolPartProps['part'] => {
     const metadata = 'metadata' in part.state ? part.state.metadata : undefined;
     const sole = React.useMemo(
-        () => (isExecuteTool(part.tool) ? soleOpenChamberCall(metadata) : undefined),
+        () => (isExecuteTool(part.tool) ? soleNamedCall(metadata) : undefined),
         [metadata, part.tool],
     );
     return React.useMemo(

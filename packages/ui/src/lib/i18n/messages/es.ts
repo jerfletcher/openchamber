@@ -26,6 +26,8 @@ import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
 import { usageToolI18n } from './usage-tool.i18n';
+import { openchamberToolOutputI18n } from './openchamber-tool-output.i18n';
+import { opencodeToolOutputI18n } from './opencode-tool-output.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
 import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
@@ -212,6 +214,8 @@ export const dict: Record<I18nKey, string> = {
   ...consoleBudgetsI18n.es,
   ...imageToolI18n.es,
   ...usageToolI18n.es,
+  ...openchamberToolOutputI18n.es,
+  ...opencodeToolOutputI18n.es,
   ...agentStatusI18n.es,
   ...snippetsI18n.es,
   ...sidebarWorkI18n.es,
@@ -1260,6 +1264,9 @@ export const dict: Record<I18nKey, string> = {
   "magicPrompts.toast.loadFailed": "No se pudieron cargar los prompts mágicos. No se envió nada.",
   "gitView.empty.notGitRepository": "Este directorio no es un repositorio Git",
   "gitView.empty.notGitRepositoryDescription": "Inicializa Git en este directorio o abre un repositorio.",
+  "gitView.empty.repositoryUnreadable": "Git no pudo leer esta carpeta",
+  "gitView.empty.repositoryUnreadableDescription": "Esto es lo que dijo Git. Corrígelo y vuelve a intentarlo.",
+  "gitView.empty.repositoryUnreadableRetry": "Reintentar",
   "gitView.empty.selectSessionOrDirectory": "Selecciona una sesión o directorio para ver el estado de Git",
   "gitView.empty.worktreeFeaturesUnavailable": "Las características de worktree no están disponibles en este modo de espacio de trabajo.",
   "gitView.empty.worktreeSetupDescription": "Finalizando la configuración de worktree y preparando el estado del repositorio.",

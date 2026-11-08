@@ -25,6 +25,8 @@ import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
 import { usageToolI18n } from './usage-tool.i18n';
+import { openchamberToolOutputI18n } from './openchamber-tool-output.i18n';
+import { opencodeToolOutputI18n } from './opencode-tool-output.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
 import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
@@ -201,6 +203,8 @@ export const dict = {
   ...consoleBudgetsI18n.de,
   ...imageToolI18n.de,
   ...usageToolI18n.de,
+  ...openchamberToolOutputI18n.de,
+  ...opencodeToolOutputI18n.de,
   ...agentStatusI18n.de,
   ...snippetsI18n.de,
   ...sidebarWorkI18n.de,
@@ -1157,6 +1161,9 @@ export const dict = {
   'magicPrompts.toast.loadFailed': 'Magic Prompts konnten nicht geladen werden. Es wurde nichts gesendet.',
   'gitView.empty.notGitRepository': 'Dieses Verzeichnis ist kein Git-Repository',
   'gitView.empty.notGitRepositoryDescription': 'Initialisieren Sie Git in diesem Verzeichnis oder öffnen Sie ein Repository.',
+  'gitView.empty.repositoryUnreadable': 'Git konnte diesen Ordner nicht lesen',
+  'gitView.empty.repositoryUnreadableDescription': 'Das hat Git gemeldet. Beheben Sie es und versuchen Sie es erneut.',
+  'gitView.empty.repositoryUnreadableRetry': 'Erneut versuchen',
   'gitView.empty.selectSessionOrDirectory': 'Wählen Sie eine Sitzung oder ein Verzeichnis aus, um den Git-Status anzuzeigen',
   'gitView.empty.worktreeFeaturesUnavailable': 'Worktree-Funktionen sind in diesem Arbeitsbereichsmodus nicht verfügbar.',
   'gitView.empty.worktreeSetupDescription': 'Arbeitstruktur-Einrichtung wird abgeschlossen und Repository-Zustand wird vorbereitet.',

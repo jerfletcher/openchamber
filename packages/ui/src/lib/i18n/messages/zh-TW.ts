@@ -26,6 +26,8 @@ import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
 import { usageToolI18n } from './usage-tool.i18n';
+import { openchamberToolOutputI18n } from './openchamber-tool-output.i18n';
+import { opencodeToolOutputI18n } from './opencode-tool-output.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
 import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
@@ -202,6 +204,8 @@ export const dict: Record<I18nKey, string> = {
   ...consoleBudgetsI18n['zh-TW'],
   ...imageToolI18n['zh-TW'],
   ...usageToolI18n['zh-TW'],
+  ...openchamberToolOutputI18n['zh-TW'],
+  ...opencodeToolOutputI18n['zh-TW'],
   ...agentStatusI18n['zh-TW'],
   ...snippetsI18n['zh-TW'],
   ...sidebarWorkI18n['zh-TW'],
@@ -1285,6 +1289,9 @@ export const dict: Record<I18nKey, string> = {
   'magicPrompts.toast.loadFailed': '無法載入魔法提示詞。未傳送任何內容。',
   'gitView.empty.notGitRepository': '目前目錄不是 Git 儲存庫',
   'gitView.empty.notGitRepositoryDescription': '請在此目錄初始化 Git，或開啟一個 Git 儲存庫。',
+  'gitView.empty.repositoryUnreadable': 'Git 無法讀取此資料夾',
+  'gitView.empty.repositoryUnreadableDescription': '以下是 Git 的輸出。解決問題後重試。',
+  'gitView.empty.repositoryUnreadableRetry': '重試',
   'gitView.empty.selectSessionOrDirectory': '請選擇會话或目錄以查看 Git 狀態',
   'gitView.empty.worktreeFeaturesUnavailable': '目前工作區模式下，worktree 功能無法使用。',
   'gitView.empty.worktreeSetupDescription': '正在完成 worktree 設定並準備儲存庫狀態。',

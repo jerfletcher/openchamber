@@ -26,6 +26,8 @@ import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
 import { usageToolI18n } from './usage-tool.i18n';
+import { openchamberToolOutputI18n } from './openchamber-tool-output.i18n';
+import { opencodeToolOutputI18n } from './opencode-tool-output.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
 import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
@@ -202,6 +204,8 @@ export const dict: Record<I18nKey, string> = {
   ...consoleBudgetsI18n.pl,
   ...imageToolI18n.pl,
   ...usageToolI18n.pl,
+  ...openchamberToolOutputI18n.pl,
+  ...opencodeToolOutputI18n.pl,
   ...agentStatusI18n.pl,
   ...snippetsI18n.pl,
   ...sidebarWorkI18n.pl,
@@ -2560,8 +2564,11 @@ export const dict: Record<I18nKey, string> = {
   'gitView.conflict.resolveNewSession': 'Rozwiąż w nowej sesji',
   'gitView.empty.cleanDescription': 'Wszystkie zmiany zostały zacommitowane',
   'gitView.empty.cleanTitle': 'Drzewo robocze czyste',
-  'gitView.empty.notGitRepository': 'This directory is not a Git repository',
-  'gitView.empty.notGitRepositoryDescription': 'Initialize Git in this directory or open a repository.',
+  'gitView.empty.notGitRepository': 'Ten katalog nie jest repozytorium Git',
+  'gitView.empty.notGitRepositoryDescription': 'Zainicjuj Git w tym katalogu lub otwórz repozytorium.',
+  'gitView.empty.repositoryUnreadable': 'Git nie mógł odczytać tego folderu',
+  'gitView.empty.repositoryUnreadableDescription': 'Oto, co zgłosił Git. Napraw problem i spróbuj ponownie.',
+  'gitView.empty.repositoryUnreadableRetry': 'Spróbuj ponownie',
   'gitView.empty.pullBehindPlural': 'Pull {count} commits',
   'gitView.empty.pullBehindSingle': 'Pull {count} commit',
   'gitView.empty.selectSessionOrDirectory': 'Select a session or directory to view Git status',

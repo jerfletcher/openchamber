@@ -25,6 +25,8 @@ import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
 import { usageToolI18n } from './usage-tool.i18n';
+import { openchamberToolOutputI18n } from './openchamber-tool-output.i18n';
+import { opencodeToolOutputI18n } from './opencode-tool-output.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
 import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
@@ -140,6 +142,8 @@ export const dict = {
   ...consoleBudgetsI18n.tr,
   ...imageToolI18n.tr,
   ...usageToolI18n.tr,
+  ...openchamberToolOutputI18n.tr,
+  ...opencodeToolOutputI18n.tr,
   ...agentStatusI18n.tr,
   ...snippetsI18n.tr,
   ...sidebarWorkI18n.tr,
@@ -1169,6 +1173,9 @@ export const dict = {
   'magicPrompts.toast.loadFailed': 'Sihirli Promptlar yüklenemedi. Hiçbir şey gönderilmedi.',
   'gitView.empty.notGitRepository': 'Bu dizin bir Git repository\'si değil',
   'gitView.empty.notGitRepositoryDescription': 'Bu dizinde Git\'i başlatın veya bir repository açın.',
+  'gitView.empty.repositoryUnreadable': 'Git bu klasörü okuyamadı',
+  'gitView.empty.repositoryUnreadableDescription': 'Git\'in bildirdiği bu. Sorunu giderip yeniden deneyin.',
+  'gitView.empty.repositoryUnreadableRetry': 'Yeniden dene',
   'gitView.empty.retryDiscovery': 'Yeniden dene',
   'gitView.empty.initializeGit': 'Git\'i başlat',
   'gitView.toast.initializeGitFailed': 'Git başlatılamadı',

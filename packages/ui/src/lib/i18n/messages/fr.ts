@@ -25,6 +25,8 @@ import { heapSnapshotI18n } from './heap-snapshot.i18n';
 import { consoleBudgetsI18n } from './console-budgets.i18n';
 import { imageToolI18n } from './image-tool.i18n';
 import { usageToolI18n } from './usage-tool.i18n';
+import { openchamberToolOutputI18n } from './openchamber-tool-output.i18n';
+import { opencodeToolOutputI18n } from './opencode-tool-output.i18n';
 import { agentStatusI18n } from './agent-status.i18n';
 import { selectionApprovalI18n } from './selection-approval.i18n';
 import { snippetsI18n } from './snippets.i18n';
@@ -201,6 +203,8 @@ export const dict = {
   ...consoleBudgetsI18n.fr,
   ...imageToolI18n.fr,
   ...usageToolI18n.fr,
+  ...openchamberToolOutputI18n.fr,
+  ...opencodeToolOutputI18n.fr,
   ...agentStatusI18n.fr,
   ...snippetsI18n.fr,
   ...sidebarWorkI18n.fr,
@@ -1090,6 +1094,9 @@ export const dict = {
   'magicPrompts.toast.loadFailed': 'Impossible de charger les prompts magiques. Rien n’a été envoyé.',
   'gitView.empty.notGitRepository': 'Ce répertoire n\'est pas un dépôt Git',
   'gitView.empty.notGitRepositoryDescription': 'Initialisez Git dans ce répertoire ou ouvrez un dépôt.',
+  'gitView.empty.repositoryUnreadable': 'Git n\'a pas pu lire ce dossier',
+  'gitView.empty.repositoryUnreadableDescription': 'Voici ce que Git a répondu. Corrigez le problème, puis réessayez.',
+  'gitView.empty.repositoryUnreadableRetry': 'Réessayer',
   'gitView.empty.selectSessionOrDirectory': 'Sélectionnez une session ou un répertoire pour afficher l\'état de Git',
   'gitView.empty.worktreeFeaturesUnavailable': 'Les fonctionnalités Worktree ne sont pas disponibles dans ce mode d’espace de travail.',
   'gitView.empty.worktreeSetupDescription': 'Terminez la configuration du worktree et préparez l\'état du dépôt.',
