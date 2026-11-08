@@ -229,7 +229,9 @@ export function registerAcpRoutes(app, options = {}) {
     }
   });
 
-  // Change model on active session
+  // Change model on active session. `session/set_config_option` is the primary
+  // call; the runtime falls back to the `session/set_model` alias only when the
+  // agent answers -32601.
   app.post('/api/acp/sessions/:sessionId/model', async (req, res) => {
     try {
       const { sessionId } = req.params;
@@ -239,6 +241,63 @@ export function registerAcpRoutes(app, options = {}) {
       }
       const result = await runtime.setModel(sessionId, modelId);
       res.json(result);
+    } catch (err) {
+      sendAcpError(res, err);
+    }
+  });
+
+  // Change mode on active session. Antigravity exposes `mode` as one of the
+  // `configOptions` returned by session/new; `session/set_mode` is a legacy
+  // alias that forwards to `session/set_config_option` (PR #14).
+  app.post('/api/acp/sessions/:sessionId/mode', async (req, res) => {
+    try {
+      const { sessionId } = req.params;
+      const { modeId } = req.body || {};
+      if (!modeId) {
+        return res.status(400).json({ error: 'modeId is required' });
+      }
+      const result = await runtime.setMode(sessionId, modeId);
+      res.json(result);
+    } catch (err) {
+      sendAcpError(res, err);
+    }
+  });
+
+  // Generic config-option setter. `configId` is the id of a `configOptions`
+  // entry (the live agy 1.5.1 binary advertises `model`, `thought_level`, and
+  // `mode`). This is the extension-neutral surface: a caller that reads the
+  // session's configOptions can set any of them without a bespoke endpoint.
+  app.post('/api/acp/sessions/:sessionId/config', async (req, res) => {
+    try {
+      const { sessionId } = req.params;
+      const { configId, value } = req.body || {};
+      if (typeof configId !== 'string' || !configId) {
+        return res.status(400).json({ error: 'configId is required' });
+      }
+      if (typeof value !== 'string' || value === '') {
+        return res.status(400).json({ error: 'value is required' });
+      }
+      const result = await runtime.setConfigOption(sessionId, configId, value);
+      res.json(result);
+    } catch (err) {
+      sendAcpError(res, err);
+    }
+  });
+
+  // Read back the configurable surface reported by session/new (modes, models,
+  // configOptions) so a client can render a picker without a second session/new.
+  app.get('/api/acp/sessions/:sessionId/config', (req, res) => {
+    try {
+      const session = runtime.getSession(req.params.sessionId);
+      if (!session) return res.status(404).json({ error: 'Session not found' });
+      res.json({
+        configOptions: session.configOptions,
+        availableModes: session.availableModes,
+        currentModeId: session.currentModeId,
+        availableModels: session.availableModels,
+        currentModelId: session.currentModelId,
+        capabilities: session.capabilities,
+      });
     } catch (err) {
       sendAcpError(res, err);
     }
@@ -334,12 +393,13 @@ export function registerAcpRoutes(app, options = {}) {
     }
   });
 
-  // Close session
-  app.delete('/api/acp/sessions/:sessionId', (req, res) => {
+  // Close (and, when the agent advertises it, delete) a session. `session/delete`
+  // is capability-gated because the live agy binary does not implement it.
+  app.delete('/api/acp/sessions/:sessionId', async (req, res) => {
     try {
       const { sessionId } = req.params;
-      runtime.closeSession(sessionId);
-      res.json({ success: true, sessionId });
+      const result = await runtime.deleteSession(sessionId);
+      res.json(result);
     } catch (err) {
       sendAcpError(res, err);
     }
