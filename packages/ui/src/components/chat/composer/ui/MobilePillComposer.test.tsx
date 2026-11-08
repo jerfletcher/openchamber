@@ -12,7 +12,7 @@ import { useMessageQueueStore, type FollowUpBehavior } from '@/stores/messageQue
 
 import { MobilePillComposer } from './MobilePillComposer';
 
-const renderPill = async (options: { hasContent: boolean; newSessionDraftOpen: boolean; canAbort?: boolean; dictationEnabled?: boolean; followUpBehavior?: FollowUpBehavior }) => {
+const renderPill = async (options: { hasContent: boolean; newSessionDraftOpen: boolean; canAbort?: boolean; dictationEnabled?: boolean; followUpBehavior?: FollowUpBehavior; topRow?: boolean }) => {
     const win = new Window({ url: 'http://localhost' });
     Object.defineProperty(win.navigator, 'mediaDevices', {
         value: { getUserMedia: () => Promise.resolve() },
@@ -38,6 +38,7 @@ const renderPill = async (options: { hasContent: boolean; newSessionDraftOpen: b
                 sessionId={options.newSessionDraftOpen ? null : 'session-1'}
                 newSessionDraftOpen={options.newSessionDraftOpen}
                 hasContent={options.hasContent}
+                topRow={options.topRow ? <span data-testid="pill-top-row">Attachment</span> : undefined}
                 isVSCode={false}
                 canAbort={options.canAbort ?? false}
                 footerIconButtonClass="icon-button"
@@ -150,5 +151,25 @@ describe('MobilePillComposer', () => {
         const markup = await renderPill({ hasContent: false, newSessionDraftOpen: false, dictationEnabled: false });
 
         expect(markup).not.toContain('aria-label="Start dictation"');
+    });
+
+    test('leaves its corner to the shared helper when it has rows', async () => {
+        const markup = await renderPill({ hasContent: false, newSessionDraftOpen: false, topRow: true });
+
+        expect(markup).toContain('data-testid="pill-top-row"');
+        // The corner is an inline style now, the same mechanism the expanded
+        // composer uses. happy-dom drops calc()/var() declarations, so the
+        // value itself is pinned in composerRadius.test.ts; here we pin that
+        // the class that used to repeat the theme expression is gone, and that
+        // a pill with rows is not also painted as a full pill.
+        expect(markup).not.toContain('rounded-[calc');
+        expect(markup).not.toContain('rounded-full');
+    });
+
+    test('stays a full pill, and only a full pill, when it has no rows', async () => {
+        const markup = await renderPill({ hasContent: false, newSessionDraftOpen: false });
+
+        expect(markup).toContain('rounded-full');
+        expect(markup).not.toContain('border-radius');
     });
 });
