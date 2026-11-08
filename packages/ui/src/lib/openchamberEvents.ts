@@ -256,10 +256,13 @@ const CONTROL_STREAM_SYNC_TYPES = new Set([
   'openchamber:session-archived',
   'openchamber:workflow-run',
   'openchamber:workflow-run-removed',
+  'openchamber:acp-permission-asked',
+  'openchamber:acp-permission-settled',
 ]);
 export type ControlStreamSyncEvent = Extract<SyncEvent, {
   type: 'openchamber.page-waiting' | 'openchamber.page-settled' | 'openchamber.session-assist' | 'session.patched'
-    | 'openchamber.workflow-run' | 'openchamber.workflow-run-removed';
+    | 'openchamber.workflow-run' | 'openchamber.workflow-run-removed'
+    | 'openchamber.acp-permission-asked' | 'openchamber.acp-permission-settled';
 }>;
 type ControlStreamSyncEnvelope = { type: 'control-sync'; event: ControlStreamSyncEvent };
 
@@ -267,6 +270,7 @@ const isControlStreamSyncEvent = (event: SyncEvent): event is ControlStreamSyncE
   event.type === 'openchamber.page-waiting' || event.type === 'openchamber.page-settled'
   || event.type === 'openchamber.session-assist' || event.type === 'session.patched'
   || event.type === 'openchamber.workflow-run' || event.type === 'openchamber.workflow-run-removed'
+  || event.type === 'openchamber.acp-permission-asked' || event.type === 'openchamber.acp-permission-settled'
 );
 
 /** Followed pull requests, merge requests or issues whose state the server saw move. */

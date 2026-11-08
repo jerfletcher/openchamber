@@ -1,6 +1,6 @@
 import express from 'express';
 import { AcpRuntime } from './acp-runtime.js';
-import { httpStatusForAcpError, serializeAcpError, isAcpCancelledError } from './acp-protocol.js';
+import { ACP_ERROR, httpStatusForAcpError, serializeAcpError, isAcpCancelledError } from './acp-protocol.js';
 
 const ACP_MODEL_MAP = {
   'gemini-4-argon': 'gemini-4-argon-medium',
@@ -21,7 +21,35 @@ const ACP_MODEL_MAP = {
 };
 
 export function registerAcpRoutes(app, options = {}) {
-  const runtime = options.runtime || new AcpRuntime(options);
+  // The bridge owns the runtime the UI's sessions live in; when the caller has
+  // one, the routes must answer through it or a prompt could never be resolved.
+  const bridge = options.bridge || null;
+  const runtime = options.runtime || bridge?.runtime || new AcpRuntime(options);
+
+  /**
+   * Permission requests are keyed by the session id the caller knows. The UI
+   * speaks OpenChamber session ids while a direct `/api/acp` caller speaks ACP
+   * session ids, so the bridge is tried first and the runtime is the fallback.
+   */
+  const respondToPermission = (sessionId, requestId, optionId) => {
+    if (bridge) {
+      try {
+        return bridge.respondToPermission(sessionId, requestId, optionId);
+      } catch (err) {
+        if (err?.code !== ACP_ERROR.RESOURCE_NOT_FOUND) throw err;
+        // Not an OpenChamber session id: fall through to the ACP id.
+      }
+    }
+    return runtime.respondToPermission(sessionId, requestId, optionId);
+  };
+
+  const listPendingPermissions = (sessionId) => {
+    if (bridge) {
+      const pending = bridge.listPendingPermissions(sessionId);
+      if (pending.length > 0) return pending;
+    }
+    return runtime.getPendingPermissions(sessionId);
+  };
 
   /**
    * Surface an ACP failure with the status its spec code implies
@@ -272,6 +300,37 @@ export function registerAcpRoutes(app, options = {}) {
       // Cancelled requests keep their own signal instead of reading as failures.
       sendSse(isAcpCancelledError(err) ? 'cancelled' : 'error', serializeAcpError(err));
       res.end();
+    }
+  });
+
+  // Permission requests an agent raised (`session/request_permission`). They are
+  // listed for a client that (re)connects, and answered here. The agent is
+  // blocked on the answer, so an unknown request id is a 404 — never a silent
+  // success that would leave the turn waiting.
+  app.get('/api/acp/v1/sessions/:sessionId/permissions', (req, res) => {
+    try {
+      const permissions = listPendingPermissions(req.params.sessionId);
+      res.json({ permissions });
+    } catch (err) {
+      sendAcpError(res, err);
+    }
+  });
+
+  app.post('/api/acp/v1/sessions/:sessionId/permissions/:requestId', (req, res) => {
+    const { sessionId, requestId } = req.params;
+    const body = req.body || {};
+    // `optionId: null` (or `outcome: 'cancelled'`) is the user dismissing the
+    // prompt: the agent must hear `cancelled`, and it is never read as approval.
+    const dismissed = body.outcome === 'cancelled' || body.optionId === null;
+    const optionId = dismissed ? null : body.optionId;
+    if (!dismissed && (typeof optionId !== 'string' || optionId === '')) {
+      return res.status(400).json({ error: 'optionId is required (or outcome: "cancelled")' });
+    }
+    try {
+      const result = respondToPermission(sessionId, requestId, optionId);
+      res.json({ success: true, ...result });
+    } catch (err) {
+      sendAcpError(res, err);
     }
   });
 

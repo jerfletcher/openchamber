@@ -412,3 +412,119 @@ describe('AcpSessionBridge', () => {
     expect(syncTypes).toContain('session.idle');
   });
 });
+
+describe('AcpSessionBridge permission prompts', () => {
+  let bridge;
+  let runtime;
+  let broadcasts;
+
+  const permissionRequest = (overrides = {}) => ({
+    requestId: 'perm_1',
+    sessionId: 'mock_acp_child',
+    toolCall: { toolCallId: 'call_1', title: 'Run the tests', kind: 'execute' },
+    options: [
+      { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once', consent: true },
+      { optionId: 'reject-once', name: 'Reject', kind: 'reject_once', consent: false },
+    ],
+    createdAt: 1,
+    settle: () => true,
+    ...overrides,
+  });
+
+  beforeEach(() => {
+    runtime = new MockRuntime();
+    const answers = [];
+    runtime.answers = answers;
+    runtime.respondToPermission = (acpSessionId, requestId, optionId) => {
+      answers.push({ acpSessionId, requestId, optionId });
+      return { requestId, outcome: optionId === null ? 'cancelled' : 'selected', ...(optionId === null ? {} : { optionId }) };
+    };
+    const cancellations = [];
+    runtime.cancellations = cancellations;
+    runtime.cancelPendingPermissions = (acpSessionId) => { cancellations.push(acpSessionId); return 1; };
+
+    bridge = new AcpSessionBridge({ runtime, dataDir: `/tmp/acp-perm-test-${Date.now()}-${Math.random().toString(36).slice(2, 6)}` });
+    broadcasts = [];
+    bridge.setUiBroadcaster((payload) => broadcasts.push(payload));
+  });
+
+  const seedSession = () => {
+    const session = bridge.createSession({ id: 'ses_ui_1', directory: '/repo', agent: 'antigravity' });
+    session.acpSessionId = 'mock_acp_child';
+    return session;
+  };
+
+  it('announces the request to the UI and keeps it bound to the OpenChamber session', () => {
+    seedSession();
+    runtime.emit('permission_request', permissionRequest());
+
+    expect(broadcasts).toHaveLength(1);
+    expect(broadcasts[0]).toMatchObject({
+      type: 'openchamber:acp-permission-asked',
+      properties: {
+        sessionID: 'ses_ui_1',
+        requestId: 'perm_1',
+        directory: '/repo',
+        toolCall: { toolCallId: 'call_1', title: 'Run the tests' },
+      },
+    });
+    expect(broadcasts[0].properties.options[0]).toMatchObject({ optionId: 'allow-once', consent: true });
+    expect(bridge.listPendingPermissions('ses_ui_1')).toHaveLength(1);
+  });
+
+  it('answers through the ACP session id the runtime knows, not the UI session id', () => {
+    seedSession();
+    runtime.emit('permission_request', permissionRequest());
+
+    const result = bridge.respondToPermission('ses_ui_1', 'perm_1', 'allow-once');
+    expect(result).toMatchObject({ outcome: 'selected', optionId: 'allow-once' });
+    expect(runtime.answers).toEqual([{ acpSessionId: 'mock_acp_child', requestId: 'perm_1', optionId: 'allow-once' }]);
+  });
+
+  it('dismissing sends the cancelled answer', () => {
+    seedSession();
+    runtime.emit('permission_request', permissionRequest());
+
+    expect(bridge.respondToPermission('ses_ui_1', 'perm_1', null)).toMatchObject({ outcome: 'cancelled' });
+    expect(runtime.answers).toEqual([{ acpSessionId: 'mock_acp_child', requestId: 'perm_1', optionId: null }]);
+  });
+
+  it('rejects a reply bound to another session or an unknown request', () => {
+    seedSession();
+    runtime.emit('permission_request', permissionRequest());
+
+    expect(() => bridge.respondToPermission('ses_other', 'perm_1', 'allow-once')).toThrow(/not pending/);
+    expect(() => bridge.respondToPermission('ses_ui_1', 'perm_404', 'allow-once')).toThrow(/not pending/);
+    expect(runtime.answers).toEqual([]);
+  });
+
+  it('settling clears the prompt and announces how it ended', () => {
+    seedSession();
+    runtime.emit('permission_request', permissionRequest());
+    runtime.emit('permission_settled', {
+      requestId: 'perm_1',
+      sessionId: 'mock_acp_child',
+      outcome: { outcome: { outcome: 'selected', optionId: 'allow-once' } },
+    });
+
+    expect(bridge.listPendingPermissions('ses_ui_1')).toEqual([]);
+    expect(broadcasts.at(-1)).toEqual({
+      type: 'openchamber:acp-permission-settled',
+      properties: {
+        sessionID: 'ses_ui_1',
+        requestId: 'perm_1',
+        acpSessionId: 'mock_acp_child',
+        outcome: 'selected',
+        optionId: 'allow-once',
+      },
+    });
+  });
+
+  it('cancels a request that has no UI session rather than leaving the agent blocked', () => {
+    runtime.emit('permission_request', permissionRequest({ sessionId: 'acp_headless' }));
+
+    expect(runtime.cancellations).toEqual(['acp_headless']);
+    expect(bridge.pendingPermissions.size).toBe(0);
+    expect(broadcasts).toEqual([]);
+  });
+});

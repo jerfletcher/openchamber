@@ -109,6 +109,7 @@ import {
   useGlobalSessionStatusStore,
 } from "./global-session-status"
 import { applyGlobalBlockingRequestEvents, applyWaitingPageEvent, settledPageKeys, useGlobalBlockingRequestsStore } from "./global-blocking-requests"
+import { applyAcpPermissionEvents } from "./acp-permissions"
 import { requestHostTurnStarts } from "./host-session-status-seed"
 import { setHostTurnStartRequester } from "./session-activity-timing"
 import { applyBackgroundShellEvents, directoriesWithRunningShells, refreshBackgroundShells } from "./background-shells"
@@ -1984,6 +1985,26 @@ const forgetAutoAnswerWait = (sessionID: string, permissionID: string): void => 
   leftForUserBeforeAsked.delete(autoAnswerKey(sessionID, permissionID))
 }
 
+/**
+ * The in-app toast an ACP permission prompt gets while the user is looking at
+ * another session. The prompt itself is the composer dock; this is what makes an
+ * agent that is blocked on a session nobody is reading reachable, which is the
+ * whole point of answering it.
+ */
+const notifyAcpPermission = (event: Extract<SyncEvent, { type: "openchamber.acp-permission-asked" }>): void => {
+  const { sessionID, requestId, toolCall } = event.properties
+  const directory = event.properties.directory ?? resolveCachedSessionDirectory(sessionID)
+  if (!directory || isViewedInCurrentSession(directory, sessionID)) return
+  toast.info(toolCall?.title || toolCall?.name || FORM_TOAST_DESCRIPTION, {
+    id: `acp-permission-${sessionID}:${requestId}`,
+    description: FORM_TOAST_DESCRIPTION,
+    action: {
+      label: "Open session",
+      onClick: () => openSessionFromToast(sessionID, directory),
+    },
+  })
+}
+
 const notifyFormCreated = (form: FormRequest, directory: string): void => {
   const sessionID = form.sessionID
   const toastKey = getFormToastKey(sessionID, form.id)
@@ -2067,6 +2088,8 @@ const isControlStreamOnlyEvent = (payload: SyncEvent): payload is ControlStreamO
   || payload.type === "openchamber.session-assist"
   || payload.type === "openchamber.workflow-run"
   || payload.type === "openchamber.workflow-run-removed"
+  || payload.type === "openchamber.acp-permission-asked"
+  || payload.type === "openchamber.acp-permission-settled"
 )
 
 /**
@@ -2092,6 +2115,13 @@ const applyControlStreamOnlyEvent = (payload: ControlStreamOnlyEvent): void => {
       return
     case "openchamber.workflow-run-removed":
       useWorkflowRunsStore.getState().remove(payload.properties.parentSessionId, payload.properties.runId)
+      return
+    // An ACP agent is blocked until the user answers, so the prompt is kept in
+    // its own store (the session need not be open) and cleared when it settles.
+    case "openchamber.acp-permission-asked":
+    case "openchamber.acp-permission-settled":
+      applyAcpPermissionEvents([payload])
+      if (payload.type === "openchamber.acp-permission-asked") notifyAcpPermission(payload)
       return
   }
 }

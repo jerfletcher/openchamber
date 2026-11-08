@@ -4,11 +4,43 @@ import { execSync, execFileSync } from 'child_process';
 import EventEmitter from 'events';
 import { AcpConnection } from './acp-connection.js';
 import {
+  ACP_ERROR,
   ACP_PROTOCOL_VERSION,
+  AcpError,
   AcpProtocolVersionMismatchError,
+  buildPermissionCancelledOutcome,
+  buildPermissionSelectedOutcome,
+  normalizePermissionRequest,
   normalizeSessionUpdate,
   normalizePromptCapabilities,
 } from './acp-protocol.js';
+
+/**
+ * The flag an agent needs to run without asking for permission. It is appended
+ * only when the agent's own setting turns it on — see `buildAgentArgs`.
+ */
+export const SKIP_PERMISSIONS_FLAG = '--dangerously-skip-permissions';
+
+/**
+ * The exact argv an agent is launched with.
+ *
+ * `skipPermissions` is a per-agent setting that defaults to OFF: the permission
+ * prompt is the default experience, and running without it is an explicit opt-in
+ * the user makes per agent. The flag used to be hardcoded here, which meant the
+ * client's whole permission flow could never fire.
+ */
+export function buildAgentArgs(agent) {
+  const args = Array.isArray(agent?.args) ? [...agent.args] : [];
+  if (agent?.skipPermissions === true && !args.includes(SKIP_PERMISSIONS_FLAG)) {
+    args.push(SKIP_PERMISSIONS_FLAG);
+  }
+  if (agent?.skipPermissions !== true && args.includes(SKIP_PERMISSIONS_FLAG)) {
+    // A stale agent config must not keep bypassing the prompt; the setting, not
+    // the argv, is the source of truth.
+    return args.filter((arg) => arg !== SKIP_PERMISSIONS_FLAG);
+  }
+  return args;
+}
 
 export function resolveBinaryPath(command) {
   if (path.isAbsolute(command) && fs.existsSync(command)) return command;
@@ -52,7 +84,11 @@ export const DEFAULT_ACP_AGENTS = [
     sessionPrefix: 'ses_agy_',
     description: 'Autonomous coding agent powered by Google Gemini, Claude, and your Google AI Pro subscription.',
     command: 'agy',
-    args: ['acp', '--stdio', '--dangerously-skip-permissions'],
+    args: ['acp', '--stdio'],
+    // Off by default: the permission prompt is the default experience. A user
+    // turns this on per agent (custom agent config) only when the agent cannot
+    // function otherwise; the client never turns it on by itself.
+    skipPermissions: false,
     models: [
       { id: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash', context: 1000000, output: 64000, variants: ['low', 'medium', 'high'] },
       { id: 'gemini-4-argon', name: 'Gemini 4 Argon', context: 1000000, output: 64000, variants: ['low', 'medium', 'high'] },
@@ -97,6 +133,9 @@ export class AcpRuntime extends EventEmitter {
     this.customAgents = options.agents || [];
     this.activeSessions = new Map(); // sessionId -> { conn, agentId, cwd, models, currentModelId }
     this.idleTtlMs = options.idleTtlMs ?? 20 * 60 * 1000;
+    // Permission ids are ours, not the agent's JSON-RPC id: they travel through
+    // a URL and must stay opaque and URL-safe.
+    this.nextPermissionId = 1;
     if (this.idleTtlMs > 0) {
       this.reaper = setInterval(() => this.reapIdle(), Math.min(60_000, this.idleTtlMs));
       this.reaper.unref?.();
@@ -127,7 +166,7 @@ export class AcpRuntime extends EventEmitter {
       effectiveCwd = process.env.HOME || '/home/jeremy';
     }
     const resolvedCommand = resolveBinaryPath(agent.command);
-    const conn = new AcpConnection(resolvedCommand, agent.args, { cwd: effectiveCwd });
+    const conn = new AcpConnection(resolvedCommand, buildAgentArgs(agent), { cwd: effectiveCwd });
     conn.on('error', (err) => {
       console.error(`[AcpRuntime] Connection error for ${agentId}:`, err.message);
     });
@@ -196,8 +235,21 @@ export class AcpRuntime extends EventEmitter {
       createdAt: Date.now(),
       updatedAt: Date.now(),
       messages: [],
+      // requestId -> { requestId, jsonRpcId, sessionId, acpSessionId, toolCall,
+      // options, createdAt, settle(outcome) }. Answered by `respondToPermission`,
+      // or with `cancelled` by `cancel` / `closeSession` — never left dangling.
+      pendingPermissions: new Map(),
       emitter: new EventEmitter(),
     };
+
+    // `session/request_permission` is the first agent-initiated request this
+    // client answers. It is registered before the first prompt so a request can
+    // never arrive without a handler (which would answer -32601 and fail the
+    // tool call for a reason the user cannot see).
+    sessionData.unregisterPermissionHandler = conn.registerRequestHandler(
+      'session/request_permission',
+      (params) => this.handlePermissionRequest(sessionData, params),
+    );
 
     // Forward session notifications. Every variant the v1 SessionUpdate schema
     // defines is normalized before it reaches a consumer (spec:
@@ -439,9 +491,125 @@ export class AcpRuntime extends EventEmitter {
     return Boolean(session && session.conn && session.conn.isAlive());
   }
 
+  /**
+   * Answer `session/request_permission` (spec: /protocol/v1/tool-calls#requesting-permission).
+   *
+   * The returned promise IS the agent's request: it stays open until the user
+   * answers, which is why nothing here may approve on their behalf. There is no
+   * default and no timer; the only automatic answer is `cancelled`, and only
+   * when the turn is cancelled or the session closes (the spec REQUIRES that).
+   */
+  handlePermissionRequest(sessionData, params) {
+    const normalized = normalizePermissionRequest(params);
+    if (normalized.sessionId !== sessionData.sessionId) {
+      // A connection speaks for exactly one session, so a request naming another
+      // is a protocol violation rather than something to route elsewhere.
+      throw new AcpError({
+        code: ACP_ERROR.INVALID_PARAMS,
+        message: `session/request_permission named session '${normalized.sessionId}', but this connection is bound to '${sessionData.sessionId}'`,
+      });
+    }
+
+    const requestId = `perm_${this.nextPermissionId++}`;
+    return new Promise((resolve) => {
+      const settle = (outcome) => {
+        if (!sessionData.pendingPermissions.has(requestId)) return false;
+        sessionData.pendingPermissions.delete(requestId);
+        resolve(outcome);
+        const settled = { requestId, sessionId: sessionData.sessionId, outcome };
+        this.emit('permission_settled', settled);
+        sessionData.emitter.emit('permission_settled', settled);
+        return true;
+      };
+
+      const record = {
+        requestId,
+        sessionId: sessionData.sessionId,
+        // The agent's own view of the operation: title, kind, locations, input.
+        toolCall: normalized.toolCall,
+        // Each option carries `consent` (allow_once/allow_always only); a kind
+        // this client does not recognize is listed but is never consent.
+        options: normalized.options,
+        createdAt: Date.now(),
+        settle,
+      };
+      sessionData.pendingPermissions.set(requestId, record);
+      sessionData.updatedAt = Date.now();
+      this.emit('permission_request', record);
+      sessionData.emitter.emit('permission_request', record);
+    });
+  }
+
+  /** Pending permission requests of one ACP session, as the HTTP layer shows them. */
+  getPendingPermissions(sessionId) {
+    const session = this.activeSessions.get(sessionId);
+    if (!session?.pendingPermissions) return [];
+    return Array.from(session.pendingPermissions.values()).map((request) => ({
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      toolCall: request.toolCall,
+      options: request.options,
+      createdAt: request.createdAt,
+    }));
+  }
+
+  /**
+   * Answer a pending request with the option the user picked, or with
+   * `cancelled` when they dismissed the prompt (`optionId` null/undefined).
+   *
+   * An unknown option id is refused instead of forwarded: the agent offered a
+   * closed set, and inventing an answer would speak for the user.
+   */
+  respondToPermission(sessionId, requestId, optionId) {
+    const session = this.activeSessions.get(sessionId);
+    const pending = session?.pendingPermissions?.get(requestId);
+    if (!pending) {
+      throw new AcpError({
+        code: ACP_ERROR.RESOURCE_NOT_FOUND,
+        message: `Permission request '${requestId}' is not pending for session '${sessionId}'`,
+        data: { sessionId, requestId },
+      });
+    }
+
+    if (optionId === null || optionId === undefined || optionId === '') {
+      pending.settle(buildPermissionCancelledOutcome());
+      return { requestId, outcome: 'cancelled' };
+    }
+
+    const option = pending.options.find((entry) => entry.optionId === optionId);
+    if (!option) {
+      throw new AcpError({
+        code: ACP_ERROR.INVALID_PARAMS,
+        message: `Option '${optionId}' was not offered for permission request '${requestId}'`,
+        data: { sessionId, requestId, optionId },
+      });
+    }
+
+    pending.settle(buildPermissionSelectedOutcome(optionId));
+    return { requestId, outcome: 'selected', optionId, kind: option.kind };
+  }
+
+  /**
+   * Answer every pending request of a session with `cancelled`
+   * (spec: /protocol/v1/prompt-turn#cancellation — the client MUST). Returns how
+   * many were answered, so a caller can tell whether anything was waiting.
+   */
+  cancelPendingPermissions(sessionId) {
+    const session = this.activeSessions.get(sessionId);
+    if (!session?.pendingPermissions) return 0;
+    let answered = 0;
+    for (const request of Array.from(session.pendingPermissions.values())) {
+      if (request.settle(buildPermissionCancelledOutcome())) answered += 1;
+    }
+    return answered;
+  }
+
   async cancel(sessionId) {
     const session = this.activeSessions.get(sessionId);
     if (!session || !session.conn) return;
+    // Answer the open prompts first: the agent is blocked on them, and a
+    // cancelled turn must never leave one dangling.
+    this.cancelPendingPermissions(sessionId);
     try {
       session.conn.notify('session/cancel', { sessionId });
     } catch {}
@@ -450,8 +618,19 @@ export class AcpRuntime extends EventEmitter {
   closeSession(sessionId) {
     const session = this.activeSessions.get(sessionId);
     if (session) {
-      session.conn.close();
+      this.cancelPendingPermissions(sessionId);
+      try {
+        session.unregisterPermissionHandler?.();
+      } catch {}
       this.activeSessions.delete(sessionId);
+      // The cancelled answers are written on the promise queue; closing the pipe
+      // synchronously would drop them and leave the agent reading a dead stdin.
+      const { conn } = session;
+      setTimeout(() => {
+        try {
+          conn.close();
+        } catch {}
+      }, 0);
     }
   }
 

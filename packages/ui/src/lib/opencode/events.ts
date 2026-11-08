@@ -14,6 +14,7 @@
  */
 
 import type { OpenCodeEvent } from "@opencode/client"
+import type { AcpPermissionOption, AcpToolCall } from "@/lib/acp/types"
 import type { WorkflowRun } from "@/lib/workflows/model"
 import {
   compact,
@@ -115,6 +116,26 @@ export const hostTurnStart = (startedAt: number, hostNow: number): SessionTurnSt
   source: "host",
 })
 
+/** An ACP permission prompt, as the server forwards it to the UI. */
+export type AcpPermissionAskedProperties = {
+  sessionID: string;
+  requestId: string;
+  directory: string | null;
+  title: string;
+  agent: string;
+  toolCall: AcpToolCall;
+  options: AcpPermissionOption[];
+};
+
+/** How that prompt ended: a chosen option, or `cancelled` (dismissed or turn stopped). */
+export type AcpPermissionSettledProperties = {
+  sessionID: string;
+  requestId: string;
+  acpSessionId: string;
+  outcome: "selected" | "cancelled";
+  optionId?: string;
+};
+
 export type SyncEvent =
   | { type: "server.connected"; properties: Record<never, never> }
   | { type: "installation.update-available"; properties: { version: string } }
@@ -191,6 +212,13 @@ export type SyncEvent =
   | { type: "openchamber.page-waiting"; properties: { sessionID: string; directory: string | null; page: { id: string; title: string } } }
   /** That page stopped waiting: answered, answered in the chat, or its turn ended. */
   | { type: "openchamber.page-settled"; properties: { sessionID: string; pageID: string } }
+  /**
+   * An ACP agent raised `session/request_permission`: it is blocked until the
+   * user answers. Issued by OpenChamber (no OpenCode event exists for it).
+   */
+  | { type: "openchamber.acp-permission-asked"; properties: AcpPermissionAskedProperties }
+  /** That prompt was answered, dismissed, or cancelled with its turn. */
+  | { type: "openchamber.acp-permission-settled"; properties: AcpPermissionSettledProperties }
   /** The server started or stopped waiting to write a session's recap and suggestion. */
   | { type: "openchamber.session-assist"; properties: { sessionID: string; directory: string | null; pending: boolean } }
   /** A workflow run changed: proposed, approved, an agent moved on, or it ended. */

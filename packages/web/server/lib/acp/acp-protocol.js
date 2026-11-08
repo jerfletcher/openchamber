@@ -7,6 +7,7 @@
  *  - https://agentclientprotocol.com/protocol/v1/initialization  (protocolVersion, capabilities)
  *  - https://agentclientprotocol.com/protocol/v1/error           (JSON-RPC error codes)
  *  - https://agentclientprotocol.com/protocol/v1/prompt-turn     (SessionUpdate variants)
+ *  - https://agentclientprotocol.com/protocol/v1/tool-calls      (session/request_permission, PermissionOption)
  *  - https://agentclientprotocol.com/protocol/v1/agent-plan      (plan entries)
  *  - https://agentclientprotocol.com/protocol/v1/session-modes   (current_mode_update)
  *  - https://agentclientprotocol.com/protocol/v1/session-config-options (config_option_update)
@@ -156,6 +157,99 @@ export function serializeAcpError(err) {
 
 export const PLAN_PRIORITIES = Object.freeze(['high', 'medium', 'low']);
 export const PLAN_STATUSES = Object.freeze(['pending', 'in_progress', 'completed']);
+
+/**
+ * Permission option kinds (spec: /protocol/v1/tool-calls#permission-options).
+ * `kind` is only a UI hint and the option's `name` describes its scope, but the
+ * kind is the one field a client can reason about safely, so it is a closed set.
+ */
+export const PERMISSION_OPTION_KINDS = Object.freeze([
+  'allow_once',
+  'allow_always',
+  'reject_once',
+  'reject_always',
+]);
+
+/**
+ * True for the two kinds that constitute consent. Everything else — including an
+ * unrecognized kind, a missing one, and the reject kinds — is NOT consent. This
+ * is the client-side mirror of the spec's rule that an agent must not treat an
+ * outcome it does not recognize as approval: a client must not treat an option
+ * it does not recognize as a grant either.
+ */
+export function isConsentOptionKind(kind) {
+  return kind === 'allow_once' || kind === 'allow_always';
+}
+
+/** True for the reject kinds; used only to label the action, never to auto-answer. */
+export function isRejectOptionKind(kind) {
+  return kind === 'reject_once' || kind === 'reject_always';
+}
+
+export function isPermissionOptionKind(kind) {
+  return PERMISSION_OPTION_KINDS.includes(kind);
+}
+
+/**
+ * Normalize one `session/request_permission` params object
+ * (spec: /protocol/v1/tool-calls#requesting-permission).
+ *
+ * Malformed options are dropped rather than guessed at: an option without an
+ * `optionId` cannot be selected, and inventing one would let the client answer
+ * with an id the agent never offered. A recognized-shape option with an unknown
+ * `kind` is kept (the user may still pick it and the agent decides), but it is
+ * never consent — see `isConsentOptionKind`.
+ */
+export function normalizePermissionRequest(params) {
+  if (!params || typeof params !== 'object') {
+    throw new AcpError({
+      code: ACP_ERROR.INVALID_PARAMS,
+      message: 'session/request_permission requires a params object',
+    });
+  }
+  const sessionId = typeof params.sessionId === 'string' ? params.sessionId : '';
+  if (!sessionId) {
+    throw new AcpError({
+      code: ACP_ERROR.INVALID_PARAMS,
+      message: 'session/request_permission requires a sessionId',
+    });
+  }
+
+  const rawOptions = Array.isArray(params.options) ? params.options : [];
+  const options = [];
+  for (const option of rawOptions) {
+    if (!option || typeof option !== 'object') continue;
+    const optionId = typeof option.optionId === 'string' ? option.optionId : '';
+    if (!optionId) continue;
+    options.push({
+      optionId,
+      name: typeof option.name === 'string' && option.name ? option.name : optionId,
+      // An unknown kind is preserved verbatim so the UI can show it and the
+      // agent can interpret its own extension; it is never consent.
+      kind: typeof option.kind === 'string' ? option.kind : 'unknown',
+      consent: isConsentOptionKind(option.kind),
+    });
+  }
+
+  return {
+    sessionId,
+    toolCall: params.toolCall && typeof params.toolCall === 'object' ? params.toolCall : {},
+    options,
+  };
+}
+
+/** The `selected` outcome a client returns when the user picks an option. */
+export function buildPermissionSelectedOutcome(optionId) {
+  return { outcome: { outcome: 'selected', optionId } };
+}
+
+/**
+ * The `cancelled` outcome. The spec REQUIRES this answer for every pending
+ * request when the prompt turn is cancelled, so it is never optional.
+ */
+export function buildPermissionCancelledOutcome() {
+  return { outcome: { outcome: 'cancelled' } };
+}
 
 /**
  * Plan entries as an ordered todo list (spec: /protocol/v1/agent-plan).
