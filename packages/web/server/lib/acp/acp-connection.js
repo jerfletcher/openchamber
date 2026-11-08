@@ -1,5 +1,6 @@
 import { spawn } from 'child_process';
 import EventEmitter from 'events';
+import { ACP_ERROR, AcpError } from './acp-protocol.js';
 
 /**
  * Standard Agent Client Protocol (ACP) stdio JSON-RPC connection.
@@ -63,8 +64,15 @@ export class AcpConnection extends EventEmitter {
         try {
           const message = JSON.parse(line);
           this.handleIncoming(message);
-        } catch (err) {
-          this.emit('parseError', { line, error: err });
+        } catch {
+          this.emit('parseError', {
+            line,
+            error: new AcpError({
+              code: ACP_ERROR.PARSE_ERROR,
+              message: 'ACP peer sent a line that is not valid JSON',
+              data: { line },
+            }),
+          });
         }
       }
       newlineIndex = this.buffer.indexOf('\n');
@@ -73,10 +81,17 @@ export class AcpConnection extends EventEmitter {
 
   handleIncoming(msg) {
     if (msg.id !== undefined && this.pending.has(msg.id)) {
-      const { resolve, reject } = this.pending.get(msg.id);
+      const { resolve, reject, method } = this.pending.get(msg.id);
       this.pending.delete(msg.id);
       if (msg.error) {
-        reject(new Error(msg.error.message || JSON.stringify(msg.error)));
+        // JSON-RPC error object (spec: /protocol/v1/error). The code is what
+        // callers branch on: -32800 means cancelled, never "something broke".
+        reject(new AcpError({
+          code: msg.error.code,
+          message: msg.error.message || `ACP request '${method}' failed`,
+          data: msg.error.data,
+          method,
+        }));
       } else {
         resolve(msg.result);
       }
@@ -105,6 +120,7 @@ export class AcpConnection extends EventEmitter {
         }, timeoutMs);
       }
       this.pending.set(id, {
+        method,
         resolve: (val) => {
           if (timer) clearTimeout(timer);
           resolve(val);

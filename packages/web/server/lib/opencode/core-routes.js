@@ -709,10 +709,11 @@ export const registerAuthAndAccessRoutes = (app, dependencies) => {
 
   const requireApiAuth = async (req, res, next) => {
     const pathname = (req.originalUrl || '').split('?')[0];
-    // `/api/acp/v1` is the ACP bridge's own OpenAI-compatible surface and answers
-    // unauthenticated by design (acp-routes.js); every other ACP route stays
-    // behind this gate.
-    if (selfAuthenticatedApiPaths.has(pathname) || pathname.startsWith('/api/acp/v1')) return next();
+    // The `/api/acp/v1` OpenAI-compatible surface is NOT exempt: it can spawn
+    // agent processes and spend the user's quota, so it requires the same UI
+    // (or tunnel) session as every other API route. Existing OpenAI-style
+    // clients must now send the app's auth token.
+    if (selfAuthenticatedApiPaths.has(pathname)) return next();
     if (isGuestOauthCallback(req) || isMcpOauthCallback(req) || isFilePreviewRead(req) || isGuestFrameFileRead(req)) {
       return next();
     }

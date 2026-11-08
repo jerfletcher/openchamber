@@ -3,6 +3,12 @@ import path from 'path';
 import { execSync, execFileSync } from 'child_process';
 import EventEmitter from 'events';
 import { AcpConnection } from './acp-connection.js';
+import {
+  ACP_PROTOCOL_VERSION,
+  AcpProtocolVersionMismatchError,
+  normalizeSessionUpdate,
+  normalizePromptCapabilities,
+} from './acp-protocol.js';
 
 export function resolveBinaryPath(command) {
   if (path.isAbsolute(command) && fs.existsSync(command)) return command;
@@ -127,11 +133,27 @@ export class AcpRuntime extends EventEmitter {
     });
     conn.start();
 
-    // 1. Initialize
+    // 1. Initialize (spec: /protocol/v1/initialization).
+    //
+    // `protocolVersion` is REQUIRED and must be the latest version this client
+    // supports. `clientCapabilities` is deliberately empty: ACP treats every
+    // omitted capability as UNSUPPORTED, and this client implements neither
+    // `fs/*`, `terminal/*`, nor `elicitation/create`. Advertising them would
+    // invite method calls we cannot answer.
     const initResult = await conn.request('initialize', {
-      clientInfo: { name: 'openchamber', version: '2.6.1' },
-      capabilities: {},
+      protocolVersion: ACP_PROTOCOL_VERSION,
+      clientCapabilities: {},
+      clientInfo: { name: 'openchamber', title: 'OpenChamber', version: '2.6.1' },
     });
+
+    // The agent MUST answer with the version it chose. If it is not the version
+    // we asked for, the spec says to close the connection and tell the user —
+    // proceeding would silently interpret one protocol as another.
+    if (initResult?.protocolVersion !== ACP_PROTOCOL_VERSION) {
+      const received = initResult?.protocolVersion;
+      conn.close();
+      throw new AcpProtocolVersionMismatchError({ requested: ACP_PROTOCOL_VERSION, received });
+    }
 
     // 2. session/new
     let sessionResult;
@@ -152,10 +174,23 @@ export class AcpRuntime extends EventEmitter {
       sessionId,
       agentId,
       agentInfo: initResult.agentInfo,
+      agentCapabilities: initResult.agentCapabilities || {},
+      // The agent's prompt capabilities decide which content blocks we may
+      // send; anything omitted means "text and resource_link only".
+      promptCapabilities: normalizePromptCapabilities(initResult.agentCapabilities),
+      // Authentication methods the agent advertised during initialize, if any.
+      authMethods: Array.isArray(initResult.authMethods) ? initResult.authMethods : [],
       cwd,
       conn,
       availableModels,
       currentModelId,
+      // Session state surfaced by `session/update` variants.
+      plan: [],
+      currentModeId: sessionResult.modes?.currentModeId || null,
+      availableModes: Array.isArray(sessionResult.modes?.availableModes) ? sessionResult.modes.availableModes : [],
+      configOptions: Array.isArray(sessionResult.configOptions) ? sessionResult.configOptions : [],
+      availableCommands: [],
+      usage: null,
       title: 'New Session',
       lastUsedAt: Date.now(),
       createdAt: Date.now(),
@@ -164,24 +199,64 @@ export class AcpRuntime extends EventEmitter {
       emitter: new EventEmitter(),
     };
 
-    // Forward session notifications
+    // Forward session notifications. Every variant the v1 SessionUpdate schema
+    // defines is normalized before it reaches a consumer (spec:
+    // /protocol/v1/prompt-turn#session-updates); a variant we do not understand
+    // is still passed through as `unknown` instead of vanishing.
     conn.on('session/update', (params) => {
       const update = params?.update;
       if (!update) return;
+      const normalized = normalizeSessionUpdate(update);
+      if (!normalized) return;
 
-      if (update.sessionUpdate === 'agent_message_chunk') {
-        sessionData.emitter.emit('text_delta', update.content?.text || '');
-      } else if (update.sessionUpdate === 'thought' || update.thought) {
-        sessionData.emitter.emit('thought_delta', update.thought || update.content?.text || '');
-      } else if (update.sessionUpdate === 'tool_call' || update.toolCall) {
-        sessionData.emitter.emit('tool_call', update.toolCall || update);
-      } else if (update.sessionUpdate === 'tool_call_update') {
-        sessionData.emitter.emit('tool_update', update);
-      } else if (update.sessionUpdate === 'session_info_update' && update.title) {
-        sessionData.title = update.title;
-        sessionData.emitter.emit('title', update.title);
+      switch (normalized.type) {
+        case 'text_delta':
+          sessionData.emitter.emit('text_delta', normalized.text);
+          break;
+        case 'thought_delta':
+          sessionData.emitter.emit('thought_delta', normalized.text);
+          break;
+        case 'user_message_chunk':
+          sessionData.emitter.emit('user_message_chunk', normalized.text);
+          break;
+        case 'tool_call':
+          sessionData.emitter.emit('tool_call', normalized.toolCall);
+          break;
+        case 'tool_call_update':
+          sessionData.emitter.emit('tool_update', update);
+          break;
+        case 'plan':
+          // The agent MUST send the complete plan each time, so replace, never merge.
+          sessionData.plan = normalized.entries;
+          sessionData.emitter.emit('plan', normalized.entries);
+          break;
+        case 'current_mode':
+          sessionData.currentModeId = normalized.modeId || sessionData.currentModeId;
+          sessionData.emitter.emit('mode', sessionData.currentModeId);
+          break;
+        case 'config_options':
+          sessionData.configOptions = normalized.configOptions;
+          sessionData.emitter.emit('config_options', normalized.configOptions);
+          break;
+        case 'available_commands':
+          sessionData.availableCommands = normalized.availableCommands;
+          sessionData.emitter.emit('commands', normalized.availableCommands);
+          break;
+        case 'session_info':
+          if (normalized.title) {
+            sessionData.title = normalized.title;
+            sessionData.emitter.emit('title', normalized.title);
+          }
+          break;
+        case 'usage':
+          sessionData.usage = normalized.usage;
+          sessionData.emitter.emit('usage', normalized.usage);
+          break;
+        default:
+          break;
       }
 
+      sessionData.updatedAt = Date.now();
       sessionData.emitter.emit('update', update);
     });
 
@@ -193,6 +268,14 @@ export class AcpRuntime extends EventEmitter {
       availableModels,
       currentModelId,
       tier: sessionResult._meta?.antigravity?.tier,
+      agentCapabilities: sessionData.agentCapabilities,
+      promptCapabilities: sessionData.promptCapabilities,
+      authMethods: sessionData.authMethods,
+      plan: sessionData.plan,
+      currentModeId: sessionData.currentModeId,
+      availableModes: sessionData.availableModes,
+      configOptions: sessionData.configOptions,
+      availableCommands: sessionData.availableCommands,
     };
   }
 
@@ -200,15 +283,25 @@ export class AcpRuntime extends EventEmitter {
     const session = this.activeSessions.get(sessionId);
     if (!session) throw new Error(`Session '${sessionId}' not found.`);
 
+    // `session/set_model` is NOT part of ACP v1 — it is an agent-specific
+    // extension (Antigravity). The spec-conformant path is
+    // `session/set_config_option` with `configId` (spec:
+    // /protocol/v1/session-config-options#setting-a-config-option), so try the
+    // extension first and fall back to the standard method when the agent
+    // answers -32601.
     try {
       await session.conn.request('session/set_model', { sessionId, modelId });
       session.currentModelId = modelId;
-      return { success: true, modelId };
+      return { success: true, modelId, method: 'session/set_model' };
     } catch {
-      // Fallback to set_config_option if set_model not recognized
-      await session.conn.request('session/set_config_option', { sessionId, key: 'model', value: modelId });
+      const result = await session.conn.request('session/set_config_option', {
+        sessionId,
+        configId: 'model',
+        value: modelId,
+      });
       session.currentModelId = modelId;
-      return { success: true, modelId };
+      if (Array.isArray(result?.configOptions)) session.configOptions = result.configOptions;
+      return { success: true, modelId, method: 'session/set_config_option' };
     }
   }
 
@@ -241,6 +334,15 @@ export class AcpRuntime extends EventEmitter {
       availableModels: session.availableModels,
       messages: session.messages,
       tier: session.tier,
+      agentCapabilities: session.agentCapabilities,
+      promptCapabilities: session.promptCapabilities,
+      authMethods: session.authMethods,
+      plan: session.plan,
+      currentModeId: session.currentModeId,
+      availableModes: session.availableModes,
+      configOptions: session.configOptions,
+      availableCommands: session.availableCommands,
+      usage: session.usage,
     };
   }
 
@@ -280,17 +382,31 @@ export class AcpRuntime extends EventEmitter {
       const toolUpdateHandler = (update) => {
         onChunk({ type: 'tool_update', update });
       };
+      // Session-state variants are surfaced inline during the turn as well as
+      // on the session record, so a streaming consumer never misses them.
+      const planHandler = (entries) => onChunk({ type: 'plan', entries });
+      const modeHandler = (modeId) => onChunk({ type: 'mode', modeId });
+      const configHandler = (configOptions) => onChunk({ type: 'config_options', configOptions });
+      const commandsHandler = (availableCommands) => onChunk({ type: 'commands', availableCommands });
 
       session.emitter.on('text_delta', handler);
       session.emitter.on('thought_delta', thoughtHandler);
       session.emitter.on('tool_call', toolHandler);
       session.emitter.on('tool_update', toolUpdateHandler);
+      session.emitter.on('plan', planHandler);
+      session.emitter.on('mode', modeHandler);
+      session.emitter.on('config_options', configHandler);
+      session.emitter.on('commands', commandsHandler);
 
       unsub = () => {
         session.emitter.off('text_delta', handler);
         session.emitter.off('thought_delta', thoughtHandler);
         session.emitter.off('tool_call', toolHandler);
         session.emitter.off('tool_update', toolUpdateHandler);
+        session.emitter.off('plan', planHandler);
+        session.emitter.off('mode', modeHandler);
+        session.emitter.off('config_options', configHandler);
+        session.emitter.off('commands', commandsHandler);
       };
     }
 
