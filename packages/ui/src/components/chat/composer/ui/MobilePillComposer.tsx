@@ -29,6 +29,7 @@ import { useMessageQueueStore } from '@/stores/messageQueueStore';
 import { isVSCodeRuntime } from '@/lib/desktop';
 import { isDictationCaptureSupported } from '@/lib/dictation/use-dictation-audio-source';
 import { ComposerAttachmentControls, type ComposerTrackerPicker } from './ComposerAttachmentControls';
+import { resolveComposerRadius } from '../state/composerRadius';
 
 export interface MobilePillComposerProps {
     message: string;
@@ -94,13 +95,25 @@ export function MobilePillComposer(props: MobilePillComposerProps) {
     const [dictationSupported] = useState(() => !isVSCodeRuntime() && isDictationCaptureSupported());
     const showDictation = dictationEnabled && dictationSupported;
 
+    // The pill is the collapsed form of the mobile composer, so it takes its
+    // corner from the same helper the expanded one does rather than repeating
+    // the theme-token expression: 5/3 of the default 0.75rem token is the
+    // 1.25rem the pill used to hardcode, so the default theme is unchanged,
+    // and 5/3 of a theme's 0 is 0, so a squared theme squares the phone
+    // composer in both states. Keeping the scale inline here as a literal is
+    // what let the two call sites drift apart, so the value is applied through
+    // an inline style — the same mechanism ChatInput uses — and only the
+    // full-pill state (no rows) keeps a class.
+    const pillRadius = topRow || bottomRow ? resolveComposerRadius(true) : null;
+
     return (
         <div className="flex flex-col">
             <div
                 className={cn(
                     'flex min-w-0 flex-col',
-                    topRow || bottomRow ? 'rounded-[1.25rem]' : 'rounded-full',
+                    !pillRadius && 'rounded-full',
                 )}
+                style={pillRadius ? { borderRadius: pillRadius } : undefined}
             >
             <div
                 data-mobile-composer-pill="true"
@@ -110,8 +123,9 @@ export function MobilePillComposer(props: MobilePillComposerProps) {
                     // Lit like the desktop composer box: top edge, hairline,
                     // shadow and, in dark themes, the faint sheen.
                     'oc-surface-floating oc-glass-floating oc-composer-sheen flex min-w-0 flex-col',
-                    topRow || bottomRow ? 'rounded-[1.25rem]' : 'rounded-full',
+                    !pillRadius && 'rounded-full',
                 )}
+                style={pillRadius ? { borderRadius: pillRadius } : undefined}
             >
             {topRow}
             {attachments}

@@ -253,6 +253,7 @@ import { MentionCompletionState } from './composer/state/mentionCompletion';
 import { useFileMentionCheck } from './composer/state/useFileMentionCheck';
 import { useSessionDraftPublishing } from './composer/state/useSessionDraftPublishing';
 import { useDictationOrigin } from './composer/state/useDictationOrigin';
+import { resolveComposerRadius } from './composer/state/composerRadius';
 import { useDraftTarget } from './composer/state/useDraftTarget';
 import { useMobileComposerShell } from './composer/state/useMobileComposerShell';
 import { useMobileViewportPin } from './composer/state/useMobileViewportPin';
@@ -987,8 +988,9 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     // Mobile fullscreen composer (entered via the drag handle's swipe-up).
     const isMobileExpanded = isExpandedInput && isMobile;
     const isComposerExpanded = isDesktopExpanded || isMobileExpanded;
-    // Rounder composer on mobile (touch UI reads better with a softer corner).
-    const chatInputRadius = isMobile ? '1.25rem' : 'var(--radius-xl)';
+    // Applied as an inline style, so it must resolve through the theme token
+    // (see resolveComposerRadius) — a literal would beat the theme sheet.
+    const chatInputRadius = resolveComposerRadius(isMobile);
 
     const knownAgentNames = React.useMemo(
         () => new Set(agents.map((agent) => agent.name.toLowerCase())),
