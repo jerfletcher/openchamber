@@ -94,12 +94,22 @@ export function MobilePillComposer(props: MobilePillComposerProps) {
     const [dictationSupported] = useState(() => !isVSCodeRuntime() && isDictationCaptureSupported());
     const showDictation = dictationEnabled && dictationSupported;
 
+    // The pill's soft corner is the theme's xl radius, scaled like the expanded
+    // composer's (see resolveComposerRadius): 5/3 of the default 0.75rem token
+    // is the 1.25rem this used to hardcode. A literal here would outrank the
+    // theme — Tailwind's arbitrary value is a plain rule, so the TUI theme's
+    // `.rounded*` override never matches it and a squared theme would still
+    // paint a round phone composer.
+    const pillRadiusClass = topRow || bottomRow
+        ? 'rounded-[calc(var(--radius-xl,0.75rem)*5/3)]'
+        : 'rounded-full';
+
     return (
         <div className="flex flex-col">
             <div
                 className={cn(
                     'flex min-w-0 flex-col',
-                    topRow || bottomRow ? 'rounded-[1.25rem]' : 'rounded-full',
+                    pillRadiusClass,
                 )}
             >
             <div
@@ -110,7 +120,7 @@ export function MobilePillComposer(props: MobilePillComposerProps) {
                     // Lit like the desktop composer box: top edge, hairline,
                     // shadow and, in dark themes, the faint sheen.
                     'oc-surface-floating oc-glass-floating oc-composer-sheen flex min-w-0 flex-col',
-                    topRow || bottomRow ? 'rounded-[1.25rem]' : 'rounded-full',
+                    pillRadiusClass,
                 )}
             >
             {topRow}
