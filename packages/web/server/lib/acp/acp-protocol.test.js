@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   ACP_ERROR,
+  ACP_EXTENSION_NOTIFICATION,
   ACP_PROTOCOL_VERSION,
   ACP_TRANSPORT_ERROR,
   AcpError,
@@ -8,12 +9,18 @@ import {
   acpErrorKind,
   buildPermissionCancelledOutcome,
   buildPermissionSelectedOutcome,
+  configOptionValue,
   httpStatusForAcpError,
   isAcpCancelledError,
   isConsentOptionKind,
+  isMethodNotFoundError,
   isPermissionOptionKind,
+  normalizeAgentCapabilities,
+  normalizeConfigOptions,
+  normalizeNotification,
   normalizePermissionRequest,
   normalizePromptCapabilities,
+  normalizeSessionConfig,
   normalizeSessionUpdate,
   serializeAcpError,
 } from './acp-protocol.js';
@@ -236,6 +243,142 @@ describe('acp-protocol', () => {
       expect(buildPermissionSelectedOutcome('allow-once'))
         .toEqual({ outcome: { outcome: 'selected', optionId: 'allow-once' } });
       expect(buildPermissionCancelledOutcome()).toEqual({ outcome: { outcome: 'cancelled' } });
+    });
+  });
+});
+
+describe('Antigravity extension normalizers', () => {
+  // Shape copied from a live `agy acp --stdio` (1.5.1) session/new response.
+  const LIVE_SESSION = {
+    sessionId: 'sess_live',
+    models: {
+      availableModels: [
+        { modelId: 'gemini-4-argon-medium', name: 'Gemini 4 Argon (Medium)' },
+        { modelId: 'claude-opus-5-5-high', name: 'Claude Opus 5.5 (High)' },
+      ],
+      currentModelId: 'gemini-4-argon-medium',
+    },
+    modes: {
+      currentModeId: 'default',
+      availableModes: [
+        { id: 'default', name: 'Default', description: 'Ask before edits' },
+        { id: 'plan', name: 'Plan' },
+      ],
+    },
+    configOptions: [
+      {
+        id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'gemini-4-argon',
+        options: [{ value: 'gemini-4-argon', name: 'Gemini 4 Argon' }, { value: 'gemini-3.8-flash', name: 'Gemini 3.8 Flash' }],
+      },
+      { id: 'thought_level', name: 'Thinking Level', category: 'thought_level', type: 'select', currentValue: 'medium', options: ['low', 'medium', 'high'].map((value) => ({ value, name: value })) },
+      { id: 'mode', name: 'Mode', category: 'mode', type: 'select', currentValue: 'default', options: [{ value: 'default', name: 'Default' }] },
+    ],
+  };
+
+  it('parses the live session/new shape', () => {
+    const config = normalizeSessionConfig(LIVE_SESSION);
+    expect(config.availableModels).toEqual([
+      { modelId: 'gemini-4-argon-medium', name: 'Gemini 4 Argon (Medium)' },
+      { modelId: 'claude-opus-5-5-high', name: 'Claude Opus 5.5 (High)' },
+    ]);
+    expect(config.currentModelId).toBe('gemini-4-argon-medium');
+    expect(config.availableModes).toEqual([
+      { id: 'default', name: 'Default', description: 'Ask before edits' },
+      { id: 'plan', name: 'Plan', description: '' },
+    ]);
+    expect(config.currentModeId).toBe('default');
+    expect(config.configOptions).toHaveLength(3);
+    expect(configOptionValue(config.configOptions, 'model')).toBe('gemini-4-argon');
+    expect(config.configOptions[0].options).toHaveLength(2);
+  });
+
+  it('accepts snake_case and top-level alternative keys', () => {
+    const config = normalizeSessionConfig({
+      sessionId: 'sess_alt',
+      available_models: [{ id: 'alt-model' }],
+      current_model_id: 'alt-model',
+      available_modes: [{ id: 'alt-mode' }],
+      current_mode_id: 'alt-mode',
+      config_options: [{ configId: 'model', name: 'Model', type: 'select', current_value: 'alt-model', options: [{ id: 'alt-model' }] }],
+    });
+    expect(config.availableModels).toEqual([{ modelId: 'alt-model', name: 'alt-model' }]);
+    expect(config.currentModelId).toBe('alt-model');
+    expect(config.availableModes).toEqual([{ id: 'alt-mode', name: 'alt-mode', description: '' }]);
+    expect(config.currentModeId).toBe('alt-mode');
+    expect(config.configOptions).toEqual([{
+      id: 'model', name: 'Model', type: 'select', currentValue: 'alt-model',
+      options: [{ value: 'alt-model', name: 'alt-model' }],
+    }]);
+  });
+
+  it('returns an empty config for a malformed or missing result', () => {
+    expect(normalizeSessionConfig(null)).toEqual({
+      availableModels: [], currentModelId: '', availableModes: [], currentModeId: null, configOptions: [],
+    });
+  });
+
+  it('reads capabilities from both camelCase and snake_case, defaulting to unsupported', () => {
+    expect(normalizeAgentCapabilities({
+      loadSession: true,
+      promptCapabilities: { image: true },
+      sessionCapabilities: { resume: {}, close: {}, list: {}, additionalDirectories: {} },
+    })).toMatchObject({
+      loadSession: true, resume: true, close: true, list: true, delete: false, additionalDirectories: true,
+      promptCapabilities: { image: true, audio: false, embeddedContext: false },
+    });
+
+    expect(normalizeAgentCapabilities({
+      session_capabilities: { load: {}, resume: {}, additional_directories: {} },
+    })).toMatchObject({ loadSession: true, resume: true, close: false, list: false, delete: false, additionalDirectories: true });
+
+    expect(normalizeAgentCapabilities(undefined)).toMatchObject({
+      loadSession: false, resume: false, close: false, list: false, delete: false,
+    });
+  });
+
+  it('drops config options without an id instead of inventing one', () => {
+    expect(normalizeConfigOptions([])).toEqual([]);
+    expect(normalizeConfigOptions([{ name: 'No id' }, null, 'nonsense'])).toEqual([]);
+  });
+
+  it('recognizes only -32601 as method-not-found', () => {
+    expect(isMethodNotFoundError({ code: ACP_ERROR.METHOD_NOT_FOUND })).toBe(true);
+    expect(isMethodNotFoundError({ code: ACP_ERROR.INVALID_PARAMS })).toBe(false);
+    expect(isMethodNotFoundError(new Error('timeout'))).toBe(false);
+    expect(isMethodNotFoundError(undefined)).toBe(false);
+  });
+
+  it('dispatches the two extension notifications and ignores everything else', () => {
+    expect(normalizeNotification(ACP_EXTENSION_NOTIFICATION.AVAILABLE_COMMANDS_UPDATE, {
+      availableCommands: [{ name: 'top' }],
+    })).toEqual({ type: 'available_commands', availableCommands: [{ name: 'top', description: '' }] });
+
+    expect(normalizeNotification(ACP_EXTENSION_NOTIFICATION.CONFIG_OPTION_UPDATE, {
+      update: { configOptions: [{ id: 'model', currentValue: 'x' }] },
+    })).toEqual({
+      type: 'config_options',
+      configOptions: [{ id: 'model', name: 'model', type: 'select', currentValue: 'x' }],
+    });
+
+    expect(normalizeNotification('session/unknown_update', {})).toBeNull();
+    expect(normalizeNotification('session/prompt', {})).toBeNull();
+  });
+
+  it('normalizes config_option_update and available_commands_update inside session/update', () => {
+    expect(normalizeSessionUpdate({
+      sessionUpdate: 'config_option_update',
+      config_options: [{ id: 'mode', current_value: 'plan' }],
+    })).toEqual({
+      type: 'config_options',
+      configOptions: [{ id: 'mode', name: 'mode', type: 'select', currentValue: 'plan' }],
+    });
+
+    expect(normalizeSessionUpdate({
+      sessionUpdate: 'available_commands_update',
+      available_commands: [{ name: 'goal', description: 'Run until done' }],
+    })).toEqual({
+      type: 'available_commands',
+      availableCommands: [{ name: 'goal', description: 'Run until done' }],
     });
   });
 });

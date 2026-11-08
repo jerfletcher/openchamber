@@ -60,6 +60,31 @@ export const ACP_TRANSPORT_ERROR = Object.freeze({
   PROTOCOL_VERSION_MISMATCH: 'protocol-version-mismatch',
 });
 
+/**
+ * Antigravity extension notification methods, accepted at the TOP LEVEL of a
+ * JSON-RPC message.
+ *
+ * This is NOT part of ACP v1: the spec delivers both updates as SessionUpdate
+ * variants nested inside `session/update` (and the live `agy` binary does
+ * exactly that). The extension surface also permits the standalone
+ * notification form, so both shapes are accepted — one normalizer feeds both.
+ * A notification carries no `id`, so it is never answered; replying to one would
+ * be a JSON-RPC violation.
+ */
+export const ACP_EXTENSION_NOTIFICATION = Object.freeze({
+  AVAILABLE_COMMANDS_UPDATE: 'session/available_commands_update',
+  CONFIG_OPTION_UPDATE: 'session/config_option_update',
+});
+
+/**
+ * True only when the peer rejected a method as unknown (-32601). A legacy alias
+ * must fall back to `session/set_config_option` on exactly this signal — not on
+ * a timeout or a permission failure, which would double-apply a change.
+ */
+export function isMethodNotFoundError(err) {
+  return Boolean(err) && err.code === ACP_ERROR.METHOD_NOT_FOUND;
+}
+
 export function acpErrorKind(code) {
   return KIND_BY_CODE[code] || 'unknown';
 }
@@ -272,7 +297,7 @@ export function normalizePlanEntries(entries) {
   return normalized;
 }
 
-function normalizeAvailableCommands(commands) {
+export function normalizeAvailableCommands(commands) {
   if (!Array.isArray(commands)) return [];
   const normalized = [];
   for (const command of commands) {
@@ -286,6 +311,75 @@ function normalizeAvailableCommands(commands) {
     });
   }
   return normalized;
+}
+
+/**
+ * Normalize one config option value list (`configOptions[].options`). Both the
+ * spec shape ({ value, name }) and the extension shape ({ id, name }) are
+ * accepted; a string entry is its own value and label.
+ */
+function normalizeConfigOptionValues(values) {
+  if (!Array.isArray(values)) return [];
+  const normalized = [];
+  for (const entry of values) {
+    if (typeof entry === 'string') {
+      if (!entry) continue;
+      normalized.push({ value: entry, name: entry });
+      continue;
+    }
+    if (!entry || typeof entry !== 'object') continue;
+    const value = firstString(entry.value, entry.id);
+    if (!value) continue;
+    normalized.push({
+      value,
+      name: firstString(entry.name) || value,
+      ...(typeof entry.description === 'string' ? { description: entry.description } : {}),
+    });
+  }
+  return normalized;
+}
+
+/**
+ * Normalize `configOptions` from `session/new`, `session/resume`, or a
+ * `config_option_update`. The live `agy` response uses `{ id, name, category,
+ * type, currentValue, options: [{ value, name }] }`; snake_case and `configId`
+ * spellings are accepted so an older build does not silently lose the list.
+ * An entry without an id cannot be set, so it is dropped rather than guessed.
+ */
+export function normalizeConfigOptions(options) {
+  if (!Array.isArray(options)) return [];
+  const normalized = [];
+  for (const option of options) {
+    if (!option || typeof option !== 'object') continue;
+    const id = firstString(option.id, option.configId, option.config_id);
+    if (!id) continue;
+    const entry = {
+      id,
+      name: firstString(option.name) || id,
+      type: firstString(option.type) || 'select',
+      currentValue: typeof option.currentValue !== 'undefined'
+        ? option.currentValue
+        : (typeof option.current_value !== 'undefined' ? option.current_value : null),
+    };
+    if (typeof option.category === 'string') entry.category = option.category;
+    if (Array.isArray(option.options)) entry.options = normalizeConfigOptionValues(option.options);
+    normalized.push(entry);
+  }
+  return normalized;
+}
+
+/** Current value of one config option, or undefined when it is not present. */
+export function configOptionValue(configOptions, configId) {
+  if (!Array.isArray(configOptions)) return undefined;
+  const match = configOptions.find((option) => option && option.id === configId);
+  return match ? match.currentValue : undefined;
+}
+
+function firstString(...values) {
+  for (const value of values) {
+    if (typeof value === 'string' && value) return value;
+  }
+  return '';
 }
 
 function chunkText(content) {
@@ -324,9 +418,15 @@ export function normalizeSessionUpdate(update) {
     case 'current_mode_update':
       return { type: 'current_mode', modeId: typeof update.currentModeId === 'string' ? update.currentModeId : '' };
     case 'config_option_update':
-      return { type: 'config_options', configOptions: Array.isArray(update.configOptions) ? update.configOptions : [] };
+      return {
+        type: 'config_options',
+        configOptions: normalizeConfigOptions(update.configOptions ?? update.config_options),
+      };
     case 'available_commands_update':
-      return { type: 'available_commands', availableCommands: normalizeAvailableCommands(update.availableCommands) };
+      return {
+        type: 'available_commands',
+        availableCommands: normalizeAvailableCommands(update.availableCommands ?? update.available_commands),
+      };
     case 'session_info_update':
       return { type: 'session_info', title: typeof update.title === 'string' ? update.title : null };
     case 'usage_update':
@@ -353,4 +453,161 @@ export function normalizePromptCapabilities(agentCapabilities) {
     audio: caps?.audio === true,
     embeddedContext: caps?.embeddedContext === true,
   };
+}
+
+/**
+ * Session-management capabilities advertised in the `initialize` result.
+ *
+ * The live `agy` binary advertises BOTH spellings and in both places:
+ *   agentCapabilities.loadSession === true
+ *   agentCapabilities.load_session === true
+ *   agentCapabilities.sessionCapabilities.{load,resume,close,list,additionalDirectories}
+ *   agentCapabilities.session_capabilities.{...}
+ * and it does NOT advertise `delete` (which is why `session/delete` answers
+ * -32601). Anything omitted is UNSUPPORTED: the runtime must never send a
+ * method whose flag is false here.
+ */
+export function normalizeAgentCapabilities(agentCapabilities) {
+  const caps = agentCapabilities && typeof agentCapabilities === 'object' ? agentCapabilities : {};
+  const sessionCaps = caps.sessionCapabilities ?? caps.session_capabilities ?? {};
+  const has = (key) => {
+    if (!sessionCaps || typeof sessionCaps !== 'object') return false;
+    return Boolean(sessionCaps[key]) || Boolean(sessionCaps[snakeKey(key)]);
+  };
+  return {
+    loadSession: caps.loadSession === true || caps.load_session === true || has('load'),
+    resume: has('resume'),
+    close: has('close'),
+    list: has('list'),
+    delete: has('delete'),
+    additionalDirectories: has('additionalDirectories'),
+    promptCapabilities: normalizePromptCapabilities(caps),
+  };
+}
+
+function snakeKey(key) {
+  return key.replace(/[A-Z]/g, (char) => `_${char.toLowerCase()}`);
+}
+
+/**
+ * Normalize the model list from `session/new` / `session/resume`.
+ *
+ * The live shape is `models.availableModels: [{ modelId, name }]`; the
+ * extension surface also has `available_models` and a bare top-level
+ * `availableModels`. Every spelling is accepted because the exact key names are
+ * not part of any published Antigravity spec.
+ */
+function normalizeModelList(list) {
+  if (!Array.isArray(list)) return [];
+  const normalized = [];
+  for (const entry of list) {
+    if (typeof entry === 'string') {
+      if (!entry) continue;
+      normalized.push({ modelId: entry, name: entry });
+      continue;
+    }
+    if (!entry || typeof entry !== 'object') continue;
+    const modelId = firstString(entry.modelId, entry.model_id, entry.id, entry.value);
+    if (!modelId) continue;
+    normalized.push({ modelId, name: firstString(entry.name) || modelId });
+  }
+  return normalized;
+}
+
+/** Modes use `id` in the live response; `modeId`/`value` are accepted too. */
+function normalizeModeList(list) {
+  if (!Array.isArray(list)) return [];
+  const normalized = [];
+  for (const entry of list) {
+    if (typeof entry === 'string') {
+      if (!entry) continue;
+      normalized.push({ id: entry, name: entry, description: '' });
+      continue;
+    }
+    if (!entry || typeof entry !== 'object') continue;
+    const id = firstString(entry.id, entry.modeId, entry.mode_id, entry.value);
+    if (!id) continue;
+    normalized.push({
+      id,
+      name: firstString(entry.name) || id,
+      description: typeof entry.description === 'string' ? entry.description : '',
+    });
+  }
+  return normalized;
+}
+
+/**
+ * Normalize the session configuration carried by `session/new`,
+ * `session/resume`, and (partially) `session/load`.
+ *
+ * Probe of the live `agy` binary (1.5.1) returned:
+ *   { sessionId,
+ *     models: { availableModels: [{ modelId, name }], currentModelId },
+ *     modes: { currentModeId, availableModes: [{ id, name, description }] },
+ *     configOptions: [{ id, name, category, type, currentValue, options }] }
+ * The unknown-key fallbacks (`available_models`, top-level `availableModels`,
+ * `config_options`) exist because there is NO official Antigravity ACP spec —
+ * only the community README and PR #14 — so both shapes are handled rather than
+ * assuming the probe's exact spelling is stable.
+ */
+export function normalizeSessionConfig(result) {
+  const source = result && typeof result === 'object' ? result : {};
+  const modelsBlock = source.models && typeof source.models === 'object' ? source.models : {};
+  const availableModels = normalizeModelList(
+    modelsBlock.availableModels
+      ?? modelsBlock.available_models
+      ?? source.availableModels
+      ?? source.available_models,
+  );
+  const currentModelId = firstString(
+    modelsBlock.currentModelId,
+    modelsBlock.current_model_id,
+    source.currentModelId,
+    source.current_model_id,
+  ) || availableModels[0]?.modelId || '';
+
+  const modesBlock = source.modes && typeof source.modes === 'object' ? source.modes : {};
+  const availableModes = normalizeModeList(
+    modesBlock.availableModes
+      ?? modesBlock.available_modes
+      ?? source.availableModes
+      ?? source.available_modes,
+  );
+  const currentModeId = firstString(
+    modesBlock.currentModeId,
+    modesBlock.current_mode_id,
+    source.currentModeId,
+    source.current_mode_id,
+  ) || availableModes[0]?.id || null;
+
+  return {
+    availableModels,
+    currentModelId,
+    availableModes,
+    currentModeId,
+    configOptions: normalizeConfigOptions(source.configOptions ?? source.config_options),
+  };
+}
+
+/**
+ * Normalize a top-level Antigravity extension notification. Returns null for
+ * any method this client does not consume, so an unknown notification is
+ * ignored (never answered).
+ */
+export function normalizeNotification(method, params) {
+  const source = params && typeof params === 'object' ? params : {};
+  const payload = source.update && typeof source.update === 'object' ? source.update : source;
+  if (method === ACP_EXTENSION_NOTIFICATION.AVAILABLE_COMMANDS_UPDATE) {
+    return {
+      type: 'available_commands',
+      availableCommands: normalizeAvailableCommands(payload.availableCommands ?? payload.available_commands),
+    };
+  }
+  if (method === ACP_EXTENSION_NOTIFICATION.CONFIG_OPTION_UPDATE) {
+    return {
+      type: 'config_options',
+      configOptions: normalizeConfigOptions(payload.configOptions ?? payload.config_options),
+    };
+  }
+  return null;
 }
