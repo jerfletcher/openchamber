@@ -1272,6 +1272,9 @@ const globalMessageStreamHub = createGlobalMessageStreamHub({
   deltaCoalesceWindowMs: resolveDeltaCoalesceWindowMs(),
 });
 getAcpSessionBridge().setEventHub(globalMessageStreamHub);
+// Permission prompts are OpenChamber-owned events: the OpenCode event proxy
+// cannot carry them, so they go out on the control stream the UI reads.
+getAcpSessionBridge().setUiBroadcaster(broadcastOpenChamberUiEvent);
 
 // Jev model routing and the permission safety net. Every failure keeps the
 // user's own model or the auto-accept reply it was asked about.
@@ -1716,7 +1719,9 @@ const bootstrapRuntime = createBootstrapRuntime({
   registerCommonRequestMiddleware,
   registerAuthAndAccessRoutes,
   registerTtsRoutes,
-  registerAcpRoutes,
+  // The bridge owns the runtime the UI's ACP sessions live in, so it must be
+  // the same instance the `/api/acp` permission endpoints answer through.
+  registerAcpRoutes: (app, options) => registerAcpRoutes(app, { ...options, bridge: getAcpSessionBridge() }),
   registerNotificationRoutes,
   registerOpenChamberRoutes,
   registerAgentToolRoutes: (app, options) => options.agentToolRuntime.registerRoutes(app, options.express),

@@ -15,6 +15,7 @@
  */
 
 import type { OpenCodeClient, OpenCodeEvent } from "@opencode/client"
+import type { AcpPermissionOption, AcpToolCall } from "@/lib/acp/types"
 import { z } from "zod"
 import { opencodeClient } from "@/lib/opencode/client"
 import { GLOBAL_EVENT_DIRECTORY, hostTurnStart, routeWireEvent, syncEventSessionID, type SyncEvent } from "@/lib/opencode/events"
@@ -176,6 +177,52 @@ const openchamberPageSettledSchema = z.object({
   properties: z.object({ sessionID: z.string().min(1), pageID: z.string().min(1) }),
 })
 
+// An ACP agent's `session/request_permission`, forwarded by the server. The
+// agent blocks on the answer, so the prompt is announced as its own event.
+const acpPermissionOptionSchema = z.object({
+  optionId: z.string().min(1),
+  name: z.string(),
+  kind: z.string(),
+  consent: z.boolean().optional(),
+})
+
+const acpToolCallSchema = z.object({
+  toolCallId: z.string().optional(),
+  title: z.string().optional(),
+  name: z.string().optional(),
+  kind: z.string().optional(),
+  status: z.string().optional(),
+  rawInput: z.unknown().optional(),
+  locations: z.array(z.object({ path: z.string().optional(), line: z.number().nullable().optional() })).optional(),
+  content: z.array(z.unknown()).optional(),
+})
+
+const openchamberAcpPermissionAskedSchema = z.object({
+  type: z.literal("openchamber:acp-permission-asked"),
+  properties: z.object({
+    sessionID: z.string().min(1),
+    requestId: z.string().min(1),
+    directory: z.string().min(1).nullable().catch(null),
+    title: z.string().catch(""),
+    agent: z.string().catch(""),
+    toolCall: acpToolCallSchema.catch({}),
+    // An agent that offers no usable option still blocks; the prompt then shows
+    // only its dismiss action, which answers `cancelled`.
+    options: z.array(acpPermissionOptionSchema).catch([]),
+  }),
+})
+
+const openchamberAcpPermissionSettledSchema = z.object({
+  type: z.literal("openchamber:acp-permission-settled"),
+  properties: z.object({
+    sessionID: z.string().min(1),
+    requestId: z.string().min(1),
+    acpSessionId: z.string().catch(""),
+    outcome: z.enum(["selected", "cancelled"]).catch("cancelled"),
+    optionId: z.string().optional(),
+  }),
+})
+
 // The server writes a session's recap and suggestion a while after its turn
 // ends, reading the session's directory; it announces both ends of the wait.
 const openchamberSessionAssistSchema = z.object({
@@ -331,6 +378,20 @@ function translateOpenchamberEvent(type: string, payload: unknown): SyncEvent | 
     case "openchamber:page-settled": {
       const parsed = openchamberPageSettledSchema.safeParse(payload)
       return parsed.success ? { type: "openchamber.page-settled", properties: parsed.data.properties } : null
+    }
+    case "openchamber:acp-permission-asked": {
+      const parsed = openchamberAcpPermissionAskedSchema.safeParse(payload)
+      if (!parsed.success) return null
+      const { toolCall, options, ...rest } = parsed.data.properties
+      // SAFETY: the schema above validated every field of the forwarded prompt.
+      return {
+        type: "openchamber.acp-permission-asked",
+        properties: { ...rest, toolCall: toolCall as AcpToolCall, options: options as AcpPermissionOption[] },
+      }
+    }
+    case "openchamber:acp-permission-settled": {
+      const parsed = openchamberAcpPermissionSettledSchema.safeParse(payload)
+      return parsed.success ? { type: "openchamber.acp-permission-settled", properties: parsed.data.properties } : null
     }
     case "openchamber:session-assist": {
       const parsed = openchamberSessionAssistSchema.safeParse(payload)

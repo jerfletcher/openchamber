@@ -2,7 +2,7 @@ import { describe, it, expect, afterAll } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { AcpRuntime } from './acp-runtime.js';
+import { AcpRuntime, DEFAULT_ACP_AGENTS, buildAgentArgs } from './acp-runtime.js';
 import { AcpProtocolVersionMismatchError } from './acp-protocol.js';
 
 describe('AcpRuntime', () => {
@@ -241,5 +241,217 @@ describe('AcpRuntime protocol conformance', () => {
     expect(chunks.find((chunk) => chunk.type === 'text')?.delta).toBe('done');
 
     runtime.closeSession(session.sessionId);
+  });
+});
+
+/**
+ * An agent that asks for permission mid-turn and reports the client's answer
+ * back through a file, so the assertion is on the exact JSON-RPC response the
+ * agent received (same id, selected vs cancelled) and not on our own objects.
+ */
+const PERMISSION_AGENT_SCRIPT = `
+const fs = require('node:fs');
+const readline = require('node:readline');
+const capturePath = process.argv[1];
+const send = (message) => console.log(JSON.stringify(message));
+const rl = readline.createInterface({ input: process.stdin });
+let promptId = null;
+let permissionId = null;
+rl.on('line', (line) => {
+  if (!line.trim()) return;
+  const msg = JSON.parse(line);
+  if (msg.method === 'initialize') {
+    send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: 1, agentCapabilities: {}, agentInfo: { name: 'Permission ACP', version: '1' } } });
+    return;
+  }
+  if (msg.method === 'session/new' || msg.method === 'session/load') {
+    send({ jsonrpc: '2.0', id: msg.id, result: { sessionId: 'sess_perm' } });
+    return;
+  }
+  if (msg.method === 'session/prompt') {
+    promptId = msg.id;
+    permissionId = 100;
+    send({
+      jsonrpc: '2.0',
+      id: permissionId,
+      method: 'session/request_permission',
+      params: {
+        sessionId: 'sess_perm',
+        toolCall: { toolCallId: 'call_1', title: 'Run the tests', kind: 'execute', rawInput: { command: 'bun test' } },
+        options: [
+          { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+          { optionId: 'allow-always', name: 'Allow always', kind: 'allow_always' },
+          { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
+          { optionId: 'reject-always', name: 'Always reject', kind: 'reject_always' },
+          { optionId: 'maybe', name: 'Maybe', kind: 'allow_sometimes' },
+        ],
+      },
+    });
+    return;
+  }
+  // The client's answer to our request: same id, no method.
+  if (permissionId !== null && msg.id === permissionId && msg.method === undefined) {
+    if (capturePath) fs.writeFileSync(capturePath, JSON.stringify(msg));
+    const cancelled = msg.result && msg.result.outcome && msg.result.outcome.outcome === 'cancelled';
+    send({ jsonrpc: '2.0', id: promptId, result: { stopReason: cancelled ? 'cancelled' : 'end_turn' } });
+    promptId = null;
+    permissionId = null;
+  }
+});
+`;
+
+describe('AcpRuntime permission requests', () => {
+  const tempDirs = [];
+  const runtimes = [];
+
+  const makeRuntime = (agent) => {
+    const runtime = new AcpRuntime({ agents: [agent], idleTtlMs: 0 });
+    runtimes.push(runtime);
+    return runtime;
+  };
+  const tempFile = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-permission-'));
+    tempDirs.push(dir);
+    return path.join(dir, 'permission-reply.json');
+  };
+  const waitFor = async (predicate, timeoutMs = 5000) => {
+    const started = Date.now();
+    while (!predicate()) {
+      if (Date.now() - started > timeoutMs) throw new Error('Timed out waiting for the permission request');
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+  };
+  const readReply = async (capturePath) => {
+    await waitFor(() => fs.existsSync(capturePath));
+    return JSON.parse(fs.readFileSync(capturePath, 'utf8'));
+  };
+
+  afterAll(() => {
+    for (const runtime of runtimes) runtime.closeAll();
+    for (const dir of tempDirs) fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('dispatches the request and returns the selected option with the agent\'s own id', async () => {
+    const capturePath = tempFile();
+    const runtime = makeRuntime(mockAgent(PERMISSION_AGENT_SCRIPT, [capturePath]));
+    const session = await runtime.createSession({ agentId: 'mock-acp', cwd: process.cwd() });
+    const requests = [];
+    runtime.on('permission_request', (request) => requests.push(request));
+
+    const turn = runtime.prompt(session.sessionId, 'go');
+    await waitFor(() => requests.length === 1);
+    expect(requests[0].sessionId).toBe('sess_perm');
+    expect(requests[0].toolCall).toMatchObject({ toolCallId: 'call_1', title: 'Run the tests' });
+    expect(requests[0].options).toHaveLength(5);
+    expect(requests[0].options.find((option) => option.optionId === 'maybe').consent).toBe(false);
+    expect(runtime.getPendingPermissions(session.sessionId)).toHaveLength(1);
+
+    runtime.respondToPermission(session.sessionId, requests[0].requestId, 'allow-once');
+
+    const reply = await readReply(capturePath);
+    expect(reply.id).toBe(100);
+    expect(reply.result).toEqual({ outcome: { outcome: 'selected', optionId: 'allow-once' } });
+    expect(runtime.getPendingPermissions(session.sessionId)).toEqual([]);
+    await turn;
+
+    runtime.closeSession(session.sessionId);
+  });
+
+  it('answers every pending request with cancelled when the turn is cancelled', async () => {
+    const capturePath = tempFile();
+    const runtime = makeRuntime(mockAgent(PERMISSION_AGENT_SCRIPT, [capturePath]));
+    const session = await runtime.createSession({ agentId: 'mock-acp', cwd: process.cwd() });
+    const settled = [];
+    runtime.on('permission_settled', (event) => settled.push(event));
+
+    const turn = runtime.prompt(session.sessionId, 'go');
+    await waitFor(() => runtime.getPendingPermissions(session.sessionId).length === 1);
+
+    await runtime.cancel(session.sessionId);
+
+    const reply = await readReply(capturePath);
+    expect(reply.result).toEqual({ outcome: { outcome: 'cancelled' } });
+    expect(settled).toHaveLength(1);
+    expect(settled[0].outcome).toEqual({ outcome: { outcome: 'cancelled' } });
+    await turn;
+
+    runtime.closeSession(session.sessionId);
+  });
+
+  it('cancels pending requests when the session closes', async () => {
+    const capturePath = tempFile();
+    const runtime = makeRuntime(mockAgent(PERMISSION_AGENT_SCRIPT, [capturePath]));
+    const session = await runtime.createSession({ agentId: 'mock-acp', cwd: process.cwd() });
+
+    void runtime.prompt(session.sessionId, 'go').catch(() => undefined);
+    await waitFor(() => runtime.getPendingPermissions(session.sessionId).length === 1);
+
+    runtime.closeSession(session.sessionId);
+
+    const reply = await readReply(capturePath);
+    expect(reply.result).toEqual({ outcome: { outcome: 'cancelled' } });
+  });
+
+  it('refuses a reply to a stale request id and an option the agent never offered', async () => {
+    const capturePath = tempFile();
+    const runtime = makeRuntime(mockAgent(PERMISSION_AGENT_SCRIPT, [capturePath]));
+    const session = await runtime.createSession({ agentId: 'mock-acp', cwd: process.cwd() });
+
+    const turn = runtime.prompt(session.sessionId, 'go');
+    await waitFor(() => runtime.getPendingPermissions(session.sessionId).length === 1);
+    const requestId = runtime.getPendingPermissions(session.sessionId)[0].requestId;
+
+    expect(() => runtime.respondToPermission(session.sessionId, 'perm_999', 'allow-once'))
+      .toThrow(/not pending/);
+    try {
+      runtime.respondToPermission(session.sessionId, requestId, 'not-an-option');
+    } catch (err) {
+      expect(err.code).toBe(-32602);
+    }
+    // Neither attempt answered the agent: the prompt is still open.
+    expect(runtime.getPendingPermissions(session.sessionId)).toHaveLength(1);
+
+    runtime.respondToPermission(session.sessionId, requestId, 'reject-once');
+    const reply = await readReply(capturePath);
+    expect(reply.result).toEqual({ outcome: { outcome: 'selected', optionId: 'reject-once' } });
+    await turn;
+
+    runtime.closeSession(session.sessionId);
+  });
+
+  it('never approves on its own, even when an option kind is unrecognized', async () => {
+    const capturePath = tempFile();
+    const runtime = makeRuntime(mockAgent(PERMISSION_AGENT_SCRIPT, [capturePath]));
+    const session = await runtime.createSession({ agentId: 'mock-acp', cwd: process.cwd() });
+
+    const turn = runtime.prompt(session.sessionId, 'go');
+    await waitFor(() => runtime.getPendingPermissions(session.sessionId).length === 1);
+    // No timer, no default: nothing has been sent to the agent yet.
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(fs.existsSync(capturePath)).toBe(false);
+
+    runtime.cancelPendingPermissions(session.sessionId);
+    const reply = await readReply(capturePath);
+    expect(reply.result).toEqual({ outcome: { outcome: 'cancelled' } });
+    await turn;
+
+    runtime.closeSession(session.sessionId);
+  });
+});
+
+describe('AcpRuntime launch arguments', () => {
+  it('launches the agent WITHOUT the skip-permissions flag by default', () => {
+    const antigravity = DEFAULT_ACP_AGENTS.find((agent) => agent.id === 'antigravity');
+    expect(antigravity.skipPermissions).toBe(false);
+    expect(buildAgentArgs(antigravity)).toEqual(['acp', '--stdio']);
+    expect(buildAgentArgs(antigravity)).not.toContain('--dangerously-skip-permissions');
+  });
+
+  it('appends the flag only when that agent opted in, and strips it when it did not', () => {
+    expect(buildAgentArgs({ args: ['acp'], skipPermissions: true }))
+      .toEqual(['acp', '--dangerously-skip-permissions']);
+    // A config that still carries the flag but not the setting must not bypass the prompt.
+    expect(buildAgentArgs({ args: ['acp', '--stdio', '--dangerously-skip-permissions'], skipPermissions: false }))
+      .toEqual(['acp', '--stdio']);
   });
 });

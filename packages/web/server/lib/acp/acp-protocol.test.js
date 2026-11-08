@@ -6,8 +6,13 @@ import {
   AcpError,
   AcpProtocolVersionMismatchError,
   acpErrorKind,
+  buildPermissionCancelledOutcome,
+  buildPermissionSelectedOutcome,
   httpStatusForAcpError,
   isAcpCancelledError,
+  isConsentOptionKind,
+  isPermissionOptionKind,
+  normalizePermissionRequest,
   normalizePromptCapabilities,
   normalizeSessionUpdate,
   serializeAcpError,
@@ -166,5 +171,71 @@ describe('acp-protocol', () => {
     expect(normalizePromptCapabilities({
       promptCapabilities: { image: true, audio: false, embeddedContext: true },
     })).toEqual({ image: true, audio: false, embeddedContext: true });
+  });
+
+  describe('session/request_permission (spec: /protocol/v1/tool-calls)', () => {
+    const params = {
+      sessionId: 'sess_1',
+      toolCall: { toolCallId: 'call_1', title: 'Run tests', kind: 'execute', rawInput: { command: 'bun test' } },
+      options: [
+        { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once' },
+        { optionId: 'allow-always', name: 'Allow always', kind: 'allow_always' },
+        { optionId: 'reject-once', name: 'Reject', kind: 'reject_once' },
+        { optionId: 'reject-always', name: 'Always reject', kind: 'reject_always' },
+      ],
+    };
+
+    it('normalizes the request and marks only the allow kinds as consent', () => {
+      const normalized = normalizePermissionRequest(params);
+      expect(normalized.sessionId).toBe('sess_1');
+      expect(normalized.toolCall).toEqual(params.toolCall);
+      expect(normalized.options.map((option) => option.consent)).toEqual([true, true, false, false]);
+      expect(normalized.options.map((option) => option.kind)).toEqual([
+        'allow_once', 'allow_always', 'reject_once', 'reject_always',
+      ]);
+    });
+
+    it('never treats an unrecognized kind as consent', () => {
+      const normalized = normalizePermissionRequest({
+        sessionId: 'sess_1',
+        options: [
+          { optionId: 'maybe', name: 'Maybe', kind: 'allow_sometimes' },
+          { optionId: 'missing-kind', name: 'No kind' },
+        ],
+      });
+      expect(normalized.options).toEqual([
+        { optionId: 'maybe', name: 'Maybe', kind: 'allow_sometimes', consent: false },
+        { optionId: 'missing-kind', name: 'No kind', kind: 'unknown', consent: false },
+      ]);
+      expect(isConsentOptionKind('allow_sometimes')).toBe(false);
+      expect(isConsentOptionKind(undefined)).toBe(false);
+      expect(isConsentOptionKind('allow_once')).toBe(true);
+      expect(isPermissionOptionKind('reject_always')).toBe(true);
+      expect(isPermissionOptionKind('allow_sometimes')).toBe(false);
+    });
+
+    it('drops an option that cannot be selected instead of inventing an id', () => {
+      const normalized = normalizePermissionRequest({
+        sessionId: 'sess_1',
+        options: [{ name: 'No id', kind: 'allow_once' }, null, 'nonsense'],
+      });
+      expect(normalized.options).toEqual([]);
+    });
+
+    it('rejects params without a session id', () => {
+      expect(() => normalizePermissionRequest({ options: [] })).toThrow(AcpError);
+      expect(() => normalizePermissionRequest(null)).toThrow(AcpError);
+      try {
+        normalizePermissionRequest({ options: [] });
+      } catch (err) {
+        expect(err.code).toBe(ACP_ERROR.INVALID_PARAMS);
+      }
+    });
+
+    it('builds the exact outcome shapes the spec shows', () => {
+      expect(buildPermissionSelectedOutcome('allow-once'))
+        .toEqual({ outcome: { outcome: 'selected', optionId: 'allow-once' } });
+      expect(buildPermissionCancelledOutcome()).toEqual({ outcome: { outcome: 'cancelled' } });
+    });
   });
 });

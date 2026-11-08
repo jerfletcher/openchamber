@@ -3,6 +3,7 @@ import path from 'node:path';
 import EventEmitter from 'events';
 import { DatabaseSync } from 'node:sqlite';
 import { AcpRuntime, DEFAULT_ACP_AGENTS } from './acp-runtime.js';
+import { ACP_ERROR, AcpError } from './acp-protocol.js';
 
 const ACP_MODEL_NORM = {
   'gemini-3.8-flash': 'gemini-3.8-flash',
@@ -92,10 +93,139 @@ export class AcpSessionBridge extends EventEmitter {
     this.deletedHistoricalIds = new Set();
     this.sessions = new Map();
     this.activeTurns = new Map();
+    // requestId -> { sessionID, acpSessionId, request } for the prompts a user
+    // still has to answer. Kept here (not only in the runtime) so a reply can be
+    // bound to the OpenChamber session the UI knows.
+    this.pendingPermissions = new Map();
     this.eventHub = options.eventHub || null;
+    this.uiBroadcaster = typeof options.broadcastUiEvent === 'function' ? options.broadcastUiEvent : null;
     this._eventSeq = 0;
     this.loadFromDisk();
     this.loadDeletedHistorical();
+
+    // Agent-initiated permission requests are owned by the runtime's connection,
+    // but only the bridge knows which OpenChamber session (and directory) they
+    // belong to. Without this hop the prompt would have no surface at all.
+    if (typeof this.runtime.on === 'function') {
+      this.runtime.on('permission_request', (request) => this.handlePermissionRequest(request));
+      this.runtime.on('permission_settled', (settled) => this.handlePermissionSettled(settled));
+    }
+  }
+
+  /**
+   * A control-stream announcement (an OpenChamber-owned event, so it goes out on
+   * the SSE control stream the UI already reads — the OpenCode event proxy cannot
+   * carry it). The SSE/WS framing is the transport's business.
+   */
+  setUiBroadcaster(broadcast) {
+    this.uiBroadcaster = typeof broadcast === 'function' ? broadcast : null;
+  }
+
+  broadcastUiEvent(payload) {
+    if (!this.uiBroadcaster) return false;
+    try {
+      this.uiBroadcaster(payload);
+      return true;
+    } catch (err) {
+      console.warn('[acp-bridge] Failed to broadcast the permission event:', err.message);
+      return false;
+    }
+  }
+
+  /** The bridge session a runtime ACP session id maps to, if it is known yet. */
+  findSessionByAcpId(acpSessionId) {
+    for (const session of this.sessions.values()) {
+      if (session.acpSessionId === acpSessionId) return session;
+    }
+    return null;
+  }
+
+  /**
+   * Surface a pending `session/request_permission` to the UI. The agent is
+   * blocked on it, so every path out of here must either ask the user or answer
+   * `cancelled` — a request with no surface would hang the turn forever.
+   */
+  handlePermissionRequest(request) {
+    const session = this.findSessionByAcpId(request.sessionId);
+    if (!session) {
+      // Nobody can be asked (a headless/compat session). Cancelling is the only
+      // answer that neither approves on the user's behalf nor hangs the agent.
+      this.runtime.cancelPendingPermissions?.(request.sessionId);
+      return;
+    }
+    const directory = session.location?.directory || 'global';
+    this.pendingPermissions.set(request.requestId, {
+      sessionID: session.id,
+      acpSessionId: request.sessionId,
+      request,
+    });
+    this.broadcastUiEvent({
+      type: 'openchamber:acp-permission-asked',
+      properties: {
+        sessionID: session.id,
+        requestId: request.requestId,
+        directory: directory === 'global' ? null : directory,
+        title: session.title || '',
+        agent: session.agent || 'antigravity',
+        toolCall: request.toolCall,
+        options: request.options,
+      },
+    });
+  }
+
+  /** The request was answered (selected, cancelled, or the session is gone). */
+  handlePermissionSettled({ requestId, sessionId, outcome }) {
+    const entry = this.pendingPermissions.get(requestId);
+    if (!entry) return;
+    this.pendingPermissions.delete(requestId);
+    const directory = this.sessions.get(entry.sessionID)?.location?.directory || 'global';
+    this.broadcastUiEvent({
+      type: 'openchamber:acp-permission-settled',
+      properties: {
+        sessionID: entry.sessionID,
+        requestId,
+        acpSessionId: sessionId,
+        outcome: outcome?.outcome?.outcome || 'cancelled',
+        ...(outcome?.outcome?.optionId ? { optionId: outcome.outcome.optionId } : {}),
+      },
+    });
+  }
+
+  /** Pending permission requests of an OpenChamber session, for a fresh client. */
+  listPendingPermissions(sessionID) {
+    return Array.from(this.pendingPermissions.values())
+      .filter((entry) => entry.sessionID === sessionID)
+      .map((entry) => ({
+        requestId: entry.request.requestId,
+        sessionID: entry.sessionID,
+        title: this.sessions.get(entry.sessionID)?.title || '',
+        toolCall: entry.request.toolCall,
+        options: entry.request.options,
+        createdAt: entry.request.createdAt,
+      }));
+  }
+
+  /**
+   * Answer one pending request. `optionId` null/undefined means the user
+   * dismissed the prompt, which the agent must hear as `cancelled`.
+   */
+  respondToPermission(sessionID, requestId, optionId) {
+    const entry = this.pendingPermissions.get(requestId);
+    if (!entry || entry.sessionID !== sessionID) {
+      throw new AcpError({
+        code: ACP_ERROR.RESOURCE_NOT_FOUND,
+        message: `Permission request '${requestId}' is not pending for session '${sessionID}'`,
+        data: { sessionID, requestId },
+      });
+    }
+    return this.runtime.respondToPermission(entry.acpSessionId, requestId, optionId);
+  }
+
+  /** Answer every pending prompt of a session with `cancelled` (turn aborted/closed). */
+  cancelPermissions(sessionID) {
+    const acpSessionId = this.sessions.get(sessionID)?.acpSessionId;
+    if (!acpSessionId) return 0;
+    return this.runtime.cancelPendingPermissions?.(acpSessionId) || 0;
   }
 
   setEventHub(hub) {
@@ -1275,6 +1405,10 @@ export class AcpSessionBridge extends EventEmitter {
     } finally {
       this.activeTurns.delete(sessionId);
       if (session?.time) delete session.time.busy;
+      // A finished turn cannot still be waiting on the user: a prompt left over
+      // would show forever and then 404 when answered. `cancelled` is the only
+      // honest answer for a request nobody can act on any more.
+      this.cancelPermissions(sessionId);
       // Do NOT close acpSession! Keep ACP session alive across turns for conversation memory!
     }
   }

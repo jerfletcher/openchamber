@@ -98,3 +98,99 @@ describe('AcpConnection error mapping', () => {
     conn.close();
   });
 });
+
+/**
+ * An agent-initiated request is the half of ACP the client used to be deaf to:
+ * a JSON-RPC message with an id we never sent, plus a method. The fixture agent
+ * asks, then echoes whatever the client replied as a notification, so the test
+ * asserts the exact wire shape (same id, result vs error) without guessing.
+ */
+const askingAgent = (request) => `
+const readline = require('node:readline');
+const send = (message) => process.stdout.write(JSON.stringify(message) + '\\n');
+send(${JSON.stringify(request)});
+const rl = readline.createInterface({ input: process.stdin });
+rl.on('line', (line) => {
+  const msg = JSON.parse(line);
+  // The client's answer to our request: same id, no method.
+  if (msg.id === ${JSON.stringify(request.id)} && msg.method === undefined) {
+    send({ jsonrpc: '2.0', method: 'test/reply', params: msg });
+  }
+});
+`;
+
+describe('AcpConnection agent-initiated requests', () => {
+  const nextReply = (conn) => new Promise((resolve) => conn.once('test/reply', resolve));
+
+  it('dispatches a request to its registered handler and replies with the same id', async () => {
+    const conn = new AcpConnection(process.execPath, ['-e', askingAgent({
+      jsonrpc: '2.0',
+      id: 9,
+      method: 'session/request_permission',
+      params: { sessionId: 'sess_1', options: [] },
+    })]);
+    conn.registerRequestHandler('session/request_permission', (params, meta) => ({
+      outcome: { outcome: 'cancelled' },
+      echoedSession: params.sessionId,
+      echoedId: meta.id,
+    }));
+    conn.start();
+    const reply = await nextReply(conn);
+    expect(reply).toEqual({
+      jsonrpc: '2.0',
+      id: 9,
+      result: { outcome: { outcome: 'cancelled' }, echoedSession: 'sess_1', echoedId: 9 },
+    });
+    conn.close();
+  });
+
+  it('answers an unhandled request with -32601 instead of hanging', async () => {
+    const conn = new AcpConnection(process.execPath, ['-e', askingAgent({
+      jsonrpc: '2.0',
+      id: 12,
+      method: 'fs/read_text_file',
+      params: { path: '/etc/hosts' },
+    })]);
+    conn.start();
+    const reply = await nextReply(conn);
+    expect(reply.id).toBe(12);
+    expect(reply.result).toBeUndefined();
+    expect(reply.error.code).toBe(-32601);
+    conn.close();
+  });
+
+  it('turns a thrown AcpError into an error response with its own code', async () => {
+    const conn = new AcpConnection(process.execPath, ['-e', askingAgent({
+      jsonrpc: '2.0',
+      id: 3,
+      method: 'session/request_permission',
+      params: {},
+    })]);
+    conn.registerRequestHandler('session/request_permission', () => {
+      throw new AcpError({ code: -32602, message: 'sessionId is required' });
+    });
+    conn.start();
+    const reply = await nextReply(conn);
+    expect(reply.id).toBe(3);
+    expect(reply.error).toEqual({ code: -32602, message: 'sessionId is required' });
+    conn.close();
+  });
+
+  it('still treats an id-less method as a notification, never as a request', async () => {
+    const conn = new AcpConnection(process.execPath, ['-e', `
+      process.stdout.write(JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { update: { sessionUpdate: 'plan', entries: [] } } }) + '\\n');
+    `]);
+    const requests = [];
+    const notifications = [];
+    conn.on('request', (request) => requests.push(request));
+    conn.on('notification', (notification) => notifications.push(notification));
+    conn.start();
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(requests).toEqual([]);
+    expect(notifications).toEqual([{
+      method: 'session/update',
+      params: { update: { sessionUpdate: 'plan', entries: [] } },
+    }]);
+    conn.close();
+  });
+});
