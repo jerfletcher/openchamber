@@ -206,6 +206,83 @@
 
 }
 
+/* Terminal (TUI) theme on mobile.
+   The TUI block in design-system.css is deliberately flat — 0px radii, 1px
+   outlines, mono type and fixed code surfaces — and carries no breakpoints of
+   its own. This is its mobile companion at the app's existing 1024px
+   breakpoint: the same theme, with the same touch-target rhythm as the rest of
+   the mobile shell. It is gated on the same mobile-pointer signal as the rules
+   above, so the desktop theme (and the desktop shell in a narrow window) is
+   untouched; living at the end of this sheet lets it win the cascade against
+   the generic mobile token overrides. */
+@media (max-width: 1024px) {
+  /* The mobile shell's 16px sans body and 14px code step read a size wide in
+     the TUI's monospace. Step the TUI ladder down on a phone instead of
+     leaving its 13px code step fixed; clamp keeps the top of the range
+     identical to the desktop step once there is room for it. */
+  :root[data-theme-id="terminal-tui-dark"].mobile-pointer:not(.desktop-runtime),
+  :root[data-theme-id="terminal-tui-dark"].mobile-pointer:not(.desktop-runtime) * {
+    --text-markdown: clamp(0.8125rem, 0.7rem + 0.5vw, 0.875rem) !important;
+    --text-code: clamp(0.6875rem, 0.55rem + 0.5vw, 0.75rem) !important;
+    --text-meta: clamp(0.6875rem, 0.55rem + 0.5vw, 0.75rem) !important;
+    --text-micro: 0.6875rem !important;
+    --text-ui-header: 0.8125rem !important;
+    --text-ui-label: 0.75rem !important;
+  }
+
+  /* The generic rules above ask for 36px on every control. The TUI theme's
+     outlines are drawn as 1px borders, so keep border-box on these controls:
+     the hit area reaches 36px instead of 36px plus the frame. */
+  :root[data-theme-id="terminal-tui-dark"].mobile-pointer:not(.desktop-runtime)
+    button:not([role="radio"]):not([role="checkbox"]):not([role="switch"]),
+  :root[data-theme-id="terminal-tui-dark"].mobile-pointer:not(.desktop-runtime) .btn,
+  :root[data-theme-id="terminal-tui-dark"].mobile-pointer:not(.desktop-runtime) [role="button"],
+  :root[data-theme-id="terminal-tui-dark"].mobile-pointer:not(.desktop-runtime) input,
+  :root[data-theme-id="terminal-tui-dark"].mobile-pointer:not(.desktop-runtime) textarea,
+  :root[data-theme-id="terminal-tui-dark"].mobile-pointer:not(.desktop-runtime) select {
+    min-height: 36px;
+    box-sizing: border-box;
+  }
+
+  :root[data-theme-id="terminal-tui-dark"].mobile-pointer:not(.desktop-runtime)
+    button:not([role="radio"]):not([role="checkbox"]):not([role="switch"]),
+  :root[data-theme-id="terminal-tui-dark"].mobile-pointer:not(.desktop-runtime) .btn,
+  :root[data-theme-id="terminal-tui-dark"].mobile-pointer:not(.desktop-runtime) [role="button"] {
+    min-width: 36px;
+  }
+
+  /* Code surfaces keep the TUI's fixed canvas but stay inside the phone
+     column: the card body scrolls its own text rather than widening the
+     transcript. */
+  :root[data-theme-id="terminal-tui-dark"].mobile-pointer:not(.desktop-runtime) pre,
+  :root[data-theme-id="terminal-tui-dark"].mobile-pointer:not(.desktop-runtime) [data-code-block],
+  :root[data-theme-id="terminal-tui-dark"].mobile-pointer:not(.desktop-runtime) .markdown-content [data-streamdown="code-block-body"] {
+    max-inline-size: 100%;
+    min-inline-size: 0;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    overscroll-behavior-x: contain;
+  }
+
+  :root[data-theme-id="terminal-tui-dark"].mobile-pointer:not(.desktop-runtime) .markdown-content [data-streamdown="code-block-body"] pre,
+  :root[data-theme-id="terminal-tui-dark"].mobile-pointer:not(.desktop-runtime) .markdown-content [data-streamdown="code-block-body"] code {
+    min-inline-size: 0;
+    max-inline-size: 100%;
+  }
+
+  /* A 0.75rem gutter is a sixth of a 375px line; the phone transcript takes
+     half of it back and keeps the stepped-down body size. */
+  :root[data-theme-id="terminal-tui-dark"].mobile-pointer:not(.desktop-runtime) .chat-message-column,
+  :root[data-theme-id="terminal-tui-dark"].mobile-pointer:not(.desktop-runtime) .chat-input-column,
+  :root[data-theme-id="terminal-tui-dark"].mobile-pointer:not(.desktop-runtime) .chat-column {
+    padding-inline: 0.5rem !important;
+  }
+
+  :root[data-theme-id="terminal-tui-dark"].mobile-pointer:not(.desktop-runtime) .chat-message-column {
+    font-size: var(--text-markdown);
+  }
+}
+
 /* iOS PWA Adaptations */
 
 /* iOS safe area defaults (applies to PWA + Safari) */
