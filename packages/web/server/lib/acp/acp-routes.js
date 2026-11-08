@@ -1,5 +1,6 @@
 import express from 'express';
 import { AcpRuntime } from './acp-runtime.js';
+import { httpStatusForAcpError, serializeAcpError, isAcpCancelledError } from './acp-protocol.js';
 
 const ACP_MODEL_MAP = {
   'gemini-4-argon': 'gemini-4-argon-medium',
@@ -21,6 +22,17 @@ const ACP_MODEL_MAP = {
 
 export function registerAcpRoutes(app, options = {}) {
   const runtime = options.runtime || new AcpRuntime(options);
+
+  /**
+   * Surface an ACP failure with the status its spec code implies
+   * (spec: /protocol/v1/error). `error` stays a string for existing clients;
+   * `acpError` carries the typed code so a cancelled request (HTTP 499) is
+   * never reported as a generic server fault.
+   */
+  const sendAcpError = (res, err) => {
+    if (res.headersSent) return;
+    res.status(httpStatusForAcpError(err)).json(serializeAcpError(err));
+  };
 
   // Ensure JSON body parsing is enabled for all /api/acp endpoints
   app.use('/api/acp', express.json());
@@ -139,9 +151,9 @@ export function registerAcpRoutes(app, options = {}) {
     } catch (err) {
       if (session) runtime.closeSession(session.sessionId);
       if (!res.headersSent) {
-        res.status(500).json({ error: { message: err.message } });
+        sendAcpError(res, err);
       } else {
-        res.write(`data: ${JSON.stringify({ error: { message: err.message } })}\n\n`);
+        res.write(`data: ${JSON.stringify(serializeAcpError(err))}\n\n`);
         res.end();
       }
     }
@@ -153,7 +165,7 @@ export function registerAcpRoutes(app, options = {}) {
       const agents = runtime.getAvailableAgents();
       res.json({ agents });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      sendAcpError(res, err);
     }
   });
 
@@ -163,7 +175,7 @@ export function registerAcpRoutes(app, options = {}) {
       const sessions = runtime.listSessions();
       res.json({ sessions });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      sendAcpError(res, err);
     }
   });
 
@@ -174,7 +186,7 @@ export function registerAcpRoutes(app, options = {}) {
       if (!session) return res.status(404).json({ error: 'Session not found' });
       res.json(session);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      sendAcpError(res, err);
     }
   });
 
@@ -185,7 +197,7 @@ export function registerAcpRoutes(app, options = {}) {
       const session = await runtime.createSession({ agentId, cwd });
       res.json(session);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      sendAcpError(res, err);
     }
   });
 
@@ -200,7 +212,7 @@ export function registerAcpRoutes(app, options = {}) {
       const result = await runtime.setModel(sessionId, modelId);
       res.json(result);
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      sendAcpError(res, err);
     }
   });
 
@@ -218,7 +230,7 @@ export function registerAcpRoutes(app, options = {}) {
         const result = await runtime.prompt(sessionId, prompt);
         return res.json(result);
       } catch (err) {
-        return res.status(500).json({ error: err.message });
+        return sendAcpError(res, err);
       }
     }
 
@@ -240,13 +252,25 @@ export function registerAcpRoutes(app, options = {}) {
           sendSse('thought_delta', { thought: chunk.delta });
         } else if (chunk.type === 'tool') {
           sendSse('tool_call', { tool: chunk.tool });
+        } else if (chunk.type === 'tool_update') {
+          sendSse('tool_call_update', { update: chunk.update });
+        } else if (chunk.type === 'plan') {
+          // Ordered todo list; the agent sends the complete plan each time.
+          sendSse('plan', { entries: chunk.entries });
+        } else if (chunk.type === 'mode') {
+          sendSse('current_mode_update', { currentModeId: chunk.modeId });
+        } else if (chunk.type === 'config_options') {
+          sendSse('config_option_update', { configOptions: chunk.configOptions });
+        } else if (chunk.type === 'commands') {
+          sendSse('available_commands_update', { availableCommands: chunk.availableCommands });
         }
       });
 
       sendSse('done', result);
       res.end();
     } catch (err) {
-      sendSse('error', { message: err.message });
+      // Cancelled requests keep their own signal instead of reading as failures.
+      sendSse(isAcpCancelledError(err) ? 'cancelled' : 'error', serializeAcpError(err));
       res.end();
     }
   });
@@ -258,7 +282,7 @@ export function registerAcpRoutes(app, options = {}) {
       runtime.closeSession(sessionId);
       res.json({ success: true, sessionId });
     } catch (err) {
-      res.status(500).json({ error: err.message });
+      sendAcpError(res, err);
     }
   });
 

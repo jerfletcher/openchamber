@@ -20,24 +20,66 @@ const ACP_MODEL_NORM = {
 const ACP_VARIANTS = new Set(['low', 'medium', 'high']);
 const IDLE_PROCESS_TTL_MS = 20 * 60 * 1000;
 
-/** Translate OpenChamber prompt attachments into ACP content blocks (image / embedded resource). */
-export function buildPromptBlocks(text, files) {
+/**
+ * Translate OpenChamber prompt attachments into ACP content blocks.
+ *
+ * Capability gating (spec: /protocol/v1/content, /protocol/v1/initialization#prompt-capabilities):
+ *  - `text` and `resource_link` are baseline — every Agent MUST support them.
+ *  - `image`, `audio` and embedded `resource` blocks require the AGENT to have
+ *    advertised `promptCapabilities.{image,audio,embeddedContext}` in
+ *    `initialize`. Omitted capabilities are UNSUPPORTED, so an unadvertised
+ *    attachment is converted into a text reference (dropped honestly, with a
+ *    notice the caller can surface) instead of being sent and rejected.
+ *
+ * Returns `{ blocks, notices }` so callers can show what was degraded.
+ */
+export function buildPromptPayload(text, files, promptCapabilities = {}) {
+  const caps = promptCapabilities || {};
   const blocks = [{ type: 'text', text }];
+  const notices = [];
+
+  const degrade = (capability, kind, name) => {
+    const message = `[${kind} attachment "${name}" omitted: the agent did not advertise the "${capability}" prompt capability.]`;
+    notices.push({ capability, kind, name, message });
+    blocks.push({ type: 'text', text: message });
+  };
+
   for (const file of Array.isArray(files) ? files : []) {
     const url = typeof file?.url === 'string' ? file.url : (typeof file?.uri === 'string' ? file.uri : '');
     const m = /^data:([^;,]+);base64,(.*)$/s.exec(url);
     const mime = file?.mime || file?.mimeType || m?.[1] || '';
     const data = file?.data || m?.[2];
-    if (!data || !mime) continue;
+    const name = file?.filename || file?.name || 'file';
+
+    // No inline payload: a resource link is the baseline way to reference it.
+    if (!data) {
+      const uri = typeof file?.uri === 'string' ? file.uri : url;
+      if (uri && !uri.startsWith('data:')) blocks.push({ type: 'resource_link', uri, name });
+      continue;
+    }
+    if (!mime) continue;
+
     if (mime.startsWith('image/')) {
-      blocks.push({ type: 'image', data, mimeType: mime });
-    } else {
+      if (caps.image === true) blocks.push({ type: 'image', data, mimeType: mime });
+      else degrade('image', 'Image', name);
+    } else if (mime.startsWith('audio/')) {
+      if (caps.audio === true) blocks.push({ type: 'audio', data, mimeType: mime });
+      else degrade('audio', 'Audio', name);
+    } else if (caps.embeddedContext === true) {
       let body = '';
       try { body = Buffer.from(data, 'base64').toString('utf8'); } catch { continue; }
-      blocks.push({ type: 'resource', resource: { uri: `attachment://${file?.filename || file?.name || 'file'}`, mimeType: mime, text: body } });
+      blocks.push({ type: 'resource', resource: { uri: `attachment://${name}`, mimeType: mime, text: body } });
+    } else {
+      degrade('embeddedContext', 'File', name);
     }
   }
-  return blocks;
+
+  return { blocks, notices };
+}
+
+/** Backwards-compatible block-only view of {@link buildPromptPayload}. */
+export function buildPromptBlocks(text, files, promptCapabilities = {}) {
+  return buildPromptPayload(text, files, promptCapabilities).blocks;
 }
 
 export class AcpSessionBridge extends EventEmitter {
@@ -906,7 +948,18 @@ export class AcpSessionBridge extends EventEmitter {
       };
       abortCtrl.signal.addEventListener('abort', onAbort, { once: true });
 
-      const promptResult = await this.runtime.prompt(acpSession.sessionId, buildPromptBlocks(text, files), (chunk) => {
+      // Only send content blocks the agent advertised it can accept.
+      const { blocks: promptBlocks, notices } = buildPromptPayload(
+        text,
+        files,
+        acpSession.promptCapabilities || {},
+      );
+      if (notices.length > 0) {
+        assistantMsg.acpNotices = notices;
+        for (const notice of notices) this.emit('notice', { sessionID: sessionId, ...notice });
+      }
+
+      const promptResult = await this.runtime.prompt(acpSession.sessionId, promptBlocks, (chunk) => {
         if (abortCtrl.signal.aborted) return;
 
         if (chunk.type === 'thought' && chunk.delta) {

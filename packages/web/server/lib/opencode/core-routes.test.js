@@ -4,6 +4,8 @@ import request from 'supertest';
 import { createTunnelAuth } from './tunnel-auth.js';
 import { registerAuthAndAccessRoutes, registerCommonRequestMiddleware, registerHttpResponseDiagnostics, registerServerStatusRoutes } from './core-routes.js';
 import { createServerDiagnosticJournal } from '../diagnostics/server-journal.js';
+import { registerAcpRoutes } from '../acp/acp-routes.js';
+import { AcpRuntime } from '../acp/acp-runtime.js';
 
 describe('core-routes', () => {
   it('captures the final response status, including missing routes and parser errors, without request data', async () => {
@@ -413,6 +415,56 @@ describe('core-routes', () => {
     await request(app).get('/api/mcp/oauth/docs/callback/extra').expect(401);
     await request(app).post('/api/mcp/oauth/docs/callback').expect(401);
     expect(requireAuth).toHaveBeenCalledTimes(9);
+  });
+
+  it('requires the UI session for the ACP bridge surface, including /api/acp/v1', async () => {
+    const app = express();
+    let authenticated = false;
+    const requireAuth = vi.fn((_req, res, next) => (
+      authenticated ? next() : res.status(401).json({ error: 'Unauthorized' })
+    ));
+    registerAuthAndAccessRoutes(app, {
+      express,
+      tunnelAuthController: {
+        classifyRequestScope: () => 'local',
+        requireTunnelSession: vi.fn(),
+        getTunnelSessionFromRequest: vi.fn(),
+        clearTunnelSessionCookie: vi.fn(),
+        exchangeBootstrapToken: vi.fn(),
+      },
+      uiAuthController: {
+        requireAuth,
+        handleSessionStatus: vi.fn(),
+        handleSessionCreate: vi.fn(),
+        handlePasskeyStatus: vi.fn(),
+        handlePasskeyAuthenticationOptions: vi.fn(),
+        handlePasskeyAuthenticationVerify: vi.fn(),
+        handlePasskeyRegistrationOptions: vi.fn(),
+        handlePasskeyRegistrationVerify: vi.fn(),
+        handlePasskeyList: vi.fn(),
+        handlePasskeyRevoke: vi.fn(),
+        handleResetAuth: vi.fn(),
+      },
+      readSettingsFromDiskMigrated: vi.fn(async () => ({})),
+      normalizeTunnelSessionTtlMs: vi.fn(),
+    });
+    const runtime = new AcpRuntime({ idleTtlMs: 0 });
+    registerAcpRoutes(app, { runtime });
+
+    // The OpenAI-compatible surface can spawn agent processes, so it is no
+    // longer exempt from the session guard.
+    await request(app).get('/api/acp/v1/models').expect(401);
+    await request(app)
+      .post('/api/acp/v1/chat/completions')
+      .send({ messages: [{ role: 'user', content: 'hi' }] })
+      .expect(401);
+    await request(app).get('/api/acp/agents').expect(401);
+    expect(requireAuth).toHaveBeenCalledTimes(3);
+
+    authenticated = true;
+    const models = await request(app).get('/api/acp/v1/models').expect(200);
+    expect(models.body.object).toBe('list');
+    expect(requireAuth).toHaveBeenCalledTimes(4);
   });
 
   it('should probe loopback preview URLs and return ok: true for status codes 200-599', async () => {

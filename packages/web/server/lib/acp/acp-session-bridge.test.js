@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'bun:test';
-import { AcpSessionBridge, buildPromptBlocks } from './acp-session-bridge.js';
+import { AcpSessionBridge, buildPromptBlocks, buildPromptPayload } from './acp-session-bridge.js';
 import EventEmitter from 'events';
 
 class MockRuntime extends EventEmitter {
@@ -297,14 +297,55 @@ describe('AcpSessionBridge', () => {
     expect(mockRuntime.lastResume).toBe('conv-123');
   });
 
-  it('builds ACP blocks for image and text attachments', () => {
+  it('builds ACP blocks for image and text attachments when the agent advertises them', () => {
     const blocks = buildPromptBlocks('see', [
       { mime: 'image/png', url: 'data:image/png;base64,AAAA' },
       { mime: 'text/plain', filename: 'a.txt', url: `data:text/plain;base64,${Buffer.from('hello').toString('base64')}` },
-    ]);
+    ], { image: true, embeddedContext: true });
     expect(blocks[0]).toEqual({ type: 'text', text: 'see' });
     expect(blocks[1]).toEqual({ type: 'image', data: 'AAAA', mimeType: 'image/png' });
     expect(blocks[2].resource.text).toBe('hello');
+  });
+
+  it('never sends an image block to an agent that did not advertise image support', () => {
+    // ACP treats an omitted prompt capability as UNSUPPORTED, so this agent may
+    // only receive text and resource_link blocks.
+    const { blocks, notices } = buildPromptPayload('see', [
+      { mime: 'image/png', filename: 'shot.png', url: 'data:image/png;base64,AAAA' },
+    ], {});
+    expect(blocks).toEqual([
+      { type: 'text', text: 'see' },
+      { type: 'text', text: '[Image attachment "shot.png" omitted: the agent did not advertise the "image" prompt capability.]' },
+    ]);
+    expect(blocks.some((block) => block.type === 'image')).toBe(false);
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({ capability: 'image', name: 'shot.png' });
+  });
+
+  it('degrades an embedded resource to a text reference without embeddedContext', () => {
+    const { blocks, notices } = buildPromptPayload('see', [
+      { mime: 'text/plain', filename: 'a.txt', url: `data:text/plain;base64,${Buffer.from('hello').toString('base64')}` },
+    ], { image: true });
+    expect(blocks.some((block) => block.type === 'resource')).toBe(false);
+    expect(notices[0]).toMatchObject({ capability: 'embeddedContext', kind: 'File' });
+    expect(blocks[1].text).toContain('"embeddedContext" prompt capability');
+  });
+
+  it('gates audio on its own capability and keeps resource_link as the baseline', () => {
+    const withoutAudio = buildPromptPayload('see', [
+      { mime: 'audio/wav', filename: 'clip.wav', url: 'data:audio/wav;base64,AAAA' },
+      { uri: 'file:///repo/notes.md', name: 'notes.md' },
+    ], { image: true, embeddedContext: true });
+    expect(withoutAudio.blocks.some((block) => block.type === 'audio')).toBe(false);
+    expect(withoutAudio.notices[0]).toMatchObject({ capability: 'audio' });
+    // URL-only attachments need no capability at all.
+    expect(withoutAudio.blocks).toContainEqual({ type: 'resource_link', uri: 'file:///repo/notes.md', name: 'notes.md' });
+
+    const withAudio = buildPromptPayload('see', [
+      { mime: 'audio/wav', filename: 'clip.wav', url: 'data:audio/wav;base64,AAAA' },
+    ], { audio: true });
+    expect(withAudio.blocks).toContainEqual({ type: 'audio', data: 'AAAA', mimeType: 'audio/wav' });
+    expect(withAudio.notices).toHaveLength(0);
   });
 
   it('supports general multi-agent ACP configurations (e.g. claude-code) and catalog augmentation', async () => {
