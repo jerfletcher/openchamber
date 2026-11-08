@@ -1183,7 +1183,10 @@ html[data-glass-redraw-guard] body::before {
   }
 }
 
-/* Terminal (TUI) theme: sharp, monospace, flat */
+/* Terminal (TUI) theme: sharp, monospace, flat.
+   Its mobile companion (touch targets, stepped-down type, scrollable code
+   surfaces and chat gutters at the 1024px breakpoint) lives at the end of
+   mobile.css, which loads after this sheet so it wins the cascade. */
 :root[data-theme-id="terminal-tui-dark"] {
   --radius: 0px !important;
   --radius-sm: 0px !important;
