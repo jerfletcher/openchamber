@@ -1033,6 +1033,13 @@ interface UIStore {
   tiledSwarmViewEnabled: boolean;
   tiledSwarmPinnedId: string | null;
   tiledSwarmLayout: 'auto' | 'grid-4' | 'columns-3' | 'split-2';
+  /**
+   * Sessions tiled by the generic deck. Empty means "not tiled": the chat
+   * falls back to the swarm preset (when its toggle is on) or the single chat,
+   * so an untouched default changes nothing. A future session picker writes
+   * here; nothing in the UI sets it yet.
+   */
+  tiledSessionIds: string[];
   expandCommandsByDefault: boolean;
   expandSubagentsByDefault: boolean;
   expandSearchesByDefault: boolean;
@@ -1375,6 +1382,8 @@ interface UIStore {
   setTiledSwarmPinnedId: (id: string | null) => void;
   openTiledSwarmWithPin: (id: string) => void;
   setTiledSwarmLayout: (value: 'auto' | 'grid-4' | 'columns-3' | 'split-2') => void;
+  /** Replace the generic tiled deck's session list. An empty list stops tiling. */
+  setTiledSessionIds: (ids: string[]) => void;
   toggleTiledSwarmView: () => void;
   setExpandCommandsByDefault: (value: boolean) => void;
   setExpandSubagentsByDefault: (value: boolean) => void;
@@ -1651,6 +1660,7 @@ export const useUIStore = create<UIStore>()(
         tiledSwarmViewEnabled: false,
         tiledSwarmPinnedId: null,
         tiledSwarmLayout: 'grid-4',
+        tiledSessionIds: [],
         expandCommandsByDefault: true,
         expandSubagentsByDefault: false,
         expandSearchesByDefault: false,
@@ -2815,6 +2825,12 @@ export const useUIStore = create<UIStore>()(
           set({ tiledSwarmLayout: value });
         },
 
+        setTiledSessionIds: (ids) => {
+          // Stale or duplicate ids would render duplicate panes and duplicate
+          // React keys, so the setter normalises the list once, here.
+          set({ tiledSessionIds: Array.from(new Set(ids.filter((id) => typeof id === 'string' && id.trim() !== ''))) });
+        },
+
         toggleTiledSwarmView: () => {
           set((state) => ({ tiledSwarmViewEnabled: !state.tiledSwarmViewEnabled }));
         },
@@ -3965,6 +3981,7 @@ export const useUIStore = create<UIStore>()(
           activityRenderMode: state.activityRenderMode,
           tiledSwarmViewEnabled: state.tiledSwarmViewEnabled,
           tiledSwarmLayout: state.tiledSwarmLayout,
+          tiledSessionIds: state.tiledSessionIds,
           expandCommandsByDefault: state.expandCommandsByDefault,
           expandSubagentsByDefault: state.expandSubagentsByDefault,
           expandSearchesByDefault: state.expandSearchesByDefault,

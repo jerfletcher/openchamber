@@ -3,7 +3,6 @@ import { ChatView } from '@/components/views/ChatView';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { abortCurrentOperation } from '@/sync/session-actions';
 import { useAllLiveSessions, useAllSessionStatuses, useDirectorySync, useSessionMessages } from '@/sync/sync-context';
-import { isWorkflowAgentSession } from '@/lib/sessionWorkflowMetadata';
 import { useGlobalSessionStatusStore } from '@/sync/global-session-status';
 import { useSessionWorkflowRuns } from '@/lib/workflows/store';
 import { useContextWindowLimits } from '@/hooks/useContextWindowLimits';
@@ -21,6 +20,9 @@ import { SessionActivityDuration } from '@/components/session/SessionActivityDur
 import { getProviderModelDisplayName } from '@/lib/modelDisplay';
 import { useConfigStore } from '@/stores/useConfigStore';
 import type { Session as SessionInfo } from '@/lib/opencode/model';
+import { TiledSessionsView } from '@/components/chat/swarm/TiledSessionsView';
+import { resolveTiledLayout } from '@/components/chat/swarm/tiledLayout';
+import { collectWorkflowAgentIds, computeSwarmSessions } from '@/components/chat/swarm/swarmSessionIds';
 
 type SwarmRow = {
   child: SessionInfo;
@@ -245,6 +247,24 @@ const SubagentSlot: React.FC<SubagentSlotProps> = ({ row, rows, slotNumber, dire
   );
 };
 
+/**
+ * The deck's first cell: the session that owns the swarm, live and editable
+ * (unlike the secondary panes, which are read-only mirrors).
+ */
+const SwarmPrimaryPane: React.FC<{ active: boolean }> = ({ active }) => (
+  <div className="relative flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-primary/30 bg-background shadow-xs">
+    <div className="flex h-8 shrink-0 select-none items-center justify-between border-b border-border/60 bg-primary/5 px-2.5">
+      <div className="flex items-center gap-2">
+        <span className="size-2 rounded-full bg-primary" />
+        <span className="font-mono text-xs font-bold text-primary">Primary Agent (Lead)</span>
+      </div>
+    </div>
+    <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
+      <ChatView active={active} />
+    </div>
+  </div>
+);
+
 export const TiledSwarmView: React.FC<{ active?: boolean }> = ({ active = true }) => {
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
   const setCurrentSession = useSessionUIStore((state) => state.setCurrentSession);
@@ -261,14 +281,11 @@ export const TiledSwarmView: React.FC<{ active?: boolean }> = ({ active = true }
   const setSidebarOpen = useUIStore((state) => state.setSidebarOpen);
 
   const workflowRuns = useSessionWorkflowRuns(currentSessionId);
-  const workflowAgentIds = React.useMemo(
-    () => new Set(workflowRuns.flatMap((run) => run.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])))),
-    [workflowRuns],
-  );
+  const workflowAgentIds = React.useMemo(() => collectWorkflowAgentIds(workflowRuns), [workflowRuns]);
+  // The swarm preset's id rule: direct children of the active session, workflow
+  // agents excluded. The generic view knows nothing about any of this.
   const children = React.useMemo(
-    () => (currentSessionId ? liveSessions.filter((candidate) => (
-      candidate.parentID === currentSessionId && !workflowAgentIds.has(candidate.id) && !isWorkflowAgentSession(candidate)
-    )) : []),
+    () => computeSwarmSessions(liveSessions, currentSessionId, workflowAgentIds),
     [liveSessions, currentSessionId, workflowAgentIds],
   );
 
@@ -314,18 +331,10 @@ export const TiledSwarmView: React.FC<{ active?: boolean }> = ({ active = true }
     [effectiveDirectory, setCurrentSession],
   );
 
-  const effectiveLayout = tiledLayout === 'auto'
-    ? (activeCount <= 1 ? 'split-2' : activeCount === 2 ? 'columns-3' : 'grid-4')
-    : tiledLayout;
-
-  const gridClass =
-    effectiveLayout === 'columns-3'
-      ? 'grid min-h-0 flex-1 w-full grid-cols-1 md:grid-cols-3 gap-1.5'
-      : effectiveLayout === 'split-2'
-        ? 'grid min-h-0 flex-1 w-full grid-cols-1 md:grid-cols-2 gap-1.5'
-        : 'grid min-h-0 flex-1 w-full grid-cols-1 auto-rows-fr md:grid-cols-2 md:grid-rows-[minmax(0,1fr)_minmax(0,1fr)] gap-1.5';
-
-  const maxSlots = effectiveLayout === 'split-2' ? 1 : effectiveLayout === 'columns-3' ? 2 : 3;
+  // The preset's slot budget: swarm has always shown 3 secondary panes in the
+  // 2x2 grid (2 in 3-col, 1 in 1:1), so the cap comes from the shared layout
+  // resolver rather than the generic view.
+  const { slotCap: maxSlots } = resolveTiledLayout(tiledLayout, activeCount);
 
   // A pinned subagent takes the first slot; the rest fill by priority rank.
   const visible = React.useMemo(() => {
@@ -333,6 +342,15 @@ export const TiledSwarmView: React.FC<{ active?: boolean }> = ({ active = true }
     const rest = rows.filter((row) => row !== pinned);
     return (pinned ? [pinned, ...rest] : rest).slice(0, maxSlots);
   }, [rows, pinnedId, maxSlots]);
+
+  const rowsById = React.useMemo(() => new Map(rows.map((row) => [row.child.id, row])), [rows]);
+
+  // The lead session plus the visible subagents, in the exact order the deck
+  // renders them. The generic view receives this list and only this list.
+  const sessionIds = React.useMemo(
+    () => (currentSessionId ? [currentSessionId, ...visible.map((row) => row.child.id)] : []),
+    [currentSessionId, visible],
+  );
 
   const countLabel = rows.length === 0
     ? '0 active agents'
@@ -399,35 +417,43 @@ export const TiledSwarmView: React.FC<{ active?: boolean }> = ({ active = true }
         </div>
       </div>
 
-      <div className={gridClass}>
-        <div className="relative flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-primary/30 bg-background shadow-xs">
-          <div className="flex h-8 shrink-0 select-none items-center justify-between border-b border-border/60 bg-primary/5 px-2.5">
-            <div className="flex items-center gap-2">
-              <span className="size-2 rounded-full bg-primary" />
-              <span className="font-mono text-xs font-bold text-primary">Primary Agent (Lead)</span>
-            </div>
-          </div>
-          <div className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
-            <ChatView active={active} />
-          </div>
-        </div>
-
-        {Array.from({ length: maxSlots }).map((_, index) => (
-          <SubagentSlot
-            key={visible[index]?.child.id ?? `slot-${index + 1}`}
-            row={visible[index]}
-            rows={rows}
-            slotNumber={index + 1}
-            directory={effectiveDirectory || null}
-            sessionId={currentSessionId}
-            fullStats={index === visible.length}
-            showSwitcher={rows.length > maxSlots && index === 0}
-            pinnedId={pinnedId}
-            onPin={setPinnedId}
-            onSelectSession={handleSelectSession}
-          />
-        ))}
-      </div>
+      <TiledSessionsView
+        sessionIds={sessionIds}
+        layout={tiledLayout}
+        activeCount={activeCount}
+        // The lead pane is a grid cell too: the old deck drew the primary
+        // panel plus `maxSlots` secondary panes (4 cells in 2x2).
+        maxSlots={maxSlots + 1}
+        renderPane={({ index, sessionId }) => {
+          if (index === 0) return <SwarmPrimaryPane active={active} />;
+          return (
+            <SubagentSlot
+              row={rowsById.get(sessionId)}
+              rows={rows}
+              slotNumber={index}
+              directory={effectiveDirectory || null}
+              sessionId={currentSessionId}
+              fullStats={index === visible.length + 1}
+              showSwitcher={rows.length > maxSlots && index === 1}
+              pinnedId={pinnedId}
+              onPin={setPinnedId}
+              onSelectSession={handleSelectSession}
+            />
+          );
+        }}
+        renderEmptySlot={({ index }) => (index === 0
+          ? <SwarmPrimaryPane active={active} />
+          : (
+            <SwarmStatsCard
+              slotNumber={index}
+              sessionId={currentSessionId}
+              directory={effectiveDirectory || null}
+              rows={rows}
+              full={index === visible.length + 1}
+              onPin={setPinnedId}
+            />
+          ))}
+      />
     </div>
   );
 };

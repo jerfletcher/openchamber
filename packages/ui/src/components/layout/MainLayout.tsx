@@ -36,6 +36,8 @@ import { usePaletteShortcuts } from '@/hooks/usePaletteShortcuts';
 import { useSessionListSync } from '@/components/session/sidebar/list/useSessionListSync';
 import { setChatCovered } from './rightSlot';
 import { TiledSwarmView } from '@/components/chat/swarm/TiledSwarmView';
+import { TiledSessionsView } from '@/components/chat/swarm/TiledSessionsView';
+import { resolveTiledLayout } from '@/components/chat/swarm/tiledLayout';
 
 import { ChatView } from '@/components/views/ChatView';
 import { DiagnosticDialogAvailableContext } from '@/lib/diagnostics/dialog-availability';
@@ -114,6 +116,13 @@ export const MainLayout: React.FC = () => {
     // The grant dialog of isolated spaces; the main layout is never VS Code's (decision 16).
     const isolatedSpacesEnabled = useUIStore((state) => state.isolatedSpacesEnabled);
     const isTiledSwarmActive = useUIStore((state) => state.tiledSwarmViewEnabled);
+    // A non-empty arbitrary list wins over the swarm preset: it is the generic
+    // deck, and it is the place a future session picker writes. Empty (the
+    // default) leaves every existing branch exactly as it was.
+    const tiledSessionIds = useUIStore((state) => state.tiledSessionIds);
+    const tiledSwarmLayout = useUIStore((state) => state.tiledSwarmLayout);
+    const isTiledSessionsActive = tiledSessionIds.length > 0;
+    const tiledSessionSlots = resolveTiledLayout(tiledSwarmLayout, tiledSessionIds.length).slotCap + 1;
     const setIsMobile = useUIStore((state) => state.setIsMobile);
     const isSettingsDialogOpen = useUIStore((state) => state.isSettingsDialogOpen);
     const setSettingsDialogOpen = useUIStore((state) => state.setSettingsDialogOpen);
@@ -231,7 +240,14 @@ export const MainLayout: React.FC = () => {
                                         <main className="min-h-0 flex-1 overflow-hidden bg-background relative" data-page-scroll-lock="true">
                                             <div className={cn('absolute inset-0', isSurfacePageOpen && 'invisible')}>
                                                 <ErrorBoundary>
-                                                    {isTiledSwarmActive ? (
+                                                    {isTiledSessionsActive ? (
+                                                        <TiledSessionsView
+                                                            sessionIds={tiledSessionIds}
+                                                            layout={tiledSwarmLayout}
+                                                            activeCount={tiledSessionIds.length}
+                                                            maxSlots={tiledSessionSlots}
+                                                        />
+                                                    ) : isTiledSwarmActive ? (
                                                         <TiledSwarmView active={!isSettingsDialogOpen && !isSurfacePageOpen} />
                                                     ) : (
                                                         <ChatView active={!isSettingsDialogOpen && !isSurfacePageOpen} />

@@ -900,6 +900,10 @@
       "scope": "device",
       "local": true
     },
+    "tiledSessionIds": {
+      "scope": "device",
+      "local": true
+    },
     "isSidebarOpen": {
       "scope": "device",
       "local": true
