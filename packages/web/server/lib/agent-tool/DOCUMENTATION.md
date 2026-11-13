@@ -77,9 +77,21 @@ the user can want independently:
   the control service refuses the action when it is not. Never behind Code
   Mode, like render: the chat draws the images in place of the call's row from
   its stored result, which an `execute` script would hide.
-- `openchamber_secret` — `secret.request`, a card in the chat where the user
-  types a secret the agent asked for (`label`, `reason`, optional
-  `placeholder`). Every call waits, with the same plugin machinery as a page
+- `openchamber_secret` — `secret.run`, `secret.request` and `secret.forget`.
+  `secret.run` asks OpenCode's shell permission for its command line in the
+  plugin, before the call reaches the server: `ctx.permission.assert` with
+  action `shell`, the line `secretRunCommandLine` draws as the resource and
+  `<program> *` as the pattern to save, so the session's shell rules apply as
+  to any command and a deny never shows a card. The plugin embeds the server's
+  `secretRunCommand` and `secretRunCommandLine` with `toString()`, so the line
+  the user approves is the one the card shows; a malformed call fails before
+  anything is asked. The refusal `assert` throws is rethrown, since a plain
+  rejection ends the agent's step. Only a call from this tool reaches the
+  server as `secretRunAuthorized`, and secret actions use the session OpenCode
+  reported, so no payload field can reach another session's remembered values.
+  `secret.request` is a
+  card where the user types one secret the agent asked for (`label`, `reason`,
+  optional `placeholder`). Both wait, with the same plugin machinery as a page
   with `awaitAnswer` (call id, `timeout: false`, the `session.prompt` hook
   that ends the wait when the user writes in the chat, and the inbox check
   for a message sent before the card appeared). The value never
@@ -220,13 +232,16 @@ default and when to set it. Field names and JSON types carry the rest.
   `html`, is that input's description.
 - The tool exposes one shared parameter object rather than repeating parameters
   in a large per-action union.
-- The action schema carries `oneOf` and no `enum`. A node combining `enum` and
+- The action schema carries `enum` and no `oneOf`. A node combining `enum` and
   `oneOf` is valid JSON Schema, but some OpenAI-compatible gateways reject it
-  and answer with an empty completion instead of an error.
+  and answer with an empty completion instead of an error. Using `enum` alone
+  avoids the gateway collision while preventing OpenAPI 3.0 / Gemini schema
+  normalizers from collapsing `oneOf` to its first element. Action descriptions
+  are folded into the property description.
 - A tool with a single action (render, notify) declares `action` as a plain,
   optional string and always runs its one action. A weaker model put the whole
   render call into `action` as a JSON string, title included, with the html
-  beside it; the strict `oneOf` refused that before the tool ran, and every
+  beside it; the strict action list refused that before the tool ran, and every
   retry sent the whole page again. Such a string is revived, and its fields
   fill only what the call did not already carry.
 - Obvious fields rely on their names and JSON types. Parameter descriptions are

@@ -8,6 +8,7 @@ import type { Session } from '@/lib/opencode/model';
 const EMPTY_FOLDERS: readonly never[] = [];
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Button } from '@/components/ui/button';
+import { useOpenCodeTrustPausedDirectory, useResumeOpenCodeFolder } from '@/components/projects/useOpenCodeTrustPause';
 import { Icon } from "@/components/icon/Icon";
 import { Spinner } from "@/components/ui/spinner";
 import { FileTreeChevron } from '@/components/views/files/FileTreeRowParts';
@@ -19,8 +20,8 @@ import { useConfigStore } from '@/stores/useConfigStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { SessionFolderItem } from '../../SessionFolderItem';
 import { DroppableFolderWrapper, SessionFolderDndScope } from '../folders/sessionFolderDnd';
-import { getAcpSessionFolderMeta, getAutoAgentFolderAgentId, type AcpAgentFolderMeta, type GroupSearchData, type SessionGroup, type SessionNode } from '../types';
-import { isBranchDifferentFromLabel, normalizePath, renderHighlightedText } from '../utils';
+import { getAcpSessionFolderMeta, getAutoAgentFolderAgentId, type AcpAgentFolderMeta, type SessionGroup, type SessionNode } from '../types';
+import { isBranchDifferentFromLabel, normalizePath } from '../utils';
 import { compareSessionsByLifecycleOrder, EMPTY_SESSION_ORDER_RANKS } from '@/sync/session-ordering';
 import {
   collectSubtreeContainingId,
@@ -64,9 +65,6 @@ export type SessionGroupSectionProps = {
   renderBody?: boolean;
   /** Nothing to list under the header: it shows no chevron and does not toggle. */
   isEmpty?: boolean;
-  hasSessionSearchQuery: boolean;
-  normalizedSessionSearchQuery: string;
-  groupSearchDataByGroup: WeakMap<SessionGroup, GroupSearchData>;
   visibleSessionCount?: number;
   sessionBatchSize?: number;
   collapsedGroups: Set<string>;
@@ -105,7 +103,6 @@ export type SessionGroupSectionProps = {
   | 'setOpenSidebarMenuKey'
   | 'allowReselect'
   | 'onSessionSelected'
-  | 'resetSessionSearch'
   | 'deleteSessionConfirm'
   | 'setDeleteSessionConfirm'
   | 'startFolderRename'
@@ -173,7 +170,6 @@ const areGroupPropsEqual = (prev: SessionGroupSectionProps, next: SessionGroupSe
   if (prev.projectId !== next.projectId) return false;
   if (prev.hideGroupLabel !== next.hideGroupLabel) return false;
   if (prev.compactBodyPadding !== next.compactBodyPadding) return false;
-  if (prev.groupSearchDataByGroup !== next.groupSearchDataByGroup) return false;
   if (prev.visibleSessionCount !== next.visibleSessionCount) return false;
   if (prev.sessionBatchSize !== next.sessionBatchSize) return false;
 
@@ -220,9 +216,7 @@ const areGroupPropsEqual = (prev: SessionGroupSectionProps, next: SessionGroupSe
   // to reference equality (the cheap path) and only re-render when the
   // parent actually swapped something.
   return (
-    prev.hasSessionSearchQuery === next.hasSessionSearchQuery
-    && prev.normalizedSessionSearchQuery === next.normalizedSessionSearchQuery
-    && prev.hideDirectoryControls === next.hideDirectoryControls
+    prev.hideDirectoryControls === next.hideDirectoryControls
     && prev.showMoreGroupSessions === next.showMoreGroupSessions
     && prev.resetGroupSessionLimit === next.resetGroupSessionLimit
     && prev.mobileVariant === next.mobileVariant
@@ -239,7 +233,6 @@ const areGroupPropsEqual = (prev: SessionGroupSectionProps, next: SessionGroupSe
     && prev.setOpenSidebarMenuKey === next.setOpenSidebarMenuKey
     && prev.allowReselect === next.allowReselect
     && prev.onSessionSelected === next.onSessionSelected
-    && prev.resetSessionSearch === next.resetSessionSearch
     && prev.deleteSessionConfirm === next.deleteSessionConfirm
     && prev.setDeleteSessionConfirm === next.setDeleteSessionConfirm
     && prev.startFolderRename === next.startFolderRename
@@ -259,9 +252,6 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
     hideGroupLabel,
     renderBody = true,
     isEmpty = false,
-    hasSessionSearchQuery,
-    normalizedSessionSearchQuery,
-    groupSearchDataByGroup,
     visibleSessionCount,
     sessionBatchSize,
     collapsedGroups,
@@ -311,8 +301,7 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
     return compareSessionsByLifecycleOrder(a.session, b.session, pinnedSessionIds, EMPTY_SESSION_ORDER_RANKS);
   }, [pinnedSessionIds, sessionOrderIndex]);
 
-  const searchData = hasSessionSearchQuery ? groupSearchDataByGroup.get(group) : null;
-  const isCollapsed = hasSessionSearchQuery ? false : collapsedGroups.has(groupKey);
+  const isCollapsed = collapsedGroups.has(groupKey);
   const childStores = useChildStoreManager();
   const bootstrapDirectories = React.useMemo(() => {
     const directories = group.folderScopes?.map((scope) => normalizePath(scope.directory))
@@ -346,6 +335,8 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
       : childStores.getInitializationFailure(failedBootstrapDirectory)
     : undefined;
   const canGrantBootstrapAccess = bootstrapFailure === 'os-permission' && canRequestNativeDirectoryAccess();
+  const trustPausedDirectory = useOpenCodeTrustPausedDirectory(bootstrapDirectories);
+  const resumeFolder = useResumeOpenCodeFolder();
   const [isRequestingBootstrapAccess, setIsRequestingBootstrapAccess] = React.useState(false);
 
   const retryFailedBootstrap = React.useCallback(() => {
@@ -370,12 +361,9 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
   }, [canGrantBootstrapAccess, failedBootstrapDirectory, isRequestingBootstrapAccess, retryFailedBootstrap]);
   const maxVisible = sessionBatchSize ?? (hideDirectoryControls ? 10 : 7);
   const nonArchivedVisibleCount = Math.max(maxVisible, visibleSessionCount ?? maxVisible);
-  const groupMatchesSearch = hasSessionSearchQuery ? searchData?.groupMatches === true : false;
-  const shouldFilterGroupContents = hasSessionSearchQuery;
   const sourceGroupNodes = React.useMemo(
-    () => [...(shouldFilterGroupContents ? (searchData?.filteredNodes ?? []) : group.sessions)]
-      .sort(compareSessionNodes),
-    [compareSessionNodes, group.sessions, searchData?.filteredNodes, shouldFilterGroupContents],
+    () => [...group.sessions].sort(compareSessionNodes),
+    [compareSessionNodes, group.sessions],
   );
   const folderScopeKey = group.folderScopeKey ?? normalizePath(group.directory ?? null);
   const folderOwnerKey = getSessionFolderOwnerKey(projectId, group.directory);
@@ -476,11 +464,11 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
       })),
       {
         archivedBucket: group.isArchivedBucket === true,
-        searchQuery: hasSessionSearchQuery ? normalizedSessionSearchQuery : '',
+        searchQuery: '',
       },
     );
     return allFoldersForGroupBase.filter(({ folder }) => visibleFolderIds.has(folder.id));
-  }, [allFoldersForGroupBase, group.isArchivedBucket, hasSessionSearchQuery, normalizedSessionSearchQuery]);
+  }, [allFoldersForGroupBase, group.isArchivedBucket]);
 
   const effectiveEditingId = editingId;
   const effectiveOpenMenuKey = openSidebarMenuKey;
@@ -589,20 +577,14 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
   const totalSessions = ungroupedSessions.length;
   const visibleSessions = group.isArchivedBucket
     ? ungroupedSessions
-    : hasSessionSearchQuery
-      ? ungroupedSessions
-      : ungroupedSessions.slice(0, nonArchivedVisibleCount);
+    : ungroupedSessions.slice(0, nonArchivedVisibleCount);
   const remainingCount = totalSessions - visibleSessions.length;
-  const canShowLess = !group.isArchivedBucket && !hasSessionSearchQuery && totalSessions > maxVisible && remainingCount === 0;
+  const canShowLess = !group.isArchivedBucket && totalSessions > maxVisible && remainingCount === 0;
 
   // Virtualize archived buckets, which can grow into the thousands. Active
   // groups retain normal flow because their incremental Show more control and
   // the shared ancestor scroller cannot expose an unmounted virtual tail.
-  // Hooks below MUST stay above the search-empty early-return so they fire in
-  // the same order every render — rules-of-hooks.
 
-  // Hooks below MUST stay above the search-empty early-return so they
-  // fire in the same order every render — rules-of-hooks.
   const collectGroupSessions = React.useCallback((nodes: SessionNode[]): Session[] => {
     const collected: Session[] = [];
     const visit = (list: SessionNode[]) => {
@@ -668,10 +650,6 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
     return result;
   }, [allFoldersForGroup, collectGroupSessions, group.isArchivedBucket]);
 
-  if (hasSessionSearchQuery && !groupMatchesSearch && rootFolders.length === 0 && ungroupedSessions.length === 0) {
-    return null;
-  }
-
   const showBranchSubtitle = !group.isMain && Boolean(group.branch);
   // SAFETY: null is the intentional no-color branch for a status line.
   const statusLine = group.branch && isBranchDifferentFromLabel(group.branch, group.label)
@@ -690,7 +668,7 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
     const autoFolderAgentId = getAutoAgentFolderAgentId(folder);
     const isAgyFolder = Boolean(autoFolderAgentId);
 
-    const isFolderCollapsed = hasSessionSearchQuery ? false : collapsedFolderIds.has(folder.id);
+    const isFolderCollapsed = collapsedFolderIds.has(folder.id);
     const item = (collapsedActivityState: ReturnType<typeof useCollapsedSessionActivityState>) => (
       <DroppableFolderWrapper key={folder.id} folderId={folder.id} scopeKey={scopeKey} ownerKey={folderOwnerKey}>
         {(droppableRef, isDropTarget) => (
@@ -768,8 +746,6 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
               node={node}
               pinnedSessionIds={pinnedSessionIds}
               expandedParents={expandedParents}
-              hasSessionSearchQuery={hasSessionSearchQuery}
-              normalizedSessionSearchQuery={normalizedSessionSearchQuery}
               editingId={editingId}
               editingRowKey={editingRowKey}
                editTitle={editTitle}
@@ -789,7 +765,6 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
                setOpenSidebarMenuKey={props.setOpenSidebarMenuKey}
                allowReselect={props.allowReselect}
                onSessionSelected={props.onSessionSelected}
-               resetSessionSearch={props.resetSessionSearch}
                deleteSessionConfirm={props.deleteSessionConfirm}
               setDeleteSessionConfirm={props.setDeleteSessionConfirm}
               startFolderRename={props.startFolderRename}
@@ -825,7 +800,7 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
       visited.add(entry.folder.id);
       const displayName = parentPath ? `${parentPath} / ${entry.folder.name}` : entry.folder.name;
       out.push(renderOneFolderItem(entry, displayName));
-      const isFolderCollapsed = !hasSessionSearchQuery && collapsedFolderIds.has(entry.folder.id);
+      const isFolderCollapsed = collapsedFolderIds.has(entry.folder.id);
       if (isFolderCollapsed) return;
       (childEntriesByParentId.get(entry.folder.id) ?? []).forEach((child) => visit(child, displayName));
     };
@@ -860,7 +835,21 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
       </>}
     </span>
   );
-  const bootstrapFailureNotice = failedBootstrapDirectory ? (
+  // A folder the user declined to trust lists its sessions but runs no agent;
+  // that says more than whatever its load failed with.
+  const bootstrapFailureNotice = trustPausedDirectory ? (
+    <span className="inline-flex flex-wrap items-center gap-1.5">
+      {t('sessions.sidebar.group.empty.trustPaused')}
+      <Button
+        variant="link"
+        size="xs"
+        className="h-auto p-0 typography-micro"
+        onClick={() => void resumeFolder(trustPausedDirectory)}
+      >
+        {t('sessions.sidebar.group.empty.reviewTrust')}
+      </Button>
+    </span>
+  ) : failedBootstrapDirectory ? (
     <span className="inline-flex flex-wrap items-center gap-1.5">
       {bootstrapFailure === 'os-permission'
         ? t('sessions.sidebar.group.empty.permissionDenied')
@@ -894,8 +883,6 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
     node={node}
     pinnedSessionIds={pinnedSessionIds}
     expandedParents={expandedParents}
-    hasSessionSearchQuery={hasSessionSearchQuery}
-    normalizedSessionSearchQuery={normalizedSessionSearchQuery}
     editingId={editingId}
     editingRowKey={editingRowKey}
      editTitle={editTitle}
@@ -915,7 +902,6 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
      setOpenSidebarMenuKey={props.setOpenSidebarMenuKey}
      allowReselect={props.allowReselect}
      onSessionSelected={props.onSessionSelected}
-     resetSessionSearch={props.resetSessionSearch}
      deleteSessionConfirm={props.deleteSessionConfirm}
      setDeleteSessionConfirm={props.setDeleteSessionConfirm}
      startFolderRename={props.startFolderRename}
@@ -1055,7 +1041,7 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
               {group.isArchivedBucket ? (
                 <span className="inline-flex min-w-0 max-w-full items-center gap-0.5">
                   {headerSlot(<Icon name="archive" className="h-3 w-3 shrink-0 text-muted-foreground" />)}
-                  <span className="min-w-0 flex-1 truncate">{renderHighlightedText(group.label, normalizedSessionSearchQuery)}</span>
+                  <span className="min-w-0 flex-1 truncate">{group.label}</span>
                   {groupActivityIndicator}
                 </span>
               ) : !group.isMain ? (
@@ -1065,7 +1051,7 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
                 // level in, under the label.
                 <span className="flex w-full min-w-0 items-center gap-0.5">
                   {headerSlot(
-                    <Icon name="git-branch"
+                    <Icon name="worktree"
                       className={cn('h-3 w-3 shrink-0', groupPrColor ? 'oc-ref-tint' : 'text-muted-foreground')}
                       style={groupPrColor ? refTintStyle(groupPrColor) : undefined}
                     />,
@@ -1073,7 +1059,7 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
                   {/* Medium weight a step down from full strength: above the
                       session titles at rest, below the project header. */}
                   <span className="min-w-0 truncate typography-ui-label font-medium oc-group-label">
-                    {renderHighlightedText(group.label, normalizedSessionSearchQuery)}
+                    {group.label}
                   </span>
                   {groupActivityIndicator}
                   {groupPrSummary ? (
@@ -1122,7 +1108,7 @@ function SessionGroupSectionBase(props: SessionGroupSectionProps): React.ReactNo
               ) : (
                 <span className="inline-flex min-w-0 max-w-full items-center gap-1">
                   {headerChevron}
-                  <span className="min-w-0 truncate">{renderHighlightedText(group.label, normalizedSessionSearchQuery)}</span>
+                  <span className="min-w-0 truncate">{group.label}</span>
                   {groupActivityIndicator}
                 </span>
               )}
