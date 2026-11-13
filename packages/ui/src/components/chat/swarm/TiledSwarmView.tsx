@@ -2,7 +2,7 @@ import React from 'react';
 import { ChatView } from '@/components/views/ChatView';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { abortCurrentOperation } from '@/sync/session-actions';
-import { useAllLiveSessions, useAllSessionStatuses, useDirectorySync, useSessionMessages } from '@/sync/sync-context';
+import { useAllLiveSessions, useAllSessionStatuses, useDirectorySync, useSessionMessages, useSessionMessageRecords } from '@/sync/sync-context';
 import { useGlobalSessionStatusStore } from '@/sync/global-session-status';
 import { useSessionWorkflowRuns } from '@/lib/workflows/store';
 import { useContextWindowLimits } from '@/hooks/useContextWindowLimits';
@@ -23,6 +23,16 @@ import type { Session as SessionInfo } from '@/lib/opencode/model';
 import { TiledSessionsView } from '@/components/chat/swarm/TiledSessionsView';
 import { resolveTiledLayout } from '@/components/chat/swarm/tiledLayout';
 import { collectWorkflowAgentIds, computeSwarmSessions } from '@/components/chat/swarm/swarmSessionIds';
+import { buildExecutionTree, extractSessionPlanItems, type PlanStatus } from '@/components/chat/swarm/swarmPlanProgress';
+
+export const SWARM_PLAN_PIN_ID = '__plan__';
+
+const PlanDot: React.FC<{ status: PlanStatus }> = ({ status }) => {
+  const blink = useWaitingBlink(status === 'current');
+  if (status === 'done') return <span className="w-3 shrink-0 text-center text-emerald-500">✓</span>;
+  const cls = status === 'current' ? `bg-primary ${blink ?? ''}` : status === 'blocked' ? 'bg-amber-500' : 'border border-muted-foreground/60';
+  return <span className="flex w-3 shrink-0 justify-center"><span className={`size-1.5 rounded-full ${cls}`} /></span>;
+};
 
 type SwarmRow = {
   child: SessionInfo;
@@ -60,9 +70,43 @@ interface StatsCardProps {
   rows: SwarmRow[];
   full: boolean;
   onPin: (id: string) => void;
+  onSelectSession: (id: string) => void;
+  isPinnedPlan?: boolean;
+  pinnedId?: string | null;
+  onSetPinned?: (id: string | null) => void;
 }
 
-const SwarmStatsCard: React.FC<StatsCardProps> = ({ slotNumber, sessionId, directory, rows, full, onPin }) => {
+const SlotSwitcher: React.FC<{ rows: SwarmRow[]; pinnedId: string | null; onPin: (id: string | null) => void }> = ({ rows, pinnedId, onPin }) => (
+  <select
+    className="h-6 max-w-32 rounded border border-border/50 bg-background px-1 text-[11px] text-muted-foreground"
+    value={pinnedId ?? ''}
+    onChange={(event) => onPin(event.target.value || null)}
+    title="Choose what this slot shows"
+  >
+    <option value="">Auto (Active first)</option>
+    <option value={SWARM_PLAN_PIN_ID}>Plan & Progress</option>
+    {rows.map((candidate) => (
+      <option key={candidate.child.id} value={candidate.child.id}>
+        {candidate.child.title?.trim() || candidate.child.id.slice(0, 8)}
+      </option>
+    ))}
+  </select>
+);
+
+const SwarmStatsCard: React.FC<StatsCardProps> = ({ slotNumber, sessionId, directory, rows, full, onPin, onSelectSession, isPinnedPlan = false, pinnedId = null, onSetPinned }) => {
+  const records = useSessionMessageRecords(sessionId ?? '', directory ?? undefined);
+  const allSessions = useAllLiveSessions();
+  const statuses = useAllSessionStatuses();
+  const workflowRuns = useSessionWorkflowRuns(sessionId);
+  const workflowAgentIds = React.useMemo(() => collectWorkflowAgentIds(workflowRuns), [workflowRuns]);
+  const planItems = React.useMemo(() => extractSessionPlanItems(records ?? []), [records]);
+  const tree = React.useMemo(
+    () => buildExecutionTree(rows, allSessions, statuses, workflowAgentIds),
+    [rows, allSessions, statuses, workflowAgentIds],
+  );
+  const planDone = planItems.filter((item) => item.status === 'done').length;
+  const finishedCount = rows.filter((row) => row.finished).length;
+  const showPlan = isPinnedPlan || planItems.length > 0 || rows.length > 0;
   const messages = useSessionMessages(sessionId ?? '', directory ?? undefined);
   const { context: contextLimit } = useContextWindowLimits(sessionId, directory ?? undefined);
   const usage = React.useMemo(() => computeContextUsage(messages, contextLimit), [messages, contextLimit]);
@@ -84,11 +128,77 @@ const SwarmStatsCard: React.FC<StatsCardProps> = ({ slotNumber, sessionId, direc
     <div className="relative flex h-full w-full min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-dashed border-border/50 bg-muted/15 shadow-2xs">
       <div className="flex h-8 shrink-0 select-none items-center justify-between border-b border-border/30 bg-muted/20 px-2.5">
         <span className="font-mono text-xs font-medium text-muted-foreground/70">
-          {full ? 'Session telemetry' : `Slot #${slotNumber} · idle`}
+          {full ? (showPlan ? 'Plan & Execution Progress' : 'Session telemetry') : `Slot #${slotNumber} · idle`}
         </span>
-        <span className="rounded bg-muted/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/60">IDLE</span>
+        <span className="flex items-center gap-1.5">
+          {full && showPlan ? (
+            <span className="rounded bg-muted/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/60">
+              {planItems.length > 0 ? `${planDone}/${planItems.length} steps` : `${finishedCount}/${rows.length} agents`}
+            </span>
+          ) : <span className="rounded bg-muted/40 px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground/60">IDLE</span>}
+          {isPinnedPlan && onSetPinned ? <SlotSwitcher rows={rows} pinnedId={pinnedId} onPin={onSetPinned} /> : null}
+        </span>
       </div>
       <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 text-xs">
+        {full && showPlan ? (
+          <div className="space-y-3">
+            {planItems.length > 0 ? (
+              <div className="space-y-1">
+                <div className="flex items-center justify-between text-[10px] uppercase tracking-wide text-muted-foreground">
+                  <span>Plan Steps</span><span className="font-mono normal-case">{planDone}/{planItems.length} done</span>
+                </div>
+                {planItems.map((item) => (
+                  <div key={item.id}>
+                    <div className="flex items-start gap-2 px-1.5 py-0.5">
+                      <span className="mt-1"><PlanDot status={item.status} /></span>
+                      <span className={item.status === 'done' ? 'text-muted-foreground line-through' : ''}>{item.text}</span>
+                    </div>
+                    {item.children.length > 0 ? (
+                      <div className="ml-3 space-y-0.5 border-l border-border/40 pl-4">
+                        {item.children.map((sub) => (
+                          <div key={sub.id} className="flex items-start gap-2 py-0.5 text-muted-foreground">
+                            <span className="mt-1"><PlanDot status={sub.status} /></span><span>{sub.text}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            {tree.length > 0 ? (
+              <div className="space-y-1">
+                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Execution Tree</div>
+                {tree.map((node) => {
+                  const row = rows.find((candidate) => candidate.child.id === node.id);
+                  return (
+                    <div key={node.id}>
+                      <button type="button" onClick={() => (isPinnedPlan ? onSelectSession(node.id) : onPin(node.id))} className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-muted/50">
+                        {row ? <SwarmStatusDot row={row} size="sm" /> : null}
+                        <span className="truncate">{node.session.title?.trim() || 'Subagent'}</span>
+                        <span className="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground">{node.status}</span>
+                      </button>
+                      {node.children.length > 0 ? (
+                        <div className="ml-3 space-y-0.5 border-l border-border/40 pl-4">
+                          {node.children.map((leaf) => (
+                            <button key={leaf.id} type="button" onClick={() => onSelectSession(leaf.id)} title="Focus this nested subagent session" className="flex w-full items-center gap-2 rounded px-1.5 py-0.5 text-left text-muted-foreground hover:bg-muted/50">
+                              <span className={`size-1.5 shrink-0 rounded-full ${leaf.status === 'busy' ? 'bg-emerald-500' : leaf.status === 'failed' ? 'bg-red-500' : 'bg-muted-foreground/50'}`} />
+                              <span className="truncate">{leaf.session.title?.trim() || 'Subagent'}</span>
+                              <span className="ml-auto shrink-0 font-mono text-[10px]">{leaf.status}</span>
+                            </button>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            ) : null}
+            {rows.length === 0 && planItems.length === 0 ? (
+              <div className="text-muted-foreground/70">Checklist items (- [ ]) and subagent waves from this session will appear here as bullets and sub-bullets.</div>
+            ) : null}
+          </div>
+        ) : null}
         <div>
           <div className="mb-1 flex items-center justify-between text-muted-foreground">
             <span>Context</span>
@@ -118,22 +228,6 @@ const SwarmStatsCard: React.FC<StatsCardProps> = ({ slotNumber, sessionId, direc
                 </>
               ) : 'No git status'}
             </div>
-            {rows.length > 0 ? (
-              <div className="space-y-1">
-                <div className="text-[10px] uppercase tracking-wide text-muted-foreground">Subagents</div>
-                {rows.map((row) => (
-                  <button
-                    key={row.child.id}
-                    type="button"
-                    onClick={() => onPin(row.child.id)}
-                    className="flex w-full items-center gap-2 rounded px-1.5 py-1 text-left hover:bg-muted/50"
-                  >
-                    <SwarmStatusDot row={row} size="sm" />
-                    <span className="truncate">{row.child.title?.trim() || 'Subagent'}</span>
-                  </button>
-                ))}
-              </div>
-            ) : null}
           </>
         ) : null}
       </div>
@@ -166,6 +260,7 @@ const SubagentSlot: React.FC<SubagentSlotProps> = ({ row, rows, slotNumber, dire
         rows={rows}
         full={fullStats}
         onPin={onPin}
+        onSelectSession={onSelectSession}
       />
     );
   }
@@ -193,19 +288,7 @@ const SubagentSlot: React.FC<SubagentSlotProps> = ({ row, rows, slotNumber, dire
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           {showSwitcher ? (
-            <select
-              className="h-6 max-w-32 rounded border border-border/50 bg-background px-1 text-[11px] text-muted-foreground"
-              value={pinnedId ?? ''}
-              onChange={(event) => onPin(event.target.value || null)}
-              title="Choose which subagent this slot shows"
-            >
-              <option value="">Auto (Active first)</option>
-              {rows.map((candidate) => (
-                <option key={candidate.child.id} value={candidate.child.id}>
-                  {candidate.child.title?.trim() || candidate.child.id.slice(0, 8)}
-                </option>
-              ))}
-            </select>
+            <SlotSwitcher rows={rows} pinnedId={pinnedId} onPin={onPin} />
           ) : null}
           <SessionActivityDuration sessionId={child.id} running={isBusy} />
           {isBusy ? (
@@ -336,20 +419,23 @@ export const TiledSwarmView: React.FC<{ active?: boolean }> = ({ active = true }
   // resolver rather than the generic view.
   const { slotCap: maxSlots } = resolveTiledLayout(tiledLayout, activeCount);
 
+  const planPinned = pinnedId === SWARM_PLAN_PIN_ID;
+
   // A pinned subagent takes the first slot; the rest fill by priority rank.
   const visible = React.useMemo(() => {
+    if (planPinned) return rows.slice(0, Math.max(0, maxSlots - 1));
     const pinned = pinnedId ? rows.find((row) => row.child.id === pinnedId) : undefined;
     const rest = rows.filter((row) => row !== pinned);
     return (pinned ? [pinned, ...rest] : rest).slice(0, maxSlots);
-  }, [rows, pinnedId, maxSlots]);
+  }, [rows, pinnedId, maxSlots, planPinned]);
 
   const rowsById = React.useMemo(() => new Map(rows.map((row) => [row.child.id, row])), [rows]);
 
   // The lead session plus the visible subagents, in the exact order the deck
   // renders them. The generic view receives this list and only this list.
   const sessionIds = React.useMemo(
-    () => (currentSessionId ? [currentSessionId, ...visible.map((row) => row.child.id)] : []),
-    [currentSessionId, visible],
+    () => (currentSessionId ? [currentSessionId, ...(planPinned ? [SWARM_PLAN_PIN_ID] : []), ...visible.map((row) => row.child.id)] : []),
+    [currentSessionId, visible, planPinned],
   );
 
   const countLabel = rows.length === 0
@@ -369,6 +455,19 @@ export const TiledSwarmView: React.FC<{ active?: boolean }> = ({ active = true }
     </Button>
   );
 
+  const planButton = (
+    <Button
+      type="button"
+      size="xs"
+      variant={planPinned ? 'secondary' : 'ghost'}
+      className="h-6 px-2 font-mono text-[10px]"
+      onClick={() => setPinnedId(planPinned ? null : SWARM_PLAN_PIN_ID)}
+      title="Show plan and execution progress in slot #1"
+    >
+      Plan
+    </Button>
+  );
+
   return (
     <div className="relative flex h-full w-full flex-col overflow-hidden bg-background/50 p-1.5">
       <div className="mb-1.5 flex h-8 shrink-0 items-center justify-between rounded-md border border-border/40 bg-muted/20 px-2.5">
@@ -385,6 +484,7 @@ export const TiledSwarmView: React.FC<{ active?: boolean }> = ({ active = true }
             {layoutButton('columns-3', '3-Col', '3 Columns Side-by-Side')}
             {layoutButton('split-2', '1:1', '1:1 Split Screen')}
           </div>
+          {planButton}
 
           <Button
             type="button"
@@ -426,6 +526,22 @@ export const TiledSwarmView: React.FC<{ active?: boolean }> = ({ active = true }
         maxSlots={maxSlots + 1}
         renderPane={({ index, sessionId }) => {
           if (index === 0) return <SwarmPrimaryPane active={active} />;
+          if (sessionId === SWARM_PLAN_PIN_ID) {
+            return (
+              <SwarmStatsCard
+                slotNumber={index}
+                sessionId={currentSessionId}
+                directory={effectiveDirectory || null}
+                rows={rows}
+                full
+                isPinnedPlan
+                pinnedId={pinnedId}
+                onSetPinned={setPinnedId}
+                onPin={setPinnedId}
+                onSelectSession={handleSelectSession}
+              />
+            );
+          }
           return (
             <SubagentSlot
               row={rowsById.get(sessionId)}
@@ -433,8 +549,8 @@ export const TiledSwarmView: React.FC<{ active?: boolean }> = ({ active = true }
               slotNumber={index}
               directory={effectiveDirectory || null}
               sessionId={currentSessionId}
-              fullStats={index === visible.length + 1}
-              showSwitcher={rows.length > maxSlots && index === 1}
+              fullStats={index === visible.length + (planPinned ? 2 : 1)}
+              showSwitcher={(rows.length > 0 || planPinned) && index === 1}
               pinnedId={pinnedId}
               onPin={setPinnedId}
               onSelectSession={handleSelectSession}
@@ -449,8 +565,9 @@ export const TiledSwarmView: React.FC<{ active?: boolean }> = ({ active = true }
               sessionId={currentSessionId}
               directory={effectiveDirectory || null}
               rows={rows}
-              full={index === visible.length + 1}
+              full={index === visible.length + (planPinned ? 2 : 1)}
               onPin={setPinnedId}
+              onSelectSession={handleSelectSession}
             />
           ))}
       />

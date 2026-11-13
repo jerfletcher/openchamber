@@ -709,6 +709,7 @@ export const LOCAL_DEVICE_KEYS = [
   'tiledSwarmViewEnabled',
   'tiledSwarmLayout',
   'tiledSessionIds',
+  'tiledStateBySession',
   'isSidebarOpen',
   'sidebarFoldedForExpandedZone',
   'sidebarWidth',

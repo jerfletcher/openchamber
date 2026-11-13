@@ -1,4 +1,5 @@
 import { describe, expect, mock, test } from 'bun:test';
+import * as React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { ReactNode } from 'react';
 
@@ -17,7 +18,9 @@ type CapturedProps = {
   layout: string;
   maxSlots: number;
   activeCount?: number;
+  renderPane?: (args: { index: number; sessionId: string }) => React.ReactElement;
 };
+const setCurrentSessionSpy = mock((..._args: unknown[]) => undefined);
 let captured: CapturedProps | null = null;
 
 type UIState = {
@@ -60,8 +63,8 @@ mock.module('@/components/chat/swarm/tiledLayout', () => ({
   }),
 }));
 mock.module('@/sync/session-ui-store', () => ({
-  useSessionUIStore: <R,>(selector: (state: { currentSessionId: string | null; setCurrentSession: () => void }) => R): R => (
-    selector({ currentSessionId, setCurrentSession: () => undefined })
+  useSessionUIStore: <R,>(selector: (state: { currentSessionId: string | null; setCurrentSession: (...args: unknown[]) => void }) => R): R => (
+    selector({ currentSessionId, setCurrentSession: setCurrentSessionSpy })
   ),
 }));
 mock.module('@/sync/session-actions', () => ({ abortCurrentOperation: () => Promise.resolve() }));
@@ -69,6 +72,7 @@ mock.module('@/sync/sync-context', () => ({
   useAllLiveSessions: () => liveSessions,
   useAllSessionStatuses: () => ({}),
   useSessionMessages: () => [],
+  useSessionMessageRecords: () => [],
   useDirectorySync: (selector: (state: { permission: Record<string, unknown>; form: Record<string, unknown> }) => unknown) => (
     selector({ permission: {}, form: {} })
   ),
@@ -151,11 +155,55 @@ describe('TiledSwarmView preset', () => {
     uiState.tiledSwarmLayout = 'grid-4';
   });
 
+  test('Plan pin reserves slot 1 even with 3+ subagents', () => {
+    currentSessionId = 'lead';
+    liveSessions = [session('lead'), session('a', 'lead'), session('b', 'lead'), session('c', 'lead'), session('d', 'lead')];
+    uiState.tiledSwarmPinnedId = '__plan__';
+    const ids = renderPreset().sessionIds;
+    uiState.tiledSwarmPinnedId = null;
+    expect(ids.slice(0, 2)).toEqual(['lead', '__plan__']);
+    expect(ids).toHaveLength(4);
+  });
+
   test('hands over an empty list when no session owns the deck', () => {
     currentSessionId = null;
     liveSessions = [session('child', 'lead')];
 
     expect(renderPreset().sessionIds).toEqual([]);
     currentSessionId = 'lead';
+  });
+
+  test('pinned Plan tile: grandchild click focuses it without clearing the Plan pin', () => {
+    currentSessionId = 'lead';
+    liveSessions = [session('lead'), session('child-a', 'lead'), session('leaf-1', 'child-a')];
+    uiState.tiledSwarmPinnedId = '__plan__';
+    const pinSpy = mock((_id: string | null) => undefined);
+    uiState.setTiledSwarmPinnedId = pinSpy;
+    setCurrentSessionSpy.mockClear();
+    const props = renderPreset();
+    const pane = props.renderPane!({ index: 1, sessionId: '__plan__' });
+    let tree: React.ReactNode = null;
+    const Expand = () => {
+      tree = (pane.type as (p: unknown) => React.ReactNode)(pane.props);
+      return null;
+    };
+    renderToStaticMarkup(<Expand />);
+    const buttons: Array<{ props: { title?: string; onClick?: () => void } }> = [];
+    const walk = (node: unknown): void => {
+      if (Array.isArray(node)) { node.forEach(walk); return; }
+      if (!React.isValidElement(node)) return;
+      const el = node as unknown as { type: unknown; props: { children?: unknown; title?: string; onClick?: () => void } };
+      if (el.type === 'button') buttons.push(el as never);
+      walk(el.props.children);
+    };
+    walk(tree);
+    const leaf = buttons.find((b) => b.props.title === 'Focus this nested subagent session');
+    expect(leaf).toBeDefined();
+    leaf!.props.onClick!();
+    expect(setCurrentSessionSpy.mock.calls[0]?.[0]).toBe('leaf-1');
+    expect(pinSpy).not.toHaveBeenCalled();
+    expect(uiState.tiledSwarmPinnedId).toBe('__plan__');
+    uiState.tiledSwarmPinnedId = null;
+    uiState.setTiledSwarmPinnedId = () => undefined;
   });
 });

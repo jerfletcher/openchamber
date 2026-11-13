@@ -1033,6 +1033,8 @@ interface UIStore {
   tiledSwarmViewEnabled: boolean;
   tiledSwarmPinnedId: string | null;
   tiledSwarmLayout: 'auto' | 'grid-4' | 'columns-3' | 'split-2';
+  /** Per-session tiled view state; the top-level tiled fields mirror the active session's entry. */
+  tiledStateBySession: Record<string, SessionTiledState>;
   /**
    * Sessions tiled by the generic deck. Empty means "not tiled": the chat
    * falls back to the swarm preset (when its toggle is on) or the single chat,
@@ -1378,6 +1380,7 @@ interface UIStore {
   setCollapsibleThinkingBlocks: (value: boolean) => void;
   setExpandReasoningWhileStreaming: (value: boolean) => void;
   setActivityRenderMode: (value: ActivityRenderMode) => void;
+  syncTiledStateForSession: (sessionId: string | null) => void;
   setTiledSwarmViewEnabled: (value: boolean) => void;
   setTiledSwarmPinnedId: (id: string | null) => void;
   openTiledSwarmWithPin: (id: string) => void;
@@ -1566,6 +1569,48 @@ const openFileTab = (state: UIStore, directory: string, filePath: string, previe
 /** What the selection menu's thumb-up says when the user set no text of their own. */
 export const DEFAULT_SELECTION_APPROVAL_TEXT = 'Sounds good';
 
+export interface SessionTiledState {
+  enabled: boolean;
+  layout: 'auto' | 'grid-4' | 'columns-3' | 'split-2';
+  pinnedId: string | null;
+  sessionIds: string[];
+}
+
+const DEFAULT_SESSION_TILED_STATE: SessionTiledState = {
+  enabled: false,
+  layout: 'grid-4',
+  pinnedId: null,
+  sessionIds: [],
+};
+
+const MAX_TILED_STATE_ENTRIES = 200;
+
+// Active session for tiled persistence; kept in sync by syncTiledStateForSession
+// (wired from session-ui-store to avoid a circular import).
+let activeTiledSessionId: string | null = null;
+
+type TiledFields = Pick<UIStore, 'tiledSwarmViewEnabled' | 'tiledSwarmPinnedId' | 'tiledSwarmLayout' | 'tiledSessionIds' | 'tiledStateBySession'>;
+
+const applyTiledPatch = (state: UIStore, patch: Partial<TiledFields>): Partial<TiledFields> => {
+  const next = { ...patch };
+  if (!activeTiledSessionId) return next;
+  const merged = { ...state, ...patch };
+  // Re-insert so the most recently updated session sits last, then cap.
+  const { [activeTiledSessionId]: _old, ...rest } = state.tiledStateBySession;
+  void _old;
+  const entries = Object.entries({
+    ...rest,
+    [activeTiledSessionId]: {
+      enabled: merged.tiledSwarmViewEnabled,
+      layout: merged.tiledSwarmLayout,
+      pinnedId: merged.tiledSwarmPinnedId,
+      sessionIds: merged.tiledSessionIds,
+    },
+  });
+  next.tiledStateBySession = Object.fromEntries(entries.slice(-MAX_TILED_STATE_ENTRIES));
+  return next;
+};
+
 export const useUIStore = create<UIStore>()(
   devtools(
     persist(
@@ -1661,6 +1706,7 @@ export const useUIStore = create<UIStore>()(
         tiledSwarmPinnedId: null,
         tiledSwarmLayout: 'grid-4',
         tiledSessionIds: [],
+        tiledStateBySession: {},
         expandCommandsByDefault: true,
         expandSubagentsByDefault: false,
         expandSearchesByDefault: false,
@@ -2809,30 +2855,51 @@ export const useUIStore = create<UIStore>()(
           set({ activityRenderMode: value });
         },
 
+        syncTiledStateForSession: (sessionId) => {
+          activeTiledSessionId = sessionId;
+          if (!sessionId) {
+            set({
+              tiledSwarmViewEnabled: DEFAULT_SESSION_TILED_STATE.enabled,
+              tiledSwarmLayout: DEFAULT_SESSION_TILED_STATE.layout,
+              tiledSwarmPinnedId: DEFAULT_SESSION_TILED_STATE.pinnedId,
+              tiledSessionIds: DEFAULT_SESSION_TILED_STATE.sessionIds,
+            });
+            return;
+          }
+          const saved = get().tiledStateBySession[sessionId] ?? DEFAULT_SESSION_TILED_STATE;
+          set({
+            tiledSwarmViewEnabled: saved.enabled,
+            tiledSwarmLayout: saved.layout,
+            tiledSwarmPinnedId: saved.pinnedId,
+            tiledSessionIds: saved.sessionIds,
+          });
+        },
+
         setTiledSwarmViewEnabled: (value) => {
-          set({ tiledSwarmViewEnabled: value });
+          set((state) => applyTiledPatch(state, { tiledSwarmViewEnabled: value }));
         },
 
         setTiledSwarmPinnedId: (id) => {
-          set({ tiledSwarmPinnedId: id });
+          set((state) => applyTiledPatch(state, { tiledSwarmPinnedId: id }));
         },
 
         openTiledSwarmWithPin: (id) => {
-          set({ tiledSwarmViewEnabled: true, tiledSwarmPinnedId: id });
+          set((state) => applyTiledPatch(state, { tiledSwarmViewEnabled: true, tiledSwarmPinnedId: id }));
         },
 
         setTiledSwarmLayout: (value) => {
-          set({ tiledSwarmLayout: value });
+          set((state) => applyTiledPatch(state, { tiledSwarmLayout: value }));
         },
 
         setTiledSessionIds: (ids) => {
           // Stale or duplicate ids would render duplicate panes and duplicate
           // React keys, so the setter normalises the list once, here.
-          set({ tiledSessionIds: Array.from(new Set(ids.filter((id) => typeof id === 'string' && id.trim() !== ''))) });
+          const clean = Array.from(new Set(ids.filter((id) => typeof id === 'string' && id.trim() !== '')));
+          set((state) => applyTiledPatch(state, { tiledSessionIds: clean }));
         },
 
         toggleTiledSwarmView: () => {
-          set((state) => ({ tiledSwarmViewEnabled: !state.tiledSwarmViewEnabled }));
+          set((state) => applyTiledPatch(state, { tiledSwarmViewEnabled: !state.tiledSwarmViewEnabled }));
         },
 
         setShowDeletionDialog: (value) => {
@@ -3982,6 +4049,7 @@ export const useUIStore = create<UIStore>()(
           tiledSwarmViewEnabled: state.tiledSwarmViewEnabled,
           tiledSwarmLayout: state.tiledSwarmLayout,
           tiledSessionIds: state.tiledSessionIds,
+          tiledStateBySession: state.tiledStateBySession,
           expandCommandsByDefault: state.expandCommandsByDefault,
           expandSubagentsByDefault: state.expandSubagentsByDefault,
           expandSearchesByDefault: state.expandSearchesByDefault,
@@ -4102,7 +4170,10 @@ export const useUIStore = create<UIStore>()(
           shortcutOverrides: state.shortcutOverrides,
           fileEditorKeymap: state.fileEditorKeymap,
           fileEditorVimMappings: state.fileEditorVimMappings,
-        })
+        }),
+        onRehydrateStorage: () => (state) => {
+          if (state && activeTiledSessionId) state.syncTiledStateForSession(activeTiledSessionId);
+        },
       }
     ),
     {
