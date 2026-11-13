@@ -6,8 +6,11 @@ import { I18nProvider } from '@/lib/i18n';
 import type { DesktopQuakeMode } from './useDesktopQuakeMode';
 
 mock.module('@/stores/useUIStore', () => ({
-  useUIStore: <T,>(selector: (value: { shortcutOverrides: Record<string, string>; setShortcutOverride: () => void }) => T): T => (
-    selector({ shortcutOverrides: {}, setShortcutOverride: () => undefined })
+  useUIStore: Object.assign(
+    <T,>(selector: (value: { shortcutOverrides: Record<string, string>; setShortcutOverride: () => void }) => T): T => (
+      selector({ shortcutOverrides: {}, setShortcutOverride: () => undefined })
+    ),
+    { getState: () => ({ shortcutOverrides: {}, setShortcutOverride: () => undefined }), subscribe: () => () => {} },
   ),
 }));
 

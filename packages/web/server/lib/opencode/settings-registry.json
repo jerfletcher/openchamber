@@ -920,6 +920,10 @@
       "scope": "device",
       "local": true
     },
+    "tiledStateBySession": {
+      "scope": "device",
+      "local": true
+    },
     "isSidebarOpen": {
       "scope": "device",
       "local": true

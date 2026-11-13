@@ -177,7 +177,7 @@ mock.module('@/lib/openchamberConfig', () => ({
   updateProjectSetup: async () => true,
 }));
 mock.module('@/lib/browser/announcedServers', () => ({ setAnnouncedDevServers: () => undefined }));
-mock.module('@/hooks/useEffectiveDirectory', () => ({ useEffectiveDirectory: () => effectiveDirectory }));
+mock.module('@/hooks/useEffectiveDirectory', () => ({ useEffectiveDirectory: () => effectiveDirectory, resolveEffectiveDirectory: () => effectiveDirectory }));
 mock.module('@/lib/detectDevServer', () => ({
   detectDevServerCommand: async () => (
     detectedDevServer.command

@@ -180,7 +180,11 @@ describe('ACP permission prompt', () => {
             type: 'openchamber.acp-permission-settled',
             properties: { sessionID: request.sessionID, requestId: 'perm_1', acpSessionId: 'acp_1', outcome: 'cancelled' },
         }]));
-        await act(async () => {});
+        // AnimatePresence keeps the panel mounted until its exit animation
+        // finishes (rAF/timer driven), so wait for it rather than one tick.
+        for (let i = 0; i < 40 && container.textContent?.includes('Run the test suite'); i += 1) {
+            await act(async () => { await new Promise((resolve) => setTimeout(resolve, 25)); });
+        }
         expect(container.textContent).not.toContain('Run the test suite');
     });
 });

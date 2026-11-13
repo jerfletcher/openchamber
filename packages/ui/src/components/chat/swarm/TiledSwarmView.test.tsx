@@ -48,6 +48,24 @@ const useUIStore = Object.assign(
   { getState: () => uiState },
 );
 
+
+/**
+ * bun's mock.module outlives this file and replaces the module for every file
+ * that runs after it in the same process. Keep the real exports (and the real
+ * store methods on stubbed hooks) so later test files are unaffected.
+ */
+const mockPartial = async (specifier: string, load: () => Promise<Record<string, unknown>>, overrides: Record<string, unknown>) => {
+  const real = await load();
+  const merged: Record<string, unknown> = { ...real };
+  for (const [key, value] of Object.entries(overrides)) {
+    const original = real[key];
+    merged[key] = typeof value === 'function' && original && (typeof original === 'function' || typeof original === 'object')
+      ? Object.assign(value, original)
+      : value;
+  }
+  mock.module(specifier, () => merged);
+};
+
 mock.module('@/components/views/ChatView', () => ({ ChatView: () => null }));
 mock.module('@/components/chat/swarm/TiledSessionsView', () => ({
   TiledSessionsView: (props: CapturedProps) => {
@@ -62,13 +80,13 @@ mock.module('@/components/chat/swarm/tiledLayout', () => ({
     slotCap: layout === 'split-2' ? 1 : layout === 'columns-3' ? 2 : 3,
   }),
 }));
-mock.module('@/sync/session-ui-store', () => ({
+await mockPartial('@/sync/session-ui-store', () => import('@/sync/session-ui-store'), {
   useSessionUIStore: <R,>(selector: (state: { currentSessionId: string | null; setCurrentSession: (...args: unknown[]) => void }) => R): R => (
     selector({ currentSessionId, setCurrentSession: setCurrentSessionSpy })
   ),
-}));
+});
 mock.module('@/sync/session-actions', () => ({ abortCurrentOperation: () => Promise.resolve() }));
-mock.module('@/sync/sync-context', () => ({
+await mockPartial('@/sync/sync-context', () => import('@/sync/sync-context'), {
   useAllLiveSessions: () => liveSessions,
   useAllSessionStatuses: () => ({}),
   useSessionMessages: () => [],
@@ -76,26 +94,27 @@ mock.module('@/sync/sync-context', () => ({
   useDirectorySync: (selector: (state: { permission: Record<string, unknown>; form: Record<string, unknown> }) => unknown) => (
     selector({ permission: {}, form: {} })
   ),
-}));
-mock.module('@/sync/global-session-status', () => ({
+});
+await mockPartial('@/sync/global-session-status', () => import('@/sync/global-session-status'), {
   useGlobalSessionStatusStore: (selector: (state: { statusById: Map<string, unknown>; observedById: Map<string, unknown> }) => unknown) => (
     selector({ statusById: new Map(), observedById: new Map() })
   ),
-}));
-mock.module('@/lib/workflows/store', () => ({ useSessionWorkflowRuns: () => [] }));
+});
+await mockPartial('@/lib/workflows/store', () => import('@/lib/workflows/store'), { useSessionWorkflowRuns: () => [] });
 mock.module('@/hooks/useContextWindowLimits', () => ({ useContextWindowLimits: () => ({ context: 0 }) }));
 mock.module('@/components/chat/work-status/useSubagentCostRollup', () => ({
   useSubagentCostRollup: () => ({ totalCost: 0, ownCost: 0, subagentCost: 0 }),
 }));
-mock.module('@/stores/useGitStore', () => ({
+await mockPartial('@/stores/useGitStore', () => import('@/stores/useGitStore'), {
   useGitStore: (selector: (state: { directories: Map<string, unknown> }) => unknown) => selector({ directories: new Map() }),
-}));
-mock.module('@/hooks/useEffectiveDirectory', () => ({ useEffectiveDirectory: () => '/project' }));
-mock.module('@/stores/useUIStore', () => ({ useUIStore }));
-mock.module('@/hooks/useDurationTicker', () => ({ useWaitingBlink: () => '' }));
-mock.module('@/stores/useConfigStore', () => ({
-  useConfigStore: (selector: (state: { providers: unknown[] }) => unknown) => selector({ providers: [] }),
-}));
+});
+await mockPartial('@/hooks/useEffectiveDirectory', () => import('@/hooks/useEffectiveDirectory'), { useEffectiveDirectory: () => '/project' });
+await mockPartial('@/stores/useUIStore', () => import('@/stores/useUIStore'), { useUIStore });
+await mockPartial('@/hooks/useDurationTicker', () => import('@/hooks/useDurationTicker'), { useWaitingBlink: () => '' });
+const realConfig = await import('@/stores/useConfigStore');
+await mockPartial('@/stores/useConfigStore', () => import('@/stores/useConfigStore'), {
+  useConfigStore: (selector: (state: unknown) => unknown) => selector({ ...realConfig.useConfigStore.getState(), providers: [] }),
+});
 mock.module('@/components/icon/Icon', () => ({ Icon: () => null }));
 mock.module('@/components/ui/button', () => ({
   Button: ({ children }: { children?: ReactNode }) => <button type="button">{children}</button>,

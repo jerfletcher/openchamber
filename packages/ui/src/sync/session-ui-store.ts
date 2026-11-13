@@ -2947,10 +2947,10 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
 // Per-session tiled view: hydrate the UI store's tiled fields on session switch.
 useSessionUIStore.subscribe((state, prev) => {
   if (state.currentSessionId !== prev.currentSessionId) {
-    useUIStore.getState().syncTiledStateForSession(state.currentSessionId)
+    useUIStore.getState().syncTiledStateForSession?.(state.currentSessionId)
   }
 })
-useUIStore.getState().syncTiledStateForSession(useSessionUIStore.getState().currentSessionId)
+useUIStore.getState().syncTiledStateForSession?.(useSessionUIStore.getState().currentSessionId)
 
 // Write-through persist of the worktree map whenever discovery refreshes it.
 // Reference-equality guard filters hot session updates; the serialized

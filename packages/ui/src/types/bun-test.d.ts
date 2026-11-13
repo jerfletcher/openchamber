@@ -51,6 +51,8 @@ declare module "bun:test" {
     mockImplementation(fn: T): Mock<T>;
     mockReturnValue(value: ReturnType<T>): Mock<T>;
     mockReset(): Mock<T>;
+    mockClear(): Mock<T>;
+    mock: { calls: Parameters<T>[] };
   }
   export interface Spy<T extends (...args: never[]) => void> extends Mock<T> {
     mock: { calls: Parameters<T>[] };
