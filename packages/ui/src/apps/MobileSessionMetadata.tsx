@@ -378,7 +378,7 @@ export const MobileSessionMetadataButton = React.memo(function MobileSessionMeta
     ?? (savedSessionModel ? { providerID: savedSessionModel.providerId, modelID: savedSessionModel.modelId } : null)
     ?? (currentProviderId && currentModelId ? { providerID: currentProviderId, modelID: currentModelId } : null);
   const provider = modelRef ? providers.find((entry) => entry.id === modelRef.providerID) : undefined;
-  const liveModel = provider?.models.find((model) => model.id === modelRef?.modelID);
+  const liveModel = provider?.models?.find((model) => model.id === modelRef?.modelID);
   const metadata = modelRef ? getModelMetadata(modelRef.providerID, modelRef.modelID) : undefined;
   const contextLimit = getNumericLimit((liveModel as { limit?: unknown } | undefined)?.limit, 'context')
     ?? metadata?.limit?.context

@@ -786,29 +786,35 @@ const runtimeModelReleaseDate = (released: number | undefined): string | undefin
  * unknown otherwise.
  */
 const deriveModelMetadata = (providerId: string, model: ProviderModel): ModelMetadata => {
-    const baseCost = model.cost.find((entry) => !entry.tier) ?? model.cost[0];
+    const costEntries = Array.isArray(model.cost) ? model.cost : [];
+    const baseCost = costEntries.find((entry) => !entry.tier) ?? costEntries[0];
     const hasReasoningSignal = modelVariantNames(model).length > 0
         || model.compatibility?.reasoningField !== undefined
         || model.compatibility?.requireReasoning === true;
     const releaseDate = runtimeModelReleaseDate(model.time?.released);
+    const inputModalities = Array.isArray(model.capabilities?.input) ? model.capabilities.input : [];
+    const outputModalities = Array.isArray(model.capabilities?.output) ? model.capabilities.output : [];
     const metadata: ModelMetadata = {
-        id: model.modelID,
+        id: model.modelID ?? model.id,
         providerId,
         name: model.name,
-        tool_call: model.capabilities.tools,
-        attachment: model.capabilities.input.includes('image'),
+        tool_call: model.capabilities?.tools ?? false,
+        attachment: inputModalities.includes('image'),
         ...(hasReasoningSignal ? { reasoning: true } : {}),
         modalities: {
-            input: model.capabilities.input,
-            output: model.capabilities.output,
+            input: inputModalities,
+            output: outputModalities,
         },
         cost: baseCost ? {
             input: baseCost.input,
             output: baseCost.output,
-            cache_read: baseCost.cache.read,
-            cache_write: baseCost.cache.write,
+            cache_read: baseCost.cache?.read,
+            cache_write: baseCost.cache?.write,
         } : undefined,
-        limit: { context: model.limit.context, output: model.limit.output },
+        limit: {
+            context: model.limit?.context ?? 0,
+            output: model.limit?.output ?? 0,
+        },
     };
     if (releaseDate) metadata.release_date = releaseDate;
     return metadata;
@@ -4730,14 +4736,16 @@ export const useConfigStore = create<ConfigStore>()(
                     if (cached) {
                         if (!model) return cached;
                         const releaseDate = runtimeModelReleaseDate(model.time?.released);
-                        const hasLiveLimits = model.limit.context > 0;
+                        const liveContext = model.limit?.context ?? 0;
+                        const liveOutput = model.limit?.output ?? 0;
+                        const hasLiveLimits = liveContext > 0;
                         if (!hasLiveLimits && !releaseDate) return cached;
                         const metadata: ModelMetadata = { ...cached };
                         if (hasLiveLimits) {
                             metadata.limit = {
                                 ...cached.limit,
-                                context: model.limit.context,
-                                output: model.limit.output,
+                                context: liveContext,
+                                output: liveOutput,
                             };
                         }
                         if (releaseDate) metadata.release_date = releaseDate;
