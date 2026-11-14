@@ -55,3 +55,60 @@ export const isAcpConsentOptionKind = (kind: string | undefined): boolean => (
 export const isAcpRejectOptionKind = (kind: string | undefined): boolean => (
     kind === 'reject_once' || kind === 'reject_always'
 );
+
+export type AcpConfigOptionValue = {
+    value: string;
+    name: string;
+    description?: string;
+};
+
+export type AcpConfigOption = {
+    id: string;
+    name: string;
+    type: string;
+    category?: string;
+    currentValue: string | null;
+    options?: AcpConfigOptionValue[];
+};
+
+export type AcpModeInfo = {
+    id: string;
+    name: string;
+    description?: string;
+};
+
+export type AcpModelInfo = {
+    id: string;
+    name: string;
+    description?: string;
+};
+
+export type AcpCommandInfo = {
+    name: string;
+    description?: string;
+    input?: Record<string, unknown>;
+};
+
+export type AcpPlanEntry = {
+    content: string;
+    priority?: 'high' | 'medium' | 'low' | string;
+    status?: 'pending' | 'in_progress' | 'completed' | string;
+};
+
+export type AcpNotice = {
+    capability?: string;
+    kind?: string;
+    name?: string;
+    message: string;
+};
+
+export type AcpSessionConfig = {
+    configOptions?: AcpConfigOption[];
+    availableModes?: AcpModeInfo[];
+    currentModeId?: string | null;
+    availableModels?: AcpModelInfo[];
+    currentModelId?: string | null;
+    availableCommands?: AcpCommandInfo[];
+    acpPlan?: AcpPlanEntry[];
+    capabilities?: Record<string, unknown>;
+};

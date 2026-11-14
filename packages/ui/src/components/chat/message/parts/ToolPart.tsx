@@ -7,7 +7,7 @@ import { SimpleMarkdownRenderer } from '../../MarkdownRenderer';
 import { BlockBody } from './BlockLine';
 import { FormMarkdown } from '../../FormMarkdown';
 import { MessageFilesDisplay } from '../../FileAttachment';
-import { getToolMetadata } from '@/lib/toolHelpers';
+import { getToolMetadata, type AcpToolMetadataContext } from '@/lib/toolHelpers';
 import type { FilePart, Metadata, Part, ToolInput, ToolPart as ToolPartType, ToolState as ToolStateUnion } from '@/lib/opencode/model';
 import { toolDisplayStyles } from '@/lib/typography';
 import { WorkerHighlightedCode } from '@/components/code/WorkerHighlightedCode';
@@ -516,9 +516,20 @@ const describeTool = (described: ToolDescription | null, currentDirectory: strin
  * The row's title. `todowrite` takes the Work Status section's localized name,
  * since both show the same list side by side.
  */
-const toolDisplayName = (toolName: string, t: DescriptionTranslate): string => (
-    isTodoWriteTool(toolName) ? t('chat.workStatus.section.tasks') : getToolMetadata(toolName).displayName
+const toolDisplayName = (toolName: string, t: DescriptionTranslate, acpContext?: AcpToolMetadataContext | null): string => (
+    isTodoWriteTool(toolName) ? t('chat.workStatus.section.tasks') : getToolMetadata(toolName, acpContext).displayName
 );
+
+const ACP_KIND_ICON_TOOL: Record<string, string> = {
+    read: 'read',
+    edit: 'edit',
+    delete: 'edit',
+    move: 'edit',
+    search: 'search',
+    execute: 'bash',
+    think: 'reasoning',
+    fetch: 'fetch',
+};
 
 const getToolDescription = (part: ToolPartType, state: ToolStateUnion, currentDirectory: string, t: DescriptionTranslate, namespace?: string): string => {
     const stateWithData = state as ToolStateWithMetadata;
@@ -1507,7 +1518,13 @@ const ToolExpandedContent: React.FC<ToolExpandedContentProps> = React.memo(({
             );
         }
 
-        if (isFileChangeTool(part.tool) && (diffEntries.length > 0 || !!diagnosticSection)) {
+        const partRecordForDiff = part as unknown as Record<string, unknown>;
+        const diffKind = typeof partRecordForDiff.kind === 'string'
+            ? partRecordForDiff.kind
+            : typeof metadata?.kind === 'string'
+                ? metadata.kind
+                : undefined;
+        if ((isFileChangeTool(part.tool) || diffKind === 'edit' || Array.isArray(metadata?.diffs)) && (diffEntries.length > 0 || !!diagnosticSection)) {
             // The row's own icon size (14px), muted at rest like the row's label.
             const renderEntryActions = (entry: DiffPatchEntry) => (
                 <>
@@ -1966,9 +1983,40 @@ const ToolPartContent: React.FC<ToolPartProps & { header?: ToolRowHeader; subage
     const normalizedPart = normalizedPartTool !== part.tool ? ({ ...part, tool: normalizedPartTool } as ToolPartType) : part;
     const descriptionPath = getToolDescriptionPath(normalizedPart, state, currentDirectory);
     const stateOutput = typeof stateWithData.output === 'string' ? stateWithData.output : undefined;
-    // A script whose calls all went to one namespace is titled by it.
+    const partRecord = part as unknown as Record<string, unknown>;
+    const acpKind = typeof partRecord.kind === 'string'
+        ? partRecord.kind
+        : typeof metadata?.kind === 'string'
+            ? metadata.kind
+            : undefined;
+    const acpTitle = typeof partRecord.title === 'string'
+        ? partRecord.title
+        : typeof metadata?.title === 'string'
+            ? metadata.title
+            : undefined;
+    const rawAcpLocations = Array.isArray(partRecord.locations)
+        ? partRecord.locations
+        : Array.isArray(metadata?.locations)
+            ? metadata.locations
+            : [];
+    const acpLocationDescription = React.useMemo(() => {
+        for (const loc of rawAcpLocations) {
+            if (!loc || typeof loc !== 'object') continue;
+            const locPath = (loc as { path?: unknown }).path;
+            if (typeof locPath !== 'string' || !locPath.trim()) continue;
+            const rel = getRelativePath(locPath, currentDirectory);
+            const locLine = (loc as { line?: unknown }).line;
+            return typeof locLine === 'number' && Number.isFinite(locLine) ? `${rel}:${locLine}` : rel;
+        }
+        return '';
+    }, [currentDirectory, rawAcpLocations]);
+    const acpContext = React.useMemo<AcpToolMetadataContext | null>(
+        () => (acpKind || acpTitle ? { kind: acpKind, title: acpTitle } : null),
+        [acpKind, acpTitle],
+    );
+
     const scriptNamespace = isExecuteTool(part.tool) ? executeNamespace(metadata) : undefined;
-    const plainDescription = getToolDescription(normalizedPart, state, currentDirectory, t, scriptNamespace);
+    const plainDescription = getToolDescription(normalizedPart, state, currentDirectory, t, scriptNamespace) || acpLocationDescription;
     const builtInDescription = describeOpenChamberRow(normalizedPart, input, stateOutput, t)
         ?? describeOpencodeRow(part, plainDescription, t)
         ?? plainDescription;
@@ -1978,7 +2026,10 @@ const ToolPartContent: React.FC<ToolPartProps & { header?: ToolRowHeader; subage
     );
     const description = guestHeader?.subtitle ?? builtInDescription;
     const rowTool = scriptNamespace ?? (normalizedPartTool || part.tool);
-    const displayName = guestHeader?.title ?? toolDisplayName(rowTool, t);
+    const iconTool = (acpKind && rowTool === 'bash')
+        ? (ACP_KIND_ICON_TOOL[acpKind.toLowerCase()] ?? rowTool)
+        : rowTool;
+    const displayName = guestHeader?.title ?? toolDisplayName(rowTool, t, acpContext);
 
     // Opened, the body already carries the whole error and output.
     const failureDetail = isError && !isExpanded ? failureReason : undefined;
@@ -2177,7 +2228,7 @@ const ToolPartContent: React.FC<ToolPartProps & { header?: ToolRowHeader; subage
                                         'absolute inset-0 flex items-center justify-center transition-opacity',
                                         isExpanded ? 'opacity-0' : 'group-hover/tool:opacity-0',
                                     )} style={iconStyle}>
-                                        {getToolIcon(rowTool, presentation)}
+                                        {getToolIcon(iconTool, presentation)}
                                     </span>
                                     <Icon
                                         name={isExpanded ? 'arrow-down-s' : 'arrow-right-s'}
@@ -2223,7 +2274,7 @@ const ToolPartContent: React.FC<ToolPartProps & { header?: ToolRowHeader; subage
                                     )}
                                     style={iconStyle}
                                 >
-                                    {getToolIcon(rowTool, presentation)}
+                                    {getToolIcon(iconTool, presentation)}
                                 </div>
                                 <div
                                     className={cn(

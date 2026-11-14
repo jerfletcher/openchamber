@@ -158,7 +158,8 @@ import { buildSkillMentionInstruction } from '@/lib/skillMentionInstruction';
 import { useGitStore } from '@/stores/useGitStore';
 import { useDirectoryStore } from '@/stores/useDirectoryStore';
 import { selectAvailableSkillsForDirectory, useSkillsStore } from '@/stores/useSkillsStore';
-import { selectCommandsForComposer, useCommandsStore } from '@/stores/useCommandsStore';
+import { mergeAcpCommands, selectCommandsForComposer, useCommandsStore } from '@/stores/useCommandsStore';
+import { useAcpCommands } from '@/sync/acp-config';
 import { useComposerConfigDirectory } from '@/hooks/useComposerConfigDirectory';
 import { useRuntimeAPIs } from '@/hooks/useRuntimeAPIs';
 import { useRetryModelPick } from '@/hooks/useRetryModelPick';
@@ -308,6 +309,13 @@ import { FormDock } from '@/components/chat/FormDock';
 import { PermissionDock } from '@/components/chat/PermissionDock';
 import { AcpPermissionDock } from '@/components/chat/AcpPermissionDock';
 import { useAcpPermissions } from '@/sync/acp-permissions';
+import {
+    fetchAcpSessionConfig,
+    getAcpConfigOption,
+    updateAcpConfigOption,
+    updateAcpSessionMode,
+    useAcpSessionConfig,
+} from '@/sync/acp-config';
 import { SessionGoalRow } from '@/components/chat/SessionGoalRow';
 import {
     createInputHistoryIdentity,
@@ -1027,7 +1035,12 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     // highlight matching tokens in the composer, the same way confirmed
     // @files are.
     const commandsTarget = useComposerConfigDirectory(currentDirectory);
-    const availableCommands = useCommandsStore((s) => selectCommandsForComposer(s, commandsTarget));
+    const baseAvailableCommands = useCommandsStore((s) => selectCommandsForComposer(s, commandsTarget));
+    const acpAvailableCommands = useAcpCommands(currentSessionId);
+    const availableCommands = React.useMemo(
+        () => mergeAcpCommands(baseAvailableCommands, acpAvailableCommands),
+        [acpAvailableCommands, baseAvailableCommands],
+    );
     const commandsDirectory = commandsTarget.status === 'resolved' ? commandsTarget.directory : null;
     const preloadDraftCatalogs = !columnPinned && !currentSessionId && newSessionDraftOpen
         && Boolean(newSessionDraft.worktreeStartDirectory);
@@ -5038,7 +5051,61 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
     const shownPermissionMode = displayedPermissionMode(permissionMode, safetyNetAvailable);
     const isPermissionAutoAcceptInteractive = Boolean(permissionScopeSessionId || newSessionDraftOpen);
 
+    const acpConfig = useAcpSessionConfig(permissionScopeSessionId);
+    const isAcpSession = currentProviderId === 'antigravity'
+        || currentAgentName === 'antigravity'
+        || Boolean(acpConfig?.loaded);
+
+    React.useEffect(() => {
+        if (!permissionScopeSessionId || !isAcpSession) return;
+        void fetchAcpSessionConfig(permissionScopeSessionId);
+    }, [isAcpSession, permissionScopeSessionId]);
+
+    const acpModeOption = React.useMemo(() => getAcpConfigOption(acpConfig, 'mode'), [acpConfig]);
+    const acpModeOptions = React.useMemo(() => {
+        if (acpModeOption?.options && acpModeOption.options.length > 0) {
+            return acpModeOption.options.map((opt) => ({
+                id: opt.value,
+                name: opt.name,
+                description: opt.description,
+            }));
+        }
+        if (acpConfig?.availableModes && acpConfig.availableModes.length > 0) {
+            return acpConfig.availableModes.map((mode) => ({
+                id: mode.id,
+                name: mode.name,
+                description: mode.description,
+            }));
+        }
+        return [];
+    }, [acpConfig?.availableModes, acpModeOption?.options]);
+
+    const currentAcpModeId = acpModeOption?.currentValue
+        ?? acpConfig?.currentModeId
+        ?? acpModeOptions[0]?.id
+        ?? null;
+
+    const handleSelectAcpMode = React.useCallback((modeId: string) => {
+        if (!permissionScopeSessionId) {
+            toast.error(t('chat.chatInput.toast.openSessionFirst'));
+            return;
+        }
+        const update = acpModeOption
+            ? updateAcpConfigOption(permissionScopeSessionId, 'mode', modeId)
+            : updateAcpSessionMode(permissionScopeSessionId, modeId);
+        void update.catch((error) => {
+            const message = error instanceof Error ? error.message : t('chat.chatInput.toast.togglePermissionAutoAcceptFailed');
+            toast.error(message);
+        });
+    }, [acpModeOption, permissionScopeSessionId, t]);
+
     const handlePermissionModeCycle = React.useCallback(() => {
+        if (isAcpSession && acpModeOptions.length > 0) {
+            const currentIdx = acpModeOptions.findIndex((opt) => opt.id === currentAcpModeId);
+            const nextOpt = acpModeOptions[(currentIdx + 1) % acpModeOptions.length];
+            if (nextOpt) handleSelectAcpMode(nextOpt.id);
+            return;
+        }
         if (isBtwActive && !btwSessionId && currentSessionId) {
             useBtwStore.getState().setPanelState(currentSessionId, {
                 pendingPermissionMode: nextPermissionMode(permissionMode, safetyNetAvailable),
@@ -5056,6 +5123,10 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
             onToggleFailed: () => toast.error(t('chat.chatInput.toast.togglePermissionAutoAcceptFailed')),
         });
     }, [
+        acpModeOptions,
+        currentAcpModeId,
+        handleSelectAcpMode,
+        isAcpSession,
         newSessionDraftOpen,
         permissionMode,
         permissionScopeSessionId,
@@ -5447,6 +5518,11 @@ const ChatInputComponent: React.FC<ChatInputProps> = ({
                         hasContent={Boolean(hasContent)}
                         permissionMode={shownPermissionMode}
                         isPermissionAutoAcceptInteractive={isPermissionAutoAcceptInteractive}
+                        acpMode={isAcpSession && acpModeOptions.length > 0 ? {
+                            options: acpModeOptions,
+                            currentModeId: currentAcpModeId,
+                            onSelectMode: handleSelectAcpMode,
+                        } : null}
                         dictationActive={mobileShell.dictationActive}
                         onOpenSettings={onOpenSettings}
                         onPickLocalFiles={handlePickLocalFiles}

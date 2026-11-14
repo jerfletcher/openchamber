@@ -3,6 +3,7 @@ import { LegendList, type LegendListRef } from '@legendapp/list/react';
 
 import ChatMessage from './ChatMessage';
 import { TimelineNotice } from './message/TimelineNotice';
+import { SessionPlanTimelineBlock } from './message/PlanTimelineBlock';
 import { readSessionNotice } from '@/lib/opencode/session-notices';
 import { useRunningSubagentRuns, withRunningSubagentRuns } from './lib/runningSubagentRuns';
 import { isSkippedTimelineMessage, isBackgroundReportEntry, isTimelineNoticeRole } from './lib/timelineRoles';
@@ -1069,6 +1070,7 @@ const MessageList = React.forwardRef<MessageListHandle, MessageListProps>(({
     }, [trailingStreamingEntry]);
     const footerWithApprovals = React.useMemo(() => (
         <>
+            <SessionPlanTimelineBlock sessionId={sessionKey} />
             <PendingWorkflowApprovals sessionId={sessionKey} messages={baseDisplayMessages}
                 liveMessageIds={approvalLiveMessageIds} directory={directory} />
             {listFooter}

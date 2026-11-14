@@ -2,7 +2,8 @@ import React from 'react';
 import { cn } from '@/lib/utils';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useChatSessionSelection } from './chatColumnSession';
-import { isCommandOfferedInComposer, selectCommandsForComposer, useCommandsStore } from '@/stores/useCommandsStore';
+import { isCommandOfferedInComposer, mergeAcpCommands, selectCommandsForComposer, useCommandsStore } from '@/stores/useCommandsStore';
+import { useAcpCommands } from '@/sync/acp-config';
 import { useComposerConfigDirectory } from '@/hooks/useComposerConfigDirectory';
 import { useEffectiveDirectory } from '@/hooks/useEffectiveDirectory';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
@@ -65,7 +66,12 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
   // the app was on last.
   const effectiveDirectory = useEffectiveDirectory();
   const commandsTarget = useComposerConfigDirectory(effectiveDirectory);
-  const commandsWithMetadata = useCommandsStore((s) => selectCommandsForComposer(s, commandsTarget));
+  const baseCommandsWithMetadata = useCommandsStore((s) => selectCommandsForComposer(s, commandsTarget));
+  const acpCommands = useAcpCommands(currentSessionId);
+  const commandsWithMetadata = React.useMemo(
+    () => mergeAcpCommands(baseCommandsWithMetadata, acpCommands),
+    [acpCommands, baseCommandsWithMetadata],
+  );
   const loadCommandsForDirectory = useCommandsStore((s) => s.loadCommands);
   const refreshCommands = React.useCallback(() => {
     if (commandsTarget.status === 'pending') return;

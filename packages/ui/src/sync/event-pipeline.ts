@@ -223,6 +223,75 @@ const openchamberAcpPermissionSettledSchema = z.object({
   }),
 })
 
+const acpPlanEntrySchema = z.object({
+  content: z.string(),
+  priority: z.string().optional(),
+  status: z.string().optional(),
+})
+
+const openchamberAcpPlanSchema = z.object({
+  type: z.literal("openchamber:acp-plan"),
+  properties: z.object({
+    sessionID: z.string().min(1),
+    entries: z.array(acpPlanEntrySchema).catch([]),
+  }),
+})
+
+const openchamberAcpModeSchema = z.object({
+  type: z.literal("openchamber:acp-mode"),
+  properties: z.object({
+    sessionID: z.string().min(1),
+    modeId: z.string().catch(""),
+  }),
+})
+
+const acpConfigOptionValueSchema = z.object({
+  value: z.string(),
+  name: z.string(),
+  description: z.string().optional(),
+})
+
+const acpConfigOptionSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  type: z.string().catch("select"),
+  category: z.string().optional(),
+  currentValue: z.string().nullable().catch(null),
+  options: z.array(acpConfigOptionValueSchema).optional(),
+})
+
+const acpNamedItemSchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string().optional(),
+})
+
+const openchamberAcpConfigOptionsSchema = z.object({
+  type: z.literal("openchamber:acp-config-options"),
+  properties: z.object({
+    sessionID: z.string().min(1),
+    configOptions: z.array(acpConfigOptionSchema).catch([]),
+    currentModeId: z.string().nullable().optional(),
+    currentModelId: z.string().nullable().optional(),
+    availableModels: z.array(acpNamedItemSchema).optional(),
+    availableModes: z.array(acpNamedItemSchema).optional(),
+  }),
+})
+
+const acpCommandSchema = z.object({
+  name: z.string().min(1),
+  description: z.string().optional(),
+  input: z.record(z.string(), z.unknown()).optional(),
+})
+
+const openchamberAcpCommandsSchema = z.object({
+  type: z.literal("openchamber:acp-commands"),
+  properties: z.object({
+    sessionID: z.string().min(1),
+    availableCommands: z.array(acpCommandSchema).catch([]),
+  }),
+})
+
 // The server writes a session's recap and suggestion a while after its turn
 // ends, reading the session's directory; it announces both ends of the wait.
 const openchamberSessionAssistSchema = z.object({
@@ -392,6 +461,22 @@ function translateOpenchamberEvent(type: string, payload: unknown): SyncEvent | 
     case "openchamber:acp-permission-settled": {
       const parsed = openchamberAcpPermissionSettledSchema.safeParse(payload)
       return parsed.success ? { type: "openchamber.acp-permission-settled", properties: parsed.data.properties } : null
+    }
+    case "openchamber:acp-plan": {
+      const parsed = openchamberAcpPlanSchema.safeParse(payload)
+      return parsed.success ? { type: "openchamber.acp-plan", properties: parsed.data.properties } : null
+    }
+    case "openchamber:acp-mode": {
+      const parsed = openchamberAcpModeSchema.safeParse(payload)
+      return parsed.success ? { type: "openchamber.acp-mode", properties: parsed.data.properties } : null
+    }
+    case "openchamber:acp-config-options": {
+      const parsed = openchamberAcpConfigOptionsSchema.safeParse(payload)
+      return parsed.success ? { type: "openchamber.acp-config-options", properties: parsed.data.properties } : null
+    }
+    case "openchamber:acp-commands": {
+      const parsed = openchamberAcpCommandsSchema.safeParse(payload)
+      return parsed.success ? { type: "openchamber.acp-commands", properties: parsed.data.properties } : null
     }
     case "openchamber:session-assist": {
       const parsed = openchamberSessionAssistSchema.safeParse(payload)

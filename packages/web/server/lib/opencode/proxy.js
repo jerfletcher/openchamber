@@ -858,7 +858,7 @@ export const registerOpenCodeProxy = (app, deps) => {
       };
       if (spaceEventHub && isGlobalStream) {
         unsubscribeSpaceEvents = spaceEventHub.subscribeEvent((event) => {
-          if (event.spaceId === null) return;
+          if (event.spaceId === null || event.spaceId === 'acp') return;
           pendingSpaceBlocks.push(`data: ${JSON.stringify(event.payload)}\n\n`);
           void flushSpaceBlocks();
         }, { spaces: true });
@@ -1261,47 +1261,53 @@ export const registerOpenCodeProxy = (app, deps) => {
   }
 
   // ACP Autonomous Session & Catalog routes
+  const buildAcpCatalogList = (kind, baseList = []) => {
+    const aug = acpSessionBridge.getCatalogAugmentation();
+    const list = Array.isArray(baseList) ? baseList.slice() : [];
+    if (kind === 'agent') {
+      const seen = new Set(list.map((a) => a?.id || a?.name));
+      for (const agent of aug.agents || []) {
+        if (!seen.has(agent.id)) list.push(agent);
+      }
+    } else if (kind === 'provider') {
+      const seen = new Set(list.map((p) => p?.id));
+      for (const provider of aug.providers || []) {
+        if (!seen.has(provider.id)) list.push(provider);
+      }
+    } else if (kind === 'model') {
+      const byId = new Map(list.map((m, idx) => [m?.id || `${m?.providerID}/${m?.modelID}`, idx]));
+      for (const model of aug.models || []) {
+        const existingIdx = byId.get(model.id);
+        if (existingIdx === undefined) {
+          list.push(model);
+        } else if (!Array.isArray(list[existingIdx].variants) || list[existingIdx].variants.length === 0) {
+          list[existingIdx] = { ...list[existingIdx], variants: model.variants };
+        }
+      }
+    }
+    return list;
+  };
+
   const forwardAcpCatalogOverlay = (kind) => async (req, res, next) => {
     if (!acpSessionBridge || typeof acpSessionBridge.getCatalogAugmentation !== 'function') return next();
     try {
       const signal = createUpstreamReadSignal({ res, timeoutMs: SESSION_UPSTREAM_TIMEOUT_MS });
       const upstreamPath = await getRequestUpstreamPath(req);
       const result = await fetchSessionListPayload(upstreamPath, { req, signal });
+      if (!result.isJson || result.parseError || !result.upstream.ok || !Array.isArray(result.payload?.data)) {
+        if (res.destroyed || res.writableEnded) return;
+        res.status(200).json({ data: buildAcpCatalogList(kind) });
+        return;
+      }
       res.status(result.upstream.status);
       applyForwardProxyResponseHeaders(result.upstream.headers, res);
       res.setHeader('content-type', result.contentType);
-      if (!result.isJson || result.parseError || !result.upstream.ok || !Array.isArray(result.payload?.data)) {
-        res.end(result.bodyText);
-        return;
-      }
-      const aug = acpSessionBridge.getCatalogAugmentation();
-      const list = result.payload.data.slice();
-      if (kind === 'agent') {
-        const seen = new Set(list.map((a) => a?.id || a?.name));
-        for (const agent of aug.agents) {
-          if (!seen.has(agent.id)) list.push(agent);
-        }
-      } else if (kind === 'provider') {
-        const seen = new Set(list.map((p) => p?.id));
-        for (const provider of aug.providers) {
-          if (!seen.has(provider.id)) list.push(provider);
-        }
-      } else if (kind === 'model') {
-        const byId = new Map(list.map((m, idx) => [m?.id || `${m?.providerID}/${m?.modelID}`, idx]));
-        for (const model of aug.models) {
-          const existingIdx = byId.get(model.id);
-          if (existingIdx === undefined) {
-            list.push(model);
-          } else if (!Array.isArray(list[existingIdx].variants) || list[existingIdx].variants.length === 0) {
-            list[existingIdx] = { ...list[existingIdx], variants: model.variants };
-          }
-        }
-      }
-      res.json({ ...result.payload, data: list });
+      res.json({ ...result.payload, data: buildAcpCatalogList(kind, result.payload.data) });
     } catch (error) {
       const status = sessionRouteErrorStatus(error);
       if (status === null) return;
-      next(error);
+      if (res.headersSent) return next(error);
+      res.status(200).json({ data: buildAcpCatalogList(kind) });
     }
   };
 
@@ -1322,12 +1328,33 @@ export const registerOpenCodeProxy = (app, deps) => {
         title: req.body?.title,
         directory,
         agent: acpAgent.id,
-        model: req.body?.model?.id || acpAgent.defaultModel,
+        model: req.body?.model || acpAgent.defaultModel,
       });
       return res.json({ data: session });
     }
     next();
   });
+
+  const handleAcpTurnStart = async (req, res, sessionID, promptData) => {
+    if (req.body?.model) acpSessionBridge.switchModel(sessionID, req.body.model);
+    try {
+      const userMsg = await acpSessionBridge.startTurn(sessionID, promptData);
+      const userInbox = {
+        id: userMsg ? userMsg.id : (promptData.id || `msg_${Date.now()}`),
+        sessionID,
+        time: userMsg?.time || { created: Date.now() },
+        type: 'user',
+        payload: {
+          text: promptData.text || '',
+        },
+        delivery: 'express',
+      };
+      return res.json({ data: userInbox });
+    } catch (err) {
+      console.error('[proxy] ACP startTurn error:', err);
+      return res.status(500).json({ error: err.message });
+    }
+  };
 
   app.post(['/api/session/:sessionID/prompt', '/api/session/:sessionID/message'], (req, res, next) => {
     const sessionID = sessionIdFromRequest(req);
@@ -1352,26 +1379,30 @@ export const registerOpenCodeProxy = (app, deps) => {
             directory: req.body?.directory || req.get('x-opencode-directory'),
             files: req.body?.files || req.body?.attachments || [],
           };
-          if (req.body?.model?.variant) acpSessionBridge.switchModel(sessionID, req.body.model);
-          try {
-            const userMsg = await acpSessionBridge.startTurn(sessionID, promptData);
-            const userInbox = {
-              id: userMsg ? userMsg.id : (promptData.id || `msg_${Date.now()}`),
-              sessionID,
-              time: userMsg?.time || { created: Date.now() },
-              type: 'user',
-              payload: {
-                text: promptData.text || '',
-              },
-              delivery: 'express',
-            };
-            return res.json({ data: userInbox });
-          } catch (err) {
-            console.error('[proxy] ACP startTurn error:', err);
-            return res.status(500).json({ error: err.message });
-          }
+          return handleAcpTurnStart(req, res, sessionID, promptData);
         }
         next();
+      });
+    }
+    next();
+  });
+
+  app.post('/api/session/:sessionID/synthetic', (req, res, next) => {
+    const sessionID = sessionIdFromRequest(req);
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      return parsePromptJson(req, res, (err) => {
+        if (err) return res.status(400).json({ error: err.message });
+        const result = acpSessionBridge.addSyntheticContext?.(sessionID, {
+          id: req.body?.id,
+          text: req.body?.text ?? '',
+          description: req.body?.description,
+          metadata: req.body?.metadata,
+          resume: req.body?.resume,
+        });
+        if (!result) {
+          return res.status(404).json({ error: 'ACP session not found' });
+        }
+        return res.json({ data: result });
       });
     }
     next();
@@ -1470,7 +1501,22 @@ export const registerOpenCodeProxy = (app, deps) => {
   app.post('/api/session/:sessionID/command', (req, res, next) => {
     const sessionID = sessionIdFromRequest(req);
     if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
-      return res.status(204).end();
+      return parsePromptJson(req, res, (err) => {
+        if (err) return res.status(400).json({ error: err.message });
+        const commandName = String(req.body?.name || req.body?.command || '').trim().replace(/^\/+/, '');
+        if (!commandName) {
+          return res.status(400).json({ error: 'Command name is required' });
+        }
+        const rawArgs = req.body?.text ?? req.body?.arguments ?? req.body?.args ?? '';
+        const argsText = typeof rawArgs === 'string' ? rawArgs.trim() : String(rawArgs).trim();
+        const promptData = {
+          id: req.body?.id,
+          text: argsText ? `/${commandName} ${argsText}` : `/${commandName}`,
+          directory: req.body?.directory || req.get('x-opencode-directory'),
+          files: req.body?.files || req.body?.attachments || [],
+        };
+        return handleAcpTurnStart(req, res, sessionID, promptData);
+      });
     }
     next();
   });

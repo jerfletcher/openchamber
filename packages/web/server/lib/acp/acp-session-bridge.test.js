@@ -528,3 +528,225 @@ describe('AcpSessionBridge permission prompts', () => {
     expect(broadcasts).toEqual([]);
   });
 });
+
+describe('AcpSessionBridge P0/P1 fixes', () => {
+  const makeTestDir = () => `/tmp/acp-p0p1-test-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+  it('finalizes reasoning and text parts and sets session.outcome on failure and abort', async () => {
+    const events = [];
+    const failRuntime = {
+      getRegisteredAgents: () => [{ id: 'antigravity', providerId: 'antigravity', defaultModel: 'gemini-3.8-flash' }],
+      createSession: async () => ({ sessionId: 'acp_fail_1', promptCapabilities: {} }),
+      isSessionAlive: () => true,
+      getSession: () => ({ sessionId: 'acp_fail_1', promptCapabilities: {} }),
+      setModel: async () => ({}),
+      cancel: async () => ({}),
+      prompt: async (_id, _blocks, onChunk) => {
+        onChunk({ type: 'thought', delta: 'thinking before crash' });
+        throw new Error('Upstream exploded');
+      },
+    };
+    const bridge = new AcpSessionBridge({ runtime: failRuntime, dataDir: makeTestDir() });
+    bridge.subscribeEvent((e) => events.push(e));
+    const ses = bridge.createSession({ id: 'ses_fail', directory: '/repo', agent: 'antigravity' });
+    await bridge.startTurn(ses.id, { text: 'crash' });
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(ses.outcome).toBe('failed');
+    expect(ses.error?.message).toBe('Upstream exploded');
+    const aMsg = ses.messages.find((m) => m.type === 'assistant');
+    const rPart = aMsg.content.find((p) => p.type === 'reasoning');
+    expect(typeof rPart.time.end).toBe('number');
+    expect(events.some((e) => e.type === 'session.reasoning.ended' && e.data?.ordinal === 0)).toBe(true);
+    expect(events.some((e) => e.type === 'session.idle' && e.properties?.outcome === 'failed')).toBe(true);
+
+    // Abort case while streaming both reasoning and text
+    events.length = 0;
+    let triggerChunk;
+    const abortRuntime = {
+      getRegisteredAgents: () => [{ id: 'antigravity', providerId: 'antigravity', defaultModel: 'gemini-3.8-flash' }],
+      createSession: async () => ({ sessionId: 'acp_abort_1', promptCapabilities: {} }),
+      isSessionAlive: () => true,
+      getSession: () => ({ sessionId: 'acp_abort_1', promptCapabilities: {} }),
+      setModel: async () => ({}),
+      cancel: async () => ({}),
+      prompt: (_id, _blocks, onChunk) => new Promise((resolve) => {
+        triggerChunk = () => {
+          onChunk({ type: 'text', delta: 'partial answer' });
+        };
+        setTimeout(() => resolve({ usage: {} }), 500);
+      }),
+    };
+    const bridge2 = new AcpSessionBridge({ runtime: abortRuntime, dataDir: makeTestDir() });
+    bridge2.subscribeEvent((e) => events.push(e));
+    const ses2 = bridge2.createSession({ id: 'ses_abort', directory: '/repo', agent: 'antigravity' });
+    await bridge2.startTurn(ses2.id, { text: 'abort me' });
+    await new Promise((r) => setTimeout(r, 20));
+    triggerChunk();
+    expect(bridge2.abortTurn(ses2.id)).toBe(true);
+
+    expect(ses2.outcome).toBe('interrupted');
+    const aMsg2 = ses2.messages.find((m) => m.type === 'assistant');
+    const tPart2 = aMsg2.content.find((p) => p.type === 'text');
+    expect(typeof tPart2.time.end).toBe('number');
+    expect(events.some((e) => e.type === 'session.text.ended' && e.data?.ordinal === 0 && e.data?.text === 'partial answer')).toBe(true);
+  });
+
+  it('does not clobber session.model in switchAgent when providerID already matches', () => {
+    const bridge = new AcpSessionBridge({
+      runtime: { getRegisteredAgents: () => [{ id: 'antigravity', providerId: 'antigravity', defaultModel: 'gemini-3.8-flash' }] },
+      dataDir: makeTestDir(),
+    });
+    const ses = bridge.createSession({ id: 'ses_sw', directory: '/repo', agent: 'antigravity' });
+    bridge.switchModel(ses.id, { id: 'gemini-4-argon', providerID: 'antigravity', variant: 'high' });
+    bridge.switchAgent(ses.id, 'antigravity');
+    expect(ses.model).toEqual({ id: 'gemini-4-argon', providerID: 'antigravity', variant: 'high' });
+  });
+
+  it('preserves ACP tool identity, handles in_progress updates, and serializes diff blocks', async () => {
+    const events = [];
+    const runtime = {
+      getRegisteredAgents: () => [{ id: 'antigravity', providerId: 'antigravity', defaultModel: 'gemini-3.8-flash' }],
+      createSession: async () => ({ sessionId: 'acp_tool_1', promptCapabilities: {} }),
+      isSessionAlive: () => true,
+      getSession: () => ({ sessionId: 'acp_tool_1', promptCapabilities: {} }),
+      setModel: async () => ({}),
+      prompt: async (_id, _blocks, onChunk) => {
+        onChunk({
+          type: 'tool',
+          tool: {
+            toolCallId: 'call_edit_1',
+            kind: 'edit',
+            title: 'Edit src/app.ts',
+            locations: [{ path: 'src/app.ts', line: 10 }],
+            rawInput: { path: 'src/app.ts' },
+          },
+        });
+        onChunk({
+          type: 'tool_update',
+          update: {
+            toolCallId: 'call_edit_1',
+            status: 'in_progress',
+            title: 'Editing src/app.ts...',
+          },
+        });
+        onChunk({
+          type: 'tool_update',
+          update: {
+            toolCallId: 'call_edit_1',
+            status: 'completed',
+            content: [{ type: 'diff', path: 'src/app.ts', oldText: 'const a = 1;', newText: 'const a = 2;' }],
+          },
+        });
+        return { usage: {} };
+      },
+    };
+    const bridge = new AcpSessionBridge({ runtime, dataDir: makeTestDir() });
+    bridge.subscribeEvent((e) => events.push(e));
+    const ses = bridge.createSession({ id: 'ses_tool', directory: '/repo', agent: 'antigravity' });
+    await bridge.startTurn(ses.id, { text: 'edit file' });
+    await new Promise((r) => setTimeout(r, 40));
+
+    const aMsg = ses.messages.find((m) => m.type === 'assistant');
+    const toolPart = aMsg.content.find((p) => p.type === 'tool');
+    expect(toolPart.name).toBe('edit');
+    expect(toolPart.kind).toBe('edit');
+    expect(toolPart.title).toBe('Editing src/app.ts...');
+    expect(toolPart.locations).toEqual([{ path: 'src/app.ts', line: 10 }]);
+    expect(toolPart.rawInput).toEqual({ path: 'src/app.ts' });
+    expect(toolPart.state.output).toContain('--- a/src/app.ts');
+    expect(toolPart.state.output).toContain('-const a = 1;');
+    expect(toolPart.state.output).toContain('+const a = 2;');
+    expect(toolPart.state.metadata.filediff).toEqual({
+      file: 'src/app.ts',
+      before: 'const a = 1;',
+      after: 'const a = 2;',
+    });
+    expect(events.some((e) => e.type === 'session.tool.updated' && e.data?.status === 'in_progress')).toBe(true);
+  });
+
+  it('tracks dynamic reasoningOrdinal and textOrdinal across tool calls', async () => {
+    const events = [];
+    const runtime = {
+      getRegisteredAgents: () => [{ id: 'antigravity', providerId: 'antigravity', defaultModel: 'gemini-3.8-flash' }],
+      createSession: async () => ({ sessionId: 'acp_ord_1', promptCapabilities: {} }),
+      isSessionAlive: () => true,
+      getSession: () => ({ sessionId: 'acp_ord_1', promptCapabilities: {} }),
+      setModel: async () => ({}),
+      prompt: async (_id, _blocks, onChunk) => {
+        onChunk({ type: 'thought', delta: 'think 0' });
+        onChunk({ type: 'text', delta: 'text 0' });
+        onChunk({ type: 'tool', tool: { toolCallId: 'c1', kind: 'read', title: 'Read' } });
+        onChunk({ type: 'tool_update', update: { toolCallId: 'c1', status: 'completed', content: ['ok'] } });
+        onChunk({ type: 'thought', delta: 'think 1' });
+        onChunk({ type: 'text', delta: 'text 1' });
+        return { usage: {} };
+      },
+    };
+    const bridge = new AcpSessionBridge({ runtime, dataDir: makeTestDir() });
+    bridge.subscribeEvent((e) => events.push(e));
+    const ses = bridge.createSession({ id: 'ses_ord', directory: '/repo', agent: 'antigravity' });
+    await bridge.startTurn(ses.id, { text: 'multi-step' });
+    await new Promise((r) => setTimeout(r, 40));
+
+    const aMsg = ses.messages.find((m) => m.type === 'assistant');
+    const reasonings = aMsg.content.filter((p) => p.type === 'reasoning');
+    const texts = aMsg.content.filter((p) => p.type === 'text');
+    expect(reasonings.map((r) => r.id)).toEqual([`${aMsg.id}:reasoning:0`, `${aMsg.id}:reasoning:1`]);
+    expect(texts.map((t) => t.id)).toEqual([`${aMsg.id}:text:0`, `${aMsg.id}:text:1`]);
+    expect(events.filter((e) => e.type === 'session.reasoning.started').map((e) => e.data.ordinal)).toEqual([0, 1]);
+    expect(events.filter((e) => e.type === 'session.text.started').map((e) => e.data.ordinal)).toEqual([0, 1]);
+  });
+
+  it('wires setConfigOption for model/thought_level/mode, forwards openchamber:acp-* chunks, and prepends synthetic context', async () => {
+    const events = [];
+    const configCalls = [];
+    let capturedPromptBlocks = null;
+    const runtime = {
+      getRegisteredAgents: () => [{ id: 'antigravity', providerId: 'antigravity', defaultModel: 'gemini-3.8-flash' }],
+      createSession: async () => ({
+        sessionId: 'acp_cfg_1',
+        promptCapabilities: {},
+        configOptions: [{ id: 'mode', currentValue: 'code', options: [{ value: 'code', name: 'Code' }] }],
+      }),
+      isSessionAlive: () => true,
+      getSession: () => ({ sessionId: 'acp_cfg_1', promptCapabilities: {} }),
+      setConfigOption: async (sid, cid, val) => {
+        configCalls.push({ sid, cid, val });
+        return { success: true, configOptions: [{ id: cid, currentValue: val }] };
+      },
+      setModel: async () => ({}),
+      prompt: async (_id, blocks, onChunk) => {
+        capturedPromptBlocks = blocks;
+        onChunk({ type: 'plan', entries: [{ content: 'Step 1', priority: 'high', status: 'in_progress' }] });
+        onChunk({ type: 'mode', modeId: 'architect' });
+        onChunk({ type: 'config_options', configOptions: [{ id: 'thought_level', currentValue: 'high' }] });
+        onChunk({ type: 'commands', availableCommands: [{ name: 'plan', description: 'Create plan' }] });
+        onChunk({ type: 'text', delta: 'done' });
+        return { usage: {} };
+      },
+    };
+    const bridge = new AcpSessionBridge({ runtime, dataDir: makeTestDir() });
+    bridge.subscribeEvent((e) => events.push(e));
+    const ses = bridge.createSession({ id: 'ses_cfg', directory: '/repo', agent: 'antigravity' });
+    bridge.switchModel(ses.id, { id: 'gemini-4-argon', providerID: 'antigravity', variant: 'high' });
+    const syn = bridge.addSyntheticContext(ses.id, { id: 'syn_1', text: 'System reminder: follow rules.' });
+    expect(syn).toEqual({ ok: true, id: 'syn_1', sessionID: ses.id });
+
+    await bridge.startTurn(ses.id, { text: 'hello' });
+    await new Promise((r) => setTimeout(r, 40));
+
+    expect(configCalls).toContainEqual({ sid: 'acp_cfg_1', cid: 'model', val: 'gemini-4-argon' });
+    expect(configCalls).toContainEqual({ sid: 'acp_cfg_1', cid: 'thought_level', val: 'high' });
+    expect(capturedPromptBlocks[0]).toEqual({ type: 'text', text: 'System reminder: follow rules.' });
+    expect(capturedPromptBlocks[1]).toEqual({ type: 'text', text: 'hello' });
+    expect(ses.pendingSyntheticContext).toEqual([]);
+    expect(ses.acpPlan).toEqual([{ content: 'Step 1', priority: 'high', status: 'in_progress' }]);
+    expect(ses.currentModeId).toBe('architect');
+    expect(ses.availableCommands).toEqual([{ name: 'plan', description: 'Create plan' }]);
+    expect(events.some((e) => e.type === 'openchamber:acp-plan' && e.properties?.sessionID === ses.id)).toBe(true);
+    expect(events.some((e) => e.type === 'openchamber:acp-mode' && e.properties?.modeId === 'architect')).toBe(true);
+    expect(events.some((e) => e.type === 'openchamber:acp-config-options')).toBe(true);
+    expect(events.some((e) => e.type === 'openchamber:acp-commands')).toBe(true);
+  });
+});

@@ -14,6 +14,7 @@
  * it grows without a lookup by position.
  */
 
+import type { AcpNotice } from "@/lib/acp/types"
 import type {
   AgentInfo,
   CommandInfo,
@@ -209,6 +210,7 @@ export type AssistantMessage = MessageBase & {
   tokens?: TokenUsageInfo
   snapshot?: { start?: string; end?: string; files?: string[] }
   retry?: { attempt: number; at: number; error: StructuredError }
+  acpNotices?: AcpNotice[]
 }
 
 /** Context OpenCode injected on the client's behalf (our context attachments land here). */

@@ -114,6 +114,7 @@ import {
 } from "./global-session-status"
 import { applyGlobalBlockingRequestEvents, applyWaitingPageEvent, settledPageKeys, useGlobalBlockingRequestsStore } from "./global-blocking-requests"
 import { applyAcpPermissionEvents } from "./acp-permissions"
+import { applyAcpConfigEvents } from "./acp-config"
 import { requestHostTurnStarts } from "./host-session-status-seed"
 import { setHostTurnStartRequester } from "./session-activity-timing"
 import { applyBackgroundShellEvents, directoriesWithRunningShells, refreshBackgroundShells } from "./background-shells"
@@ -2118,6 +2119,10 @@ const isControlStreamOnlyEvent = (payload: SyncEvent): payload is ControlStreamO
   || payload.type === "openchamber.workflow-run-removed"
   || payload.type === "openchamber.acp-permission-asked"
   || payload.type === "openchamber.acp-permission-settled"
+  || payload.type === "openchamber.acp-plan"
+  || payload.type === "openchamber.acp-mode"
+  || payload.type === "openchamber.acp-config-options"
+  || payload.type === "openchamber.acp-commands"
 )
 
 /**
@@ -2150,6 +2155,12 @@ const applyControlStreamOnlyEvent = (payload: ControlStreamOnlyEvent): void => {
     case "openchamber.acp-permission-settled":
       applyAcpPermissionEvents([payload])
       if (payload.type === "openchamber.acp-permission-asked") notifyAcpPermission(payload)
+      return
+    case "openchamber.acp-plan":
+    case "openchamber.acp-mode":
+    case "openchamber.acp-config-options":
+    case "openchamber.acp-commands":
+      applyAcpConfigEvents([payload])
       return
   }
 }

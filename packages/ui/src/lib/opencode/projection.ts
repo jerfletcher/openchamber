@@ -242,6 +242,7 @@ export function projectAssistantContent(
 }
 
 function projectAssistantMessage(info: SessionMessageAssistant, sessionID: string): AssistantMessage {
+  const acpNotices = (info as { acpNotices?: AssistantMessage["acpNotices"] }).acpNotices
   return compact({
     id: info.id,
     sessionID,
@@ -258,6 +259,7 @@ function projectAssistantMessage(info: SessionMessageAssistant, sessionID: strin
     snapshot: info.snapshot,
     retry: info.retry,
     metadata: info.metadata,
+    acpNotices: Array.isArray(acpNotices) && acpNotices.length > 0 ? acpNotices : undefined,
   })
 }
 

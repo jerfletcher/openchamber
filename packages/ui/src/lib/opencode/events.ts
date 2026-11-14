@@ -14,7 +14,15 @@
  */
 
 import type { OpenCodeEvent } from "@opencode/client"
-import type { AcpPermissionOption, AcpToolCall } from "@/lib/acp/types"
+import type {
+  AcpCommandInfo,
+  AcpConfigOption,
+  AcpModeInfo,
+  AcpModelInfo,
+  AcpPermissionOption,
+  AcpPlanEntry,
+  AcpToolCall,
+} from "@/lib/acp/types"
 import type { WorkflowRun } from "@/lib/workflows/model"
 import {
   compact,
@@ -219,6 +227,20 @@ export type SyncEvent =
   | { type: "openchamber.acp-permission-asked"; properties: AcpPermissionAskedProperties }
   /** That prompt was answered, dismissed, or cancelled with its turn. */
   | { type: "openchamber.acp-permission-settled"; properties: AcpPermissionSettledProperties }
+  | { type: "openchamber.acp-plan"; properties: { sessionID: string; entries: AcpPlanEntry[] } }
+  | { type: "openchamber.acp-mode"; properties: { sessionID: string; modeId: string } }
+  | {
+      type: "openchamber.acp-config-options";
+      properties: {
+        sessionID: string;
+        configOptions: AcpConfigOption[];
+        currentModeId?: string | null;
+        currentModelId?: string | null;
+        availableModels?: AcpModelInfo[];
+        availableModes?: AcpModeInfo[];
+      };
+    }
+  | { type: "openchamber.acp-commands"; properties: { sessionID: string; availableCommands: AcpCommandInfo[] } }
   /** The server started or stopped waiting to write a session's recap and suggestion. */
   | { type: "openchamber.session-assist"; properties: { sessionID: string; directory: string | null; pending: boolean } }
   /** A workflow run changed: proposed, approved, an agent moved on, or it ended. */

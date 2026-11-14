@@ -16,6 +16,8 @@
  * entry cannot land after the user's own archive or unarchive of that session.
  */
 
+import { getAcpSessionBridge } from '../acp/acp-session-bridge.js';
+
 /** PATCHes in flight at once; one batch is a worktree's sessions or a sweep. */
 const CONCURRENCY = 6;
 
@@ -42,10 +44,29 @@ const mapLimited = async (items, limit, work) => {
  *
  * @param {object} options
  * @param {(directory?: string) => any} options.clientFor
+ * @param {ReturnType<typeof getAcpSessionBridge>} [options.acpBridge]
  */
-export const createOpenCodeSessionArchive = ({ clientFor }) => ({
-  setArchived: (sessionID, archived) => clientFor().session.update({ sessionID, archived }),
+export const createOpenCodeSessionArchive = ({ clientFor, acpBridge } = {}) => ({
+  setArchived: (sessionID, archived) => {
+    const bridge = acpBridge ?? getAcpSessionBridge();
+    if (bridge?.isAcpSession?.(sessionID)) {
+      const updated = bridge.updateSession(sessionID, { archived });
+      if (!updated) {
+        const err = new Error(`ACP session not found: ${sessionID}`);
+        err._tag = 'SessionNotFoundError';
+        throw err;
+      }
+      return 'acp';
+    }
+    return clientFor().session.update({ sessionID, archived });
+  },
   readArchivedAt: async (sessionID) => {
+    const bridge = acpBridge ?? getAcpSessionBridge();
+    if (bridge?.isAcpSession?.(sessionID)) {
+      const session = bridge.getSession(sessionID);
+      if (!session) return undefined;
+      return session.time?.archived ?? (session.archived ? (session.time?.updated ?? 1) : null);
+    }
     try {
       const session = await clientFor().session.get({ sessionID });
       return session.time?.archived ?? null;
@@ -77,11 +98,11 @@ export const createSessionArchive = ({ store, openCode, announce = () => {} }) =
     return next;
   };
 
-  /** `'opencode'`, `'unknown-session'` or `'failed'` for one push. */
+  /** `'opencode'`, `'acp'`, `'unknown-session'` or `'failed'` for one push. */
   const pushToOpenCode = async (id, archived) => {
     try {
-      await openCode.setArchived(id, archived);
-      return 'opencode';
+      const result = await openCode.setArchived(id, archived);
+      return result === 'acp' ? 'acp' : 'opencode';
     } catch (error) {
       if (errorTag(error) === 'SessionNotFoundError') return 'unknown-session';
       console.warn(`[openchamber-sessions] could not ${archived ? 'archive' : 'unarchive'} ${id}:`, error?.message ?? error);
@@ -90,16 +111,18 @@ export const createSessionArchive = ({ store, openCode, announce = () => {} }) =
   };
 
   /**
-   * Sets one session's state on OpenCode and drops its file entry. True when
-   * both hold. Clients hear the state whenever the file changed, since
-   * OpenCode stays silent when its own record already matched.
+   * Sets one session's state on OpenCode (or ACP) and drops its file entry. True
+   * when both hold. Clients hear the state whenever the file changed or the
+   * session lives in ACP, since OpenCode stays silent when its own record
+   * already matched.
    */
   const apply = (id, archivedAt) => runForSession(id, async () => {
-    if (await pushToOpenCode(id, archivedAt !== null) !== 'opencode') return false;
+    const pushed = await pushToOpenCode(id, archivedAt !== null);
+    if (pushed !== 'opencode' && pushed !== 'acp') return false;
     const hadEntry = (await store.entry(id)) !== undefined;
     const { failedIds } = await store.forget([id]);
     if (failedIds.length > 0) return false;
-    if (hadEntry) announce(id, archivedAt);
+    if (hadEntry || pushed === 'acp') announce(id, archivedAt);
     return true;
   });
 

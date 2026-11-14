@@ -1,6 +1,7 @@
 import React from 'react';
 import { useMobileAppActions } from '@/apps/mobileAppContext';
 import type { FilePart, Part } from '@/lib/opencode/model';
+import type { AcpNotice } from '@/lib/acp/types';
 
 import { sessionMentionChipsOf } from './parts/sessionMentionChips';
 import { useReferenceLinkChips } from './parts/referenceLinkChips';
@@ -321,6 +322,8 @@ interface MessageBodyProps {
     extraActions?: MessageExtraAction[];
     /** The session whose agent sent this user message, linked at the foot of the bubble. */
     promptOrigin?: PromptOrigin;
+    /** Notices attached to an ACP assistant message (e.g. capability downgrades to resource_link). */
+    acpNotices?: readonly AcpNotice[];
 }
 
 /** One extension action on a message: an icon button on hover, a labelled row in the touch sheet. */
@@ -1281,6 +1284,7 @@ const AssistantMessageBody = React.memo(({
     footerAgentName,
     footerVariant,
     extraActions,
+    acpNotices,
 }: Omit<MessageBodyProps, 'isUser'>) => {
     const { t, locale } = useI18n();
     const chatSurfaceMode = useChatSurfaceMode();
@@ -2300,6 +2304,19 @@ const AssistantMessageBody = React.memo(({
                  <div
                      className="message-content-text leading-relaxed overflow-hidden text-foreground/90 [&_p:last-child]:mb-0 [&_ul:last-child]:mb-0 [&_ol:last-child]:mb-0"
                  >
+                    {!slice?.from && acpNotices && acpNotices.length > 0 ? (
+                        <div data-testid="acp-notices" className="mb-2 space-y-1">
+                            {acpNotices.map((notice, idx) => (
+                                <div
+                                    key={`${idx}-${notice.name ?? notice.kind ?? 'notice'}`}
+                                    className="flex items-start gap-2 rounded-lg border border-border/50 bg-[var(--status-info-background)] px-3 py-1.5 typography-meta text-foreground/85"
+                                >
+                                    <Icon name="information" className="mt-0.5 h-3.5 w-3.5 shrink-0 text-[var(--status-info)]" />
+                                    <span className="min-w-0 flex-1 break-words">{notice.message}</span>
+                                </div>
+                            ))}
+                        </div>
+                    ) : null}
                     {renderedParts}
                     {showErrorMessage && (
                         <FadeInOnReveal key="assistant-error">

@@ -716,6 +716,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                                                 errorMessage={assistantErrorText}
                                                 errorResponseBody={assistantErrorResponseBody}
                                                 extraActions={guestMessageActions}
+                                acpNotices={message.info.role === 'assistant' ? message.info.acpNotices : undefined}
                                                 promptOrigin={promptOrigin}
                                             />
                                         </div>
@@ -754,6 +755,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                                         errorResponseBody={assistantErrorResponseBody}
                                         userMessagePart="actions"
                                         extraActions={guestMessageActions}
+                                acpNotices={message.info.role === 'assistant' ? message.info.acpNotices : undefined}
                                     />
                                 </div>
                             </FadeInOnReveal>
@@ -799,6 +801,7 @@ const ChatMessage: React.FC<ChatMessageProps> = ({
                                 footerAgentName={headerAgentName}
                                 footerVariant={headerVariant}
                                 extraActions={guestMessageActions}
+                                acpNotices={message.info.role === 'assistant' ? message.info.acpNotices : undefined}
                             />
 
                         </div>

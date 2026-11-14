@@ -83,6 +83,78 @@ export function buildPromptBlocks(text, files, promptCapabilities = {}) {
   return buildPromptPayload(text, files, promptCapabilities).blocks;
 }
 
+/**
+ * Format an ACP `{ type: 'diff', path, oldText, newText }` content block into a
+ * compact unified diff string with 3 lines of surrounding context.
+ */
+export function formatUnifiedDiff(filePath, oldText, newText) {
+  const target = typeof filePath === 'string' && filePath ? filePath : 'file';
+  const before = typeof oldText === 'string' ? oldText : '';
+  const after = typeof newText === 'string' ? newText : '';
+  const oldLines = before === '' ? [] : before.replace(/\r\n/g, '\n').split('\n');
+  const newLines = after === '' ? [] : after.replace(/\r\n/g, '\n').split('\n');
+  const headerOld = before === '' ? '/dev/null' : `a/${target}`;
+  const headerNew = after === '' ? '/dev/null' : `b/${target}`;
+  const lines = [
+    `--- ${headerOld}`,
+    `+++ ${headerNew}`,
+    `@@ -${oldLines.length > 0 ? 1 : 0},${oldLines.length} +${newLines.length > 0 ? 1 : 0},${newLines.length} @@`,
+  ];
+  let prefix = 0;
+  while (prefix < oldLines.length && prefix < newLines.length && oldLines[prefix] === newLines[prefix]) {
+    prefix++;
+  }
+  let suffix = 0;
+  while (
+    suffix < oldLines.length - prefix &&
+    suffix < newLines.length - prefix &&
+    oldLines[oldLines.length - 1 - suffix] === newLines[newLines.length - 1 - suffix]
+  ) {
+    suffix++;
+  }
+  const contextStart = Math.max(0, prefix - 3);
+  for (let i = contextStart; i < prefix; i++) lines.push(` ${oldLines[i]}`);
+  for (let i = prefix; i < oldLines.length - suffix; i++) lines.push(`-${oldLines[i]}`);
+  for (let i = prefix; i < newLines.length - suffix; i++) lines.push(`+${newLines[i]}`);
+  const suffixStart = oldLines.length - suffix;
+  const contextEnd = Math.min(oldLines.length, suffixStart + 3);
+  for (let i = suffixStart; i < contextEnd; i++) lines.push(` ${oldLines[i]}`);
+  return lines.join('\n');
+}
+
+function extractToolUpdateContent(update) {
+  const textParts = [];
+  const diffs = [];
+  if (Array.isArray(update?.content)) {
+    for (const c of update.content) {
+      if (typeof c === 'string') {
+        if (c) textParts.push(c);
+      } else if (c?.type === 'diff') {
+        const unified = formatUnifiedDiff(c.path, c.oldText, c.newText);
+        diffs.push({
+          path: c.path || '',
+          oldText: c.oldText ?? '',
+          newText: c.newText ?? '',
+          unified,
+        });
+        textParts.push(unified);
+      } else if (c?.content?.text) {
+        textParts.push(c.content.text);
+      } else if (c?.text) {
+        textParts.push(c.text);
+      }
+    }
+  } else if (typeof update?.content === 'string' && update.content) {
+    textParts.push(update.content);
+  }
+  if (textParts.length === 0 && update?.rawOutput?.output) {
+    textParts.push(update.rawOutput.output);
+  }
+  const outputText = textParts.filter(Boolean).join('\n');
+  const unifiedDiff = diffs.map((d) => d.unified).join('\n\n');
+  return { outputText, diffs, unifiedDiff };
+}
+
 export class AcpSessionBridge extends EventEmitter {
   constructor(options = {}) {
     super();
@@ -803,6 +875,145 @@ export class AcpSessionBridge extends EventEmitter {
     return false;
   }
 
+  _syncAcpSessionState(session, acpSession, directory = 'global') {
+    if (!session || !acpSession) return;
+    let changed = false;
+    if (Array.isArray(acpSession.configOptions)) {
+      session.configOptions = acpSession.configOptions;
+      changed = true;
+    }
+    if (Array.isArray(acpSession.availableModels)) {
+      session.availableModels = acpSession.availableModels;
+    }
+    if (Array.isArray(acpSession.availableModes)) {
+      session.availableModes = acpSession.availableModes;
+    }
+    if (typeof acpSession.currentModeId === 'string' && acpSession.currentModeId) {
+      session.currentModeId = acpSession.currentModeId;
+    }
+    if (typeof acpSession.currentModelId === 'string' && acpSession.currentModelId) {
+      session.currentModelId = acpSession.currentModelId;
+    }
+    if (Array.isArray(acpSession.availableCommands) && acpSession.availableCommands.length > 0) {
+      session.availableCommands = acpSession.availableCommands;
+      this.emitEvent({
+        type: 'openchamber:acp-commands',
+        properties: { sessionID: session.id, availableCommands: acpSession.availableCommands },
+      }, directory);
+    }
+    if (changed) {
+      this.saveToDisk();
+      this.emitEvent({
+        type: 'openchamber:acp-config-options',
+        properties: {
+          sessionID: session.id,
+          configOptions: session.configOptions || [],
+          currentModeId: session.currentModeId ?? null,
+          currentModelId: session.currentModelId ?? null,
+          availableModels: session.availableModels || [],
+          availableModes: session.availableModes || [],
+        },
+      }, directory);
+    }
+  }
+
+  _applyAcpChunk(session, chunk, directory = 'global') {
+    if (!session || !chunk) return false;
+    if (chunk.type === 'plan') {
+      const entries = Array.isArray(chunk.entries) ? chunk.entries : [];
+      session.acpPlan = entries;
+      this.saveToDisk();
+      this.emitEvent({
+        type: 'openchamber:acp-plan',
+        properties: { sessionID: session.id, entries },
+      }, directory);
+      return true;
+    }
+    if (chunk.type === 'mode') {
+      const modeId = typeof chunk.modeId === 'string' ? chunk.modeId : '';
+      session.currentModeId = modeId;
+      this.saveToDisk();
+      this.emitEvent({
+        type: 'openchamber:acp-mode',
+        properties: { sessionID: session.id, modeId },
+      }, directory);
+      return true;
+    }
+    if (chunk.type === 'config_options') {
+      const configOptions = Array.isArray(chunk.configOptions) ? chunk.configOptions : [];
+      session.configOptions = configOptions;
+      const modeOpt = configOptions.find((o) => o?.id === 'mode');
+      if (typeof modeOpt?.currentValue === 'string' && modeOpt.currentValue) {
+        session.currentModeId = modeOpt.currentValue;
+      }
+      const modelOpt = configOptions.find((o) => o?.id === 'model');
+      if (typeof modelOpt?.currentValue === 'string' && modelOpt.currentValue) {
+        session.currentModelId = modelOpt.currentValue;
+      }
+      this.saveToDisk();
+      this.emitEvent({
+        type: 'openchamber:acp-config-options',
+        properties: {
+          sessionID: session.id,
+          configOptions,
+          currentModeId: session.currentModeId ?? null,
+          currentModelId: session.currentModelId ?? null,
+          availableModels: session.availableModels || [],
+          availableModes: session.availableModes || [],
+        },
+      }, directory);
+      return true;
+    }
+    if (chunk.type === 'commands') {
+      const availableCommands = Array.isArray(chunk.availableCommands) ? chunk.availableCommands : [];
+      session.availableCommands = availableCommands;
+      this.saveToDisk();
+      this.emitEvent({
+        type: 'openchamber:acp-commands',
+        properties: { sessionID: session.id, availableCommands },
+      }, directory);
+      return true;
+    }
+    return false;
+  }
+
+  async _applyRuntimeModelAndVariant(acpSessionId, baseModelId, variant, session = null, directory = 'global') {
+    if (!acpSessionId) return;
+    let modelApplied = false;
+    if (typeof this.runtime.setConfigOption === 'function') {
+      try {
+        const res = await this.runtime.setConfigOption(acpSessionId, 'model', baseModelId);
+        modelApplied = true;
+        if (session && Array.isArray(res?.configOptions)) {
+          this._applyAcpChunk(session, { type: 'config_options', configOptions: res.configOptions }, directory);
+        }
+      } catch {
+        // Fall back to setModel below
+      }
+    }
+    if (!modelApplied && typeof this.runtime.setModel === 'function') {
+      await this.runtime.setModel(acpSessionId, baseModelId).catch(() => {});
+    }
+
+    if (variant) {
+      let thoughtApplied = false;
+      if (typeof this.runtime.setConfigOption === 'function') {
+        try {
+          const res = await this.runtime.setConfigOption(acpSessionId, 'thought_level', variant);
+          thoughtApplied = true;
+          if (session && Array.isArray(res?.configOptions)) {
+            this._applyAcpChunk(session, { type: 'config_options', configOptions: res.configOptions }, directory);
+          }
+        } catch {
+          // Agent may only accept `${baseModelId}-${variant}` via setModel
+        }
+      }
+      if (!thoughtApplied && typeof this.runtime.setModel === 'function') {
+        await this.runtime.setModel(acpSessionId, `${baseModelId}-${variant}`).catch(() => {});
+      }
+    }
+  }
+
   switchModel(sessionId, model) {
     const session = this.sessions.get(sessionId) || this.getSession(sessionId);
     if (!session) return false;
@@ -821,16 +1032,36 @@ export class AcpSessionBridge extends EventEmitter {
     session.time = session.time || {};
     session.time.updated = Date.now();
     this.saveToDisk();
+
+    const directory = session.location?.directory || 'global';
+    const isAlive = session.acpSessionId && (
+      typeof this.runtime.isSessionAlive === 'function'
+        ? this.runtime.isSessionAlive(session.acpSessionId)
+        : Boolean(this.runtime.getSession?.(session.acpSessionId))
+    );
+    if (isAlive) {
+      void this._applyRuntimeModelAndVariant(session.acpSessionId, resolvedModel, variant, session, directory);
+    }
+
+    this.emitEvent({
+      type: 'session.model.selected',
+      data: { sessionID: sessionId, model: session.model },
+      properties: { sessionID: sessionId, model: session.model },
+    }, directory);
     return true;
   }
 
   switchAgent(sessionId, agent) {
-    const session = this.sessions.get(sessionId);
+    const session = this.sessions.get(sessionId) || this.getSession(sessionId);
     if (!session) return false;
     const nextAgent = agent || session.agent || 'antigravity';
     session.agent = nextAgent;
     const cfg = this.getAgentConfig(nextAgent);
-    if (cfg && session.model && session.model.providerID !== cfg.providerId) {
+    const matchesProvider = !session.model?.providerID
+      || session.model.providerID === cfg?.providerId
+      || session.model.providerID === cfg?.id
+      || session.model.providerID === nextAgent;
+    if (cfg && session.model && !matchesProvider) {
       session.model = {
         id: cfg.defaultModel || session.model.id,
         providerID: cfg.providerId || nextAgent,
@@ -840,6 +1071,28 @@ export class AcpSessionBridge extends EventEmitter {
     session.time.updated = Date.now();
     this.saveToDisk();
     return true;
+  }
+
+  addSyntheticContext(sessionId, payload = {}) {
+    const session = this.sessions.get(sessionId) || this.getSession(sessionId);
+    if (!session) return null;
+    const text = typeof payload?.text === 'string' ? payload.text : '';
+    if (!text.trim()) return null;
+    const entry = {
+      id: payload.id || `syn_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      text,
+      ...(payload.description ? { description: payload.description } : {}),
+      ...(payload.metadata ? { metadata: payload.metadata } : {}),
+      created: Date.now(),
+    };
+    if (!Array.isArray(session.pendingSyntheticContext)) {
+      session.pendingSyntheticContext = [];
+    }
+    session.pendingSyntheticContext.push(entry);
+    session.time = session.time || {};
+    session.time.updated = Date.now();
+    this.saveToDisk();
+    return { ok: true, id: entry.id, sessionID: sessionId };
   }
 
   updateSession(sessionId, updates = {}) {
@@ -858,20 +1111,25 @@ export class AcpSessionBridge extends EventEmitter {
   abortTurn(sessionId) {
     const abortCtrl = this.activeTurns.get(sessionId);
     if (abortCtrl) {
+      const abortTime = Date.now();
       abortCtrl.abort();
       this.activeTurns.delete(sessionId);
+      if (typeof abortCtrl.finalizeOpenParts === 'function') {
+        abortCtrl.finalizeOpenParts(abortTime);
+      }
       const session = this.sessions.get(sessionId);
       const directory = session?.location?.directory || 'global';
       if (session) {
         if (session.acpSessionId && typeof this.runtime.cancel === 'function') {
           this.runtime.cancel(session.acpSessionId).catch(() => {});
         }
+        session.outcome = 'interrupted';
         if (session.time) delete session.time.busy;
-        session.time.idle = Date.now();
+        session.time.idle = abortTime;
         const idleMsg = {
-          id: `msg_${Date.now().toString(36)}_idle`,
+          id: `msg_${abortTime.toString(36)}_idle`,
           sessionID: sessionId,
-          time: { created: Date.now() },
+          time: { created: abortTime },
           type: 'idle',
           role: 'idle',
           outcome: 'interrupted',
@@ -883,7 +1141,7 @@ export class AcpSessionBridge extends EventEmitter {
         type: 'session.execution.interrupted',
         data: { sessionID: sessionId, reason: 'user' },
         properties: { sessionID: sessionId, outcome: 'interrupted' },
-        created: Date.now(),
+        created: abortTime,
       }, directory);
       this.emitEvent({
         type: 'session.idle',
@@ -932,6 +1190,8 @@ export class AcpSessionBridge extends EventEmitter {
     }
 
     const now = Date.now();
+    delete session.outcome;
+    delete session.error;
     session.time.busy = now;
     session.time.updated = now;
 
@@ -1033,13 +1293,45 @@ export class AcpSessionBridge extends EventEmitter {
   async executeTurn(sessionId, session, assistantMsg, text, abortCtrl, directory, files = []) {
     let acpSession = null;
     const assistantMsgId = assistantMsg.id;
-    const reasoningPartId = `${assistantMsgId}:reasoning:0`;
-    const textPartId = `${assistantMsgId}:text:0`;
-    let hasThoughtPart = false;
-    let hasTextPart = false;
-    let accumulatedThought = '';
-    let accumulatedText = '';
+    let nextReasoningOrdinal = 0;
+    let nextTextOrdinal = 0;
+    let activeReasoning = null;
+    let activeText = null;
     const parts = assistantMsg.content;
+
+    const closeActiveReasoning = (endTime = Date.now()) => {
+      if (!activeReasoning) return;
+      const { part, ordinal, text: rText } = activeReasoning;
+      activeReasoning = null;
+      if (!part.time?.end) {
+        part.time = { ...part.time, end: endTime };
+        this.emitEvent({
+          type: 'session.reasoning.ended',
+          data: { sessionID: sessionId, assistantMessageID: assistantMsgId, ordinal, text: rText },
+          created: endTime,
+        }, directory);
+      }
+    };
+
+    const closeActiveText = (endTime = Date.now()) => {
+      if (!activeText) return;
+      const { part, ordinal, text: tText } = activeText;
+      activeText = null;
+      if (!part.time?.end) {
+        part.time = { ...part.time, end: endTime };
+        this.emitEvent({
+          type: 'session.text.ended',
+          data: { sessionID: sessionId, assistantMessageID: assistantMsgId, ordinal, text: tText },
+          created: endTime,
+        }, directory);
+      }
+    };
+
+    const finalizeOpenParts = (endTime = Date.now()) => {
+      closeActiveReasoning(endTime);
+      closeActiveText(endTime);
+    };
+    abortCtrl.finalizeOpenParts = finalizeOpenParts;
 
     try {
       const existingAcpId = session.acpSessionId;
@@ -1061,15 +1353,32 @@ export class AcpSessionBridge extends EventEmitter {
         this.saveToDisk();
       }
 
+      this._syncAcpSessionState(session, acpSession, directory);
+
       if (abortCtrl.signal.aborted) return;
 
       const rawModelId = session.model?.id || 'gemini-3.8-flash';
       const baseModelId = ACP_MODEL_NORM[rawModelId] || rawModelId;
-      const variant = ACP_VARIANTS.has(session.model?.variant) ? session.model.variant : 'medium';
-      const acpTargetModel = `${baseModelId}-${variant}`;
-      await this.runtime.setModel(acpSession.sessionId, acpTargetModel).catch(async () => {
-        await this.runtime.setModel(acpSession.sessionId, baseModelId).catch(() => {});
-      });
+      const variant = ACP_VARIANTS.has(session.model?.variant) ? session.model.variant : null;
+      await this._applyRuntimeModelAndVariant(acpSession.sessionId, baseModelId, variant, session, directory);
+
+      if (session.currentModeId) {
+        let modeApplied = false;
+        if (typeof this.runtime.setConfigOption === 'function') {
+          try {
+            const res = await this.runtime.setConfigOption(acpSession.sessionId, 'mode', session.currentModeId);
+            modeApplied = true;
+            if (Array.isArray(res?.configOptions)) {
+              this._applyAcpChunk(session, { type: 'config_options', configOptions: res.configOptions }, directory);
+            }
+          } catch {
+            // Fall back to setMode below
+          }
+        }
+        if (!modeApplied && typeof this.runtime.setMode === 'function') {
+          await this.runtime.setMode(acpSession.sessionId, session.currentModeId).catch(() => {});
+        }
+      }
 
       const onAbort = () => {
         if (acpSession?.sessionId && typeof this.runtime.cancel === 'function') {
@@ -1079,11 +1388,20 @@ export class AcpSessionBridge extends EventEmitter {
       abortCtrl.signal.addEventListener('abort', onAbort, { once: true });
 
       // Only send content blocks the agent advertised it can accept.
-      const { blocks: promptBlocks, notices } = buildPromptPayload(
+      const { blocks: baseBlocks, notices } = buildPromptPayload(
         text,
         files,
         acpSession.promptCapabilities || {},
       );
+      const promptBlocks = [...baseBlocks];
+      if (Array.isArray(session.pendingSyntheticContext) && session.pendingSyntheticContext.length > 0) {
+        const syntheticBlocks = session.pendingSyntheticContext
+          .filter((entry) => typeof entry?.text === 'string' && entry.text.trim())
+          .map((entry) => ({ type: 'text', text: entry.text }));
+        promptBlocks.unshift(...syntheticBlocks);
+        session.pendingSyntheticContext = [];
+        this.saveToDisk();
+      }
       if (notices.length > 0) {
         assistantMsg.acpNotices = notices;
         for (const notice of notices) this.emit('notice', { sessionID: sessionId, ...notice });
@@ -1092,38 +1410,56 @@ export class AcpSessionBridge extends EventEmitter {
       const promptResult = await this.runtime.prompt(acpSession.sessionId, promptBlocks, (chunk) => {
         if (abortCtrl.signal.aborted) return;
 
+        if (this._applyAcpChunk(session, chunk, directory)) {
+          return;
+        }
+
         if (chunk.type === 'thought' && chunk.delta) {
-          if (!hasThoughtPart) {
-            hasThoughtPart = true;
+          closeActiveText(Date.now());
+          if (!activeReasoning) {
+            const ordinal = nextReasoningOrdinal++;
+            const reasoningPartId = `${assistantMsgId}:reasoning:${ordinal}`;
+            const startTime = Date.now();
             const rPart = {
               id: reasoningPartId,
               sessionID: sessionId,
               messageID: assistantMsgId,
               type: 'reasoning',
               text: '',
-              time: { start: Date.now() },
+              time: { start: startTime },
             };
             parts.push(rPart);
+            activeReasoning = { id: reasoningPartId, ordinal, part: rPart, text: '' };
             this.emitEvent({
               type: 'session.reasoning.started',
-              data: { sessionID: sessionId, assistantMessageID: assistantMsgId, ordinal: 0 },
-              created: Date.now(),
+              data: { sessionID: sessionId, assistantMessageID: assistantMsgId, ordinal },
+              created: startTime,
             }, directory);
           }
-          accumulatedThought += chunk.delta;
-          const r = parts.find((p) => p.id === reasoningPartId);
-          if (r) r.text = accumulatedThought;
+          activeReasoning.text += chunk.delta;
+          activeReasoning.part.text = activeReasoning.text;
 
           this.emitEvent({
             type: 'session.reasoning.delta',
-            data: { sessionID: sessionId, assistantMessageID: assistantMsgId, ordinal: 0, delta: chunk.delta },
+            data: { sessionID: sessionId, assistantMessageID: assistantMsgId, ordinal: activeReasoning.ordinal, delta: chunk.delta },
             created: Date.now(),
           }, directory);
         } else if (chunk.type === 'tool' && chunk.tool) {
-          const callID = chunk.tool.toolCallId || chunk.tool.callID || chunk.tool.id || `call_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-          const toolName = chunk.tool.name || chunk.tool.tool || 'bash';
-          const toolArgs = chunk.tool.args || chunk.tool.rawInput || chunk.tool.input || {};
           const now = Date.now();
+          finalizeOpenParts(now);
+          const callID = chunk.tool.toolCallId || chunk.tool.callID || chunk.tool.id || `call_${now}_${Math.random().toString(36).slice(2, 6)}`;
+          const kind = typeof chunk.tool.kind === 'string' ? chunk.tool.kind : undefined;
+          const title = typeof chunk.tool.title === 'string' ? chunk.tool.title : undefined;
+          const locations = Array.isArray(chunk.tool.locations) ? chunk.tool.locations : undefined;
+          const rawInput = chunk.tool.rawInput && typeof chunk.tool.rawInput === 'object' ? chunk.tool.rawInput : undefined;
+          const toolName = chunk.tool.name || chunk.tool.tool || kind || 'bash';
+          const toolArgs = chunk.tool.args || rawInput || chunk.tool.input || {};
+          const metadata = {
+            ...(kind ? { kind } : {}),
+            ...(title ? { title } : {}),
+            ...(locations ? { locations } : {}),
+            ...(rawInput ? { rawInput } : {}),
+          };
           const toolPart = {
             id: callID,
             sessionID: sessionId,
@@ -1132,19 +1468,49 @@ export class AcpSessionBridge extends EventEmitter {
             type: 'tool',
             name: toolName,
             tool: toolName,
+            ...(kind ? { kind } : {}),
+            ...(title ? { title } : {}),
+            ...(locations ? { locations } : {}),
+            ...(rawInput ? { rawInput } : {}),
             executed: true,
             time: { created: now, ran: now },
-            state: { status: 'running', input: toolArgs, time: { start: now } },
+            state: {
+              status: 'running',
+              input: toolArgs,
+              time: { start: now },
+              ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+            },
           };
           parts.push(toolPart);
           this.emitEvent({
             type: 'session.tool.input.started',
-            data: { sessionID: sessionId, assistantMessageID: assistantMsgId, id: callID, name: toolName },
+            data: {
+              sessionID: sessionId,
+              assistantMessageID: assistantMsgId,
+              id: callID,
+              name: toolName,
+              ...(kind ? { kind } : {}),
+              ...(title ? { title } : {}),
+              ...(locations ? { locations } : {}),
+              ...(rawInput ? { rawInput } : {}),
+            },
             created: now,
           }, directory);
           this.emitEvent({
             type: 'session.tool.called',
-            data: { sessionID: sessionId, assistantMessageID: assistantMsgId, id: callID, name: toolName, input: toolArgs, executed: true },
+            data: {
+              sessionID: sessionId,
+              assistantMessageID: assistantMsgId,
+              id: callID,
+              name: toolName,
+              input: toolArgs,
+              executed: true,
+              ...(kind ? { kind } : {}),
+              ...(title ? { title } : {}),
+              ...(locations ? { locations } : {}),
+              ...(rawInput ? { rawInput } : {}),
+              ...(Object.keys(metadata).length > 0 ? { metadata } : {}),
+            },
             created: now,
           }, directory);
         } else if (chunk.type === 'tool_update' && chunk.update) {
@@ -1152,27 +1518,64 @@ export class AcpSessionBridge extends EventEmitter {
           const callID = update.toolCallId || update.callID || update.id;
           const toolPart = parts.find((p) => p.type === 'tool' && (p.callID === callID || p.id === callID));
           if (toolPart) {
-            let outputText = '';
-            if (Array.isArray(update.content)) {
-              outputText = update.content
-                .map((c) => {
-                  if (typeof c === 'string') return c;
-                  if (c?.content?.text) return c.content.text;
-                  if (c?.text) return c.text;
-                  return '';
-                })
-                .filter(Boolean)
-                .join('\n');
-            } else if (update.rawOutput?.output) {
-              outputText = update.rawOutput.output;
-            } else if (typeof update.content === 'string') {
-              outputText = update.content;
+            if (typeof update.kind === 'string' && update.kind) toolPart.kind = update.kind;
+            if (typeof update.title === 'string' && update.title) toolPart.title = update.title;
+            if (Array.isArray(update.locations)) toolPart.locations = update.locations;
+            if (update.rawInput && typeof update.rawInput === 'object') {
+              toolPart.rawInput = update.rawInput;
+              if (!toolPart.state.input || Object.keys(toolPart.state.input).length === 0) {
+                toolPart.state.input = update.rawInput;
+              }
+            }
+
+            const { outputText, diffs, unifiedDiff } = extractToolUpdateContent(update);
+            const nextMetadata = {
+              ...(toolPart.state.metadata || {}),
+              ...(toolPart.kind ? { kind: toolPart.kind } : {}),
+              ...(toolPart.title ? { title: toolPart.title } : {}),
+              ...(toolPart.locations ? { locations: toolPart.locations } : {}),
+              ...(toolPart.rawInput ? { rawInput: toolPart.rawInput } : {}),
+              ...(diffs.length > 0 ? {
+                diffs,
+                diff: unifiedDiff,
+                filediff: {
+                  file: diffs[0].path,
+                  before: diffs[0].oldText,
+                  after: diffs[0].newText,
+                },
+              } : {}),
+            };
+            if (Object.keys(nextMetadata).length > 0) {
+              toolPart.state.metadata = nextMetadata;
             }
 
             const now = Date.now();
-            toolPart.time.completed = now;
-
-            if (update.status === 'completed') {
+            if (update.status === 'in_progress' || update.status === 'pending') {
+              toolPart.state.status = 'running';
+              toolPart.state.acpStatus = update.status;
+              if (outputText) {
+                toolPart.state.output = outputText;
+                toolPart.state.content = [{ type: 'text', text: outputText }];
+              }
+              this.emitEvent({
+                type: 'session.tool.updated',
+                data: {
+                  sessionID: sessionId,
+                  assistantMessageID: assistantMsgId,
+                  id: toolPart.callID || toolPart.id,
+                  name: toolPart.name,
+                  status: update.status,
+                  ...(toolPart.kind ? { kind: toolPart.kind } : {}),
+                  ...(toolPart.title ? { title: toolPart.title } : {}),
+                  ...(toolPart.locations ? { locations: toolPart.locations } : {}),
+                  ...(toolPart.rawInput ? { rawInput: toolPart.rawInput } : {}),
+                  ...(outputText ? { content: toolPart.state.content } : {}),
+                  ...(toolPart.state.metadata ? { metadata: toolPart.state.metadata } : {}),
+                },
+                created: now,
+              }, directory);
+            } else if (update.status === 'completed') {
+              toolPart.time.completed = now;
               toolPart.state.status = 'completed';
               toolPart.state.output = outputText;
               toolPart.state.content = [{ type: 'text', text: outputText }];
@@ -1183,11 +1586,13 @@ export class AcpSessionBridge extends EventEmitter {
                   assistantMessageID: assistantMsgId,
                   id: toolPart.callID || toolPart.id,
                   content: toolPart.state.content,
+                  ...(toolPart.state.metadata ? { metadata: toolPart.state.metadata } : {}),
                   executed: true,
                 },
                 created: now,
               }, directory);
             } else if (update.status === 'error' || update.status === 'failed') {
+              toolPart.time.completed = now;
               toolPart.state.status = 'error';
               toolPart.state.output = outputText;
               toolPart.state.content = [{ type: 'text', text: outputText }];
@@ -1200,6 +1605,7 @@ export class AcpSessionBridge extends EventEmitter {
                   id: toolPart.callID || toolPart.id,
                   error: toolPart.state.error,
                   content: toolPart.state.content,
+                  ...(toolPart.state.metadata ? { metadata: toolPart.state.metadata } : {}),
                   executed: true,
                 },
                 created: now,
@@ -1207,41 +1613,33 @@ export class AcpSessionBridge extends EventEmitter {
             }
           }
         } else if (chunk.type === 'text' && chunk.delta) {
-          if (!hasTextPart) {
-            hasTextPart = true;
-            if (hasThoughtPart) {
-              const r = parts.find((p) => p.id === reasoningPartId);
-              if (r && !r.time?.end) {
-                r.time = { ...r.time, end: Date.now() };
-                this.emitEvent({
-                  type: 'session.reasoning.ended',
-                  data: { sessionID: sessionId, assistantMessageID: assistantMsgId, ordinal: 0, text: accumulatedThought },
-                  created: Date.now(),
-                }, directory);
-              }
-            }
+          closeActiveReasoning(Date.now());
+          if (!activeText) {
+            const ordinal = nextTextOrdinal++;
+            const textPartId = `${assistantMsgId}:text:${ordinal}`;
+            const startTime = Date.now();
             const tPart = {
               id: textPartId,
               sessionID: sessionId,
               messageID: assistantMsgId,
               type: 'text',
               text: '',
-              time: { start: Date.now() },
+              time: { start: startTime },
             };
             parts.push(tPart);
+            activeText = { id: textPartId, ordinal, part: tPart, text: '' };
             this.emitEvent({
               type: 'session.text.started',
-              data: { sessionID: sessionId, assistantMessageID: assistantMsgId, ordinal: 0 },
-              created: Date.now(),
+              data: { sessionID: sessionId, assistantMessageID: assistantMsgId, ordinal },
+              created: startTime,
             }, directory);
           }
-          accumulatedText += chunk.delta;
-          const t = parts.find((p) => p.id === textPartId);
-          if (t) t.text = accumulatedText;
+          activeText.text += chunk.delta;
+          activeText.part.text = activeText.text;
 
           this.emitEvent({
             type: 'session.text.delta',
-            data: { sessionID: sessionId, assistantMessageID: assistantMsgId, ordinal: 0, delta: chunk.delta },
+            data: { sessionID: sessionId, assistantMessageID: assistantMsgId, ordinal: activeText.ordinal, delta: chunk.delta },
             created: Date.now(),
           }, directory);
         }
@@ -1263,6 +1661,7 @@ export class AcpSessionBridge extends EventEmitter {
               assistantMessageID: assistantMsgId,
               id: p.callID || p.id,
               content: p.state.content,
+              ...(p.state.metadata ? { metadata: p.state.metadata } : {}),
               executed: true,
             },
             created: completedTime,
@@ -1270,15 +1669,7 @@ export class AcpSessionBridge extends EventEmitter {
         }
       }
 
-      const t = parts.find((p) => p.id === textPartId);
-      if (t && !t.time?.end) {
-        t.time = { ...t.time, end: completedTime };
-        this.emitEvent({
-          type: 'session.text.ended',
-          data: { sessionID: sessionId, assistantMessageID: assistantMsgId, ordinal: 0, text: accumulatedText },
-          created: completedTime,
-        }, directory);
-      }
+      finalizeOpenParts(completedTime);
       assistantMsg.time.completed = completedTime;
       assistantMsg.finish = 'stop';
       const usage = promptResult?.usage;
@@ -1300,6 +1691,7 @@ export class AcpSessionBridge extends EventEmitter {
           },
         };
       }
+      session.outcome = 'succeeded';
       session.time.idle = completedTime;
       if (session.time) delete session.time.busy;
 
@@ -1361,9 +1753,12 @@ export class AcpSessionBridge extends EventEmitter {
           }, directory);
         }
       }
+      finalizeOpenParts(failedTime);
       assistantMsg.time.completed = failedTime;
       assistantMsg.finish = 'error';
       assistantMsg.error = structuredError;
+      session.outcome = 'failed';
+      session.error = structuredError;
       session.time.idle = failedTime;
       if (session.time) delete session.time.busy;
 

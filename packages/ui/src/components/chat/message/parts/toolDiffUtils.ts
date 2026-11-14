@@ -399,7 +399,7 @@ export const getRenderablePatchInfo = (patch: string): { patch: string; title?: 
     }
 
     try {
-        const parsedPatches = parsePatchFiles(normalized, { throwOnError: true });
+        const parsedPatches = parsePatchFiles(normalized, undefined, true);
         if (parsedPatches.length !== 1) {
             return null;
         }
@@ -550,6 +550,24 @@ export const getDiffPatchEntries = (
 
     if (fileEntries.length > 0) {
         return fileEntries;
+    }
+
+    const acpDiffs = Array.isArray(metadata?.diffs) ? metadata.diffs : [];
+    const acpEntries = acpDiffs.flatMap((item, index) => {
+        if (!isRecord(item)) return [];
+        const patch = getPatchText(item.unified) ?? getPatchText(item.diff) ?? getPatchText(item.patch);
+        if (!patch) return [];
+        const rawPath = typeof item.path === 'string' ? item.path : '';
+        return getPatchEntriesFromText(
+            patch,
+            rawPath || `File ${index + 1}`,
+            `acp-diff-${index}`,
+            resolveTitle,
+        ).map((entry) => ({ ...entry, filePath: rawPath || entry.filePath }));
+    });
+
+    if (acpEntries.length > 0) {
+        return acpEntries;
     }
 
     const diff = typeof fallbackDiff === 'string' ? fallbackDiff : '';

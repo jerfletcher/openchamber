@@ -1,5 +1,12 @@
 import { OPENCODE_TOOLS } from '@/lib/opencode/tools';
 import React from 'react';
+import {
+    fetchAcpSessionConfig,
+    getAcpConfigOption,
+    updateAcpConfigOption,
+    updateAcpSessionModel,
+    useAcpSessionConfig,
+} from '@/sync/acp-config';
 import { useChatColumnActions, useChatSessionSelection } from './chatColumnSession';
 import { MobileModelButton } from './MobileModelButton';
 import { useAgentMissingFromCatalog, useModelMissingFromCatalog } from './agentAvailability';
@@ -455,13 +462,69 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         return match ? match.id : null;
     }, [currentAgentName, providers]);
     const isAntigravityAgent = Boolean(dedicatedAgentProviderId);
+    // Controlled selections never restore from the main session or its history.
+    const currentSessionId = useSessionUIStore((s) => selection ? null : s.currentSessionId);
+    const acpSessionId = selection ? controlledSessionId : currentSessionId;
+    const acpConfig = useAcpSessionConfig(acpSessionId);
+
+    React.useEffect(() => {
+        if (!acpSessionId || !isAntigravityAgent) return;
+        void fetchAcpSessionConfig(acpSessionId);
+    }, [acpSessionId, isAntigravityAgent]);
+
+    const acpModelOption = React.useMemo(() => getAcpConfigOption(acpConfig, 'model'), [acpConfig]);
+    const acpThoughtOption = React.useMemo(() => getAcpConfigOption(acpConfig, 'thought_level'), [acpConfig]);
+    const acpThoughtValues = React.useMemo(
+        () => acpThoughtOption?.options?.map((opt) => opt.value).filter(Boolean) ?? [],
+        [acpThoughtOption?.options],
+    );
+
     const effectiveProviders = React.useMemo(() => {
-        if (dedicatedAgentProviderId) {
-            const matched = providers.filter((p) => p.id === dedicatedAgentProviderId);
-            if (matched.length > 0) return matched;
+        const baseProviders = (() => {
+            if (dedicatedAgentProviderId) {
+                const matched = providers.filter((p) => p.id === dedicatedAgentProviderId);
+                if (matched.length > 0) return matched;
+            }
+            return providers;
+        })();
+
+        if (!isAntigravityAgent || !acpConfig) return baseProviders;
+
+        const liveModelsSource = acpModelOption?.options && acpModelOption.options.length > 0
+            ? acpModelOption.options.map((opt) => ({ id: opt.value, name: opt.name }))
+            : acpConfig.availableModels;
+
+        if (!liveModelsSource || liveModelsSource.length === 0) return baseProviders;
+
+        const targetId = dedicatedAgentProviderId || 'antigravity';
+        const existingProvider = baseProviders.find((p) => p.id === targetId);
+        const existingById = new Map((existingProvider?.models ?? []).map((m) => [m.id, m]));
+        const thoughtVariants = acpThoughtValues.length > 0
+            ? Object.fromEntries(acpThoughtValues.map((v) => [v, {}]))
+            : undefined;
+
+        const mergedModels = liveModelsSource.map((live) => {
+            const existing = existingById.get(live.id);
+            return {
+                ...(existing ?? {}),
+                id: live.id,
+                name: live.name || existing?.name || live.id,
+                variants: existing?.variants ?? thoughtVariants,
+            };
+        });
+
+        if (existingProvider) {
+            return baseProviders.map((p) => (p.id === targetId ? { ...p, models: mergedModels } : p));
         }
-        return providers;
-    }, [dedicatedAgentProviderId, providers]);
+        return [
+            {
+                id: targetId,
+                name: 'Antigravity',
+                models: mergedModels,
+            } as typeof baseProviders[number],
+            ...baseProviders,
+        ];
+    }, [acpConfig, acpModelOption?.options, acpThoughtValues, dedicatedAgentProviderId, isAntigravityAgent, providers]);
     const settingsDefaultModel = useConfigStore((state) => state.settingsDefaultModel);
     const settingsDefaultVariant = useConfigStore((state) => state.settingsDefaultVariant);
     const getDefaultVariantForModel = useConfigStore((state) => state.getDefaultVariantForModel);
@@ -498,8 +561,6 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
         });
     }, [agents.length, currentAgentName, currentModelId, currentProviderId, isReady, providers.length, selection]);
 
-    // Controlled selections never restore from the main session or its history.
-    const currentSessionId = useSessionUIStore((s) => selection ? null : s.currentSessionId);
     const getDirectoryForSession = useSessionUIStore((s) => s.getDirectoryForSession);
     const sync = useSync();
 
@@ -763,9 +824,11 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
     // tick (a form event, a status ping) re-ran it and briefly re-applied the
     // inherited effort over the user's pick — the picker flickered. Keyed on
     // the content so identity only changes when the variants do.
-    const rawAvailableVariants = selection
-        ? listModelVariantIds(currentProvider?.models.find((model) => model.id === currentModelId)?.variants)
-        : getCurrentModelVariants();
+    const rawAvailableVariants = (isAntigravityAgent && acpThoughtValues.length > 0)
+        ? acpThoughtValues
+        : selection
+            ? listModelVariantIds(currentProvider?.models.find((model) => model.id === currentModelId)?.variants)
+            : getCurrentModelVariants();
     const availableVariantsKey = rawAvailableVariants.join('\u0000');
     const availableVariants = React.useMemo(
         () => (availableVariantsKey ? availableVariantsKey.split('\u0000') : []),
@@ -1550,8 +1613,11 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             // "Default" — a choice, recorded as `null`.
             commitVariantSelectionForModel(currentProviderId, currentModelId, variant ?? null);
             rememberVariantForModel(currentProviderId, currentModelId, variant ?? null);
+            if (isAntigravityAgent && acpSessionId && variant && acpThoughtOption) {
+                void updateAcpConfigOption(acpSessionId, 'thought_level', variant).catch(() => {});
+            }
         }
-    }, [commitVariantSelectionForModel, currentModelId, currentProviderId, rememberVariantForModel]);
+    }, [acpSessionId, acpThoughtOption, commitVariantSelectionForModel, currentModelId, currentProviderId, isAntigravityAgent, rememberVariantForModel]);
 
     const handleAgentChange = React.useCallback((agentName: string, options?: { closeModelSelector?: boolean }) => {
         if (selection) {
@@ -1685,6 +1751,12 @@ export const ModelControls: React.FC<ModelControlsProps> = ({
             }
             const pickedSessionId = selection ? controlledSessionId : currentSessionId;
             if (pickedSessionId) useSelectionStore.getState().pickSessionModel(pickedSessionId, providerId, modelId);
+            if (isAntigravityAgent && pickedSessionId && providerId === 'antigravity') {
+                const applyRemote = acpModelOption
+                    ? updateAcpConfigOption(pickedSessionId, 'model', modelId)
+                    : updateAcpSessionModel(pickedSessionId, modelId);
+                void applyRemote.catch(() => {});
+            }
             if (!selection && !options?.applyVariant && !isAutoModel(providerId, modelId)) {
                 // Add to recent models on successful selection. Auto is pinned, not recent.
                 addRecentModel(providerId, modelId);

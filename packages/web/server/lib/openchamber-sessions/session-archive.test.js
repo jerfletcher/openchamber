@@ -4,7 +4,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createArchiveStore } from './archive-store.js';
-import { createSessionArchive } from './session-archive.js';
+import { createOpenCodeSessionArchive, createSessionArchive } from './session-archive.js';
 
 const tempDirs = [];
 
@@ -126,5 +126,49 @@ describe('session archive', () => {
     await expect(archive.isArchived('ses_unknown')).resolves.toBe(false);
     await expect(archive.isArchived('ses_down')).resolves.toBe(false);
     expect(openCode.readArchivedAt).not.toHaveBeenCalledWith('ses_file');
+  });
+
+  it('archives, unarchives, and reads archive state for ACP sessions via acpBridge', async () => {
+    const store = makeStore();
+    const announce = vi.fn();
+    const acpSessions = new Map([
+      ['ses_agy_1', { id: 'ses_agy_1', archived: false, time: { updated: 1200 } }],
+    ]);
+    const acpBridge = {
+      isAcpSession: (id) => id.startsWith('ses_agy_'),
+      getSession: (id) => acpSessions.get(id) ?? null,
+      updateSession: vi.fn((id, updates) => {
+        const s = acpSessions.get(id);
+        if (!s) return false;
+        Object.assign(s, updates);
+        return true;
+      }),
+    };
+    const openCode = createOpenCodeSessionArchive({
+      clientFor: () => { throw new Error('OpenCode should not be called for ACP sessions'); },
+      acpBridge,
+    });
+    const archive = createSessionArchive({ store, openCode, announce });
+
+    await expect(archive.archive(['ses_agy_1'], 1700)).resolves.toEqual({
+      archived: [{ id: 'ses_agy_1', archivedAt: 1700 }],
+      failedIds: [],
+    });
+    expect(acpBridge.updateSession).toHaveBeenCalledWith('ses_agy_1', { archived: true });
+    expect(announce).toHaveBeenCalledWith('ses_agy_1', 1700);
+    await expect(archive.isArchived('ses_agy_1')).resolves.toBe(true);
+
+    await expect(archive.unarchive(['ses_agy_1'])).resolves.toEqual({
+      restored: [{ id: 'ses_agy_1', archivedAt: null }],
+      failedIds: [],
+    });
+    expect(acpBridge.updateSession).toHaveBeenCalledWith('ses_agy_1', { archived: false });
+    expect(announce).toHaveBeenCalledWith('ses_agy_1', null);
+    await expect(archive.isArchived('ses_agy_1')).resolves.toBe(false);
+
+    await expect(archive.archive(['ses_agy_missing'], 1700)).resolves.toEqual({
+      archived: [],
+      failedIds: ['ses_agy_missing'],
+    });
   });
 });

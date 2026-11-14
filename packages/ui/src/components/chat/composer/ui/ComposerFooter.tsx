@@ -31,6 +31,7 @@ import { ModelControls } from '../../ModelControls';
 import { ComposerActionButtons } from './ComposerActionButtons';
 import { ComposerAttachmentControls, type ComposerTrackerPicker } from './ComposerAttachmentControls';
 import { PermissionAutoAcceptButton } from './PermissionAutoAcceptButton';
+import { AcpModeSelector, type AcpModeOptionItem } from './AcpModeSelector';
 import type { PermissionMode } from '@/stores/utils/permissionAutoAccept';
 import type { BtwSelection } from '@/stores/useBtwStore';
 
@@ -58,6 +59,11 @@ interface ComposerFooterProps {
     hasContent: boolean;
     permissionMode: PermissionMode;
     isPermissionAutoAcceptInteractive: boolean;
+    acpMode?: {
+        options: readonly AcpModeOptionItem[];
+        currentModeId: string | null;
+        onSelectMode: (modeId: string) => void;
+    } | null;
     dictationActive: boolean;
 
     onOpenSettings?: () => void;
@@ -134,6 +140,7 @@ function ComposerFooterView(props: ComposerFooterProps) {
         hasContent,
         permissionMode,
         isPermissionAutoAcceptInteractive,
+        acpMode,
         dictationActive,
         onOpenSettings,
         onPickLocalFiles,
@@ -212,13 +219,25 @@ function ComposerFooterView(props: ComposerFooterProps) {
                                 onOpenGuestAttach={onOpenGuestAttach}
                                 filesOnly={isBtw}
                             />
-                            <PermissionAutoAcceptButton
-                                footerIconButtonClass={footerIconButtonClass}
-                                iconSizeClass={iconSizeClass}
-                                isInteractive={isPermissionAutoAcceptInteractive}
-                                permissionMode={permissionMode}
-                                handlePermissionModeCycle={onCyclePermissionMode}
-                            />
+                            {acpMode ? (
+                                <AcpModeSelector
+                                    footerIconButtonClass={footerIconButtonClass}
+                                    iconSizeClass={iconSizeClass}
+                                    isInteractive={isPermissionAutoAcceptInteractive}
+                                    options={acpMode.options}
+                                    currentModeId={acpMode.currentModeId}
+                                    onSelectMode={acpMode.onSelectMode}
+                                    compact
+                                />
+                            ) : (
+                                <PermissionAutoAcceptButton
+                                    footerIconButtonClass={footerIconButtonClass}
+                                    iconSizeClass={iconSizeClass}
+                                    isInteractive={isPermissionAutoAcceptInteractive}
+                                    permissionMode={permissionMode}
+                                    handlePermissionModeCycle={onCyclePermissionMode}
+                                />
+                            )}
                             {!isBtw ? <SessionGoalButton
                                 sessionId={currentSessionId}
                                 directory={directory}
@@ -284,14 +303,25 @@ function ComposerFooterView(props: ComposerFooterProps) {
                             onOpenGuestAttach={onOpenGuestAttach}
                             filesOnly={isBtw}
                         />
-                        <PermissionAutoAcceptButton
-                            footerIconButtonClass={footerIconButtonClass}
-                            iconSizeClass={iconSizeClass}
-                            isInteractive={isPermissionAutoAcceptInteractive}
-                            permissionMode={permissionMode}
-                            handlePermissionModeCycle={onCyclePermissionMode}
-                            withTooltip
-                        />
+                        {acpMode ? (
+                            <AcpModeSelector
+                                footerIconButtonClass={footerIconButtonClass}
+                                iconSizeClass={iconSizeClass}
+                                isInteractive={isPermissionAutoAcceptInteractive}
+                                options={acpMode.options}
+                                currentModeId={acpMode.currentModeId}
+                                onSelectMode={acpMode.onSelectMode}
+                            />
+                        ) : (
+                            <PermissionAutoAcceptButton
+                                footerIconButtonClass={footerIconButtonClass}
+                                iconSizeClass={iconSizeClass}
+                                isInteractive={isPermissionAutoAcceptInteractive}
+                                permissionMode={permissionMode}
+                                handlePermissionModeCycle={onCyclePermissionMode}
+                                withTooltip
+                            />
+                        )}
                         {!isBtw ? <SessionGoalButton
                             sessionId={currentSessionId}
                             directory={directory}

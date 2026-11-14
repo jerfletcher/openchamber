@@ -14,6 +14,8 @@ import { useProjectsStore } from "@/stores/useProjectsStore";
 import { runtimeFetch } from "@/lib/runtime-fetch";
 import { runBackgroundNetworkTask } from '@/lib/background-network';
 import { normalizePath } from '@/lib/pathNormalization';
+import type { AcpCommandInfo } from '@/lib/acp/types';
+import { fetchAcpSessionConfig, useAcpConfigStore } from '@/sync/acp-config';
 
 
 export type CommandScope = 'user' | 'project';
@@ -285,6 +287,31 @@ export const selectCommandsForComposer = (
   target: ComposerCommandDirectory,
 ): Command[] => (target.status === 'pending' ? EMPTY_COMMANDS : selectCommandsForDirectory(state, target.directory));
 
+export const mergeAcpCommands = (
+  baseCommands: readonly Command[],
+  acpCommands: readonly AcpCommandInfo[] | undefined,
+): Command[] => {
+  if (!acpCommands || acpCommands.length === 0) {
+    return baseCommands as Command[];
+  }
+  const byName = new Map<string, Command>();
+  for (const cmd of baseCommands) {
+    byName.set(cmd.name, cmd);
+  }
+  for (const acp of acpCommands) {
+    if (!acp?.name) continue;
+    const existing = byName.get(acp.name);
+    byName.set(acp.name, {
+      ...(existing ?? {}),
+      name: acp.name,
+      description: acp.description ?? existing?.description,
+      source: existing?.source ?? 'acp',
+      fromOpenCode: true,
+    });
+  }
+  return Array.from(byName.values());
+};
+
 export const useCommandsStore = create<CommandsStore>()(
   devtools(
     persist(
@@ -313,13 +340,19 @@ export const useCommandsStore = create<CommandsStore>()(
           set({ commands: [], commandsByDirectory: {}, isLoading: false });
         },
 
-        loadCommands: async (requestedDirectory?: string | null) => {
+        loadCommands: async (requestedDirectory?: string | null, options?: { sessionId?: string | null }) => {
           const directory = resolveDirectory(requestedDirectory);
           const cacheKey = getCommandsCacheKey(directory);
           const isAmbient = cacheKey === getCommandsCacheKey(getRequestDirectory());
           const now = Date.now();
           const loadedAt = commandsLastLoadedAt.get(cacheKey) ?? 0;
           const cachedCommands = get().commandsByDirectory[cacheKey];
+          if (options?.sessionId) {
+            const existingAcp = useAcpConfigStore.getState().bySession.get(options.sessionId);
+            if (!existingAcp?.loaded) {
+              void fetchAcpSessionConfig(options.sessionId);
+            }
+          }
           if (isAmbient && get().commands !== (cachedCommands ?? EMPTY_COMMANDS)) {
             set({ commands: cachedCommands ?? EMPTY_COMMANDS });
           }

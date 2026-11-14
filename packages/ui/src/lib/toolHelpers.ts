@@ -301,16 +301,58 @@ const OPENCODE_NAMESPACE_METADATA: ToolMetadata = {
   inputFields: []
 };
 
-export function getToolMetadata(toolName: string): ToolMetadata {
+const ACP_KIND_METADATA: Record<string, ToolMetadata> = {
+  read: TOOL_METADATA.read,
+  edit: TOOL_METADATA.edit,
+  delete: {
+    displayName: 'Delete',
+    category: 'file',
+    outputLanguage: 'text',
+    inputFields: [{ key: 'path', label: 'Path', type: 'file' }],
+  },
+  move: {
+    displayName: 'Move',
+    category: 'file',
+    outputLanguage: 'text',
+    inputFields: [{ key: 'path', label: 'Path', type: 'file' }],
+  },
+  search: TOOL_METADATA.grep,
+  execute: TOOL_METADATA.bash,
+  think: {
+    displayName: 'Think',
+    category: 'ai',
+    outputLanguage: 'markdown',
+    inputFields: [],
+  },
+  fetch: TOOL_METADATA.webfetch,
+};
+
+export type AcpToolMetadataContext = {
+  kind?: string;
+  title?: string;
+};
+
+export function getToolMetadata(toolName: string, acpContext?: AcpToolMetadataContext | null): ToolMetadata {
   // The namespace itself names a script whose calls all went to it.
   if (toolName === 'opencode' || opencodeNamespaceTool(toolName)) return OPENCODE_NAMESPACE_METADATA;
-  // Namespaced tools (`opencode.session_rename`) are keyed by their last segment.
-  return TOOL_METADATA[toolName] || TOOL_METADATA[normalizeToolName(toolName)] || {
-    displayName: formatUnknownToolDisplayName(toolName),
-    category: 'system',
-    outputLanguage: 'text',
-    inputFields: []
-  };
+  const acpKindMeta = acpContext?.kind ? ACP_KIND_METADATA[acpContext.kind.toLowerCase()] : undefined;
+  const directMeta = TOOL_METADATA[toolName] || TOOL_METADATA[normalizeToolName(toolName)];
+  // ACP tools used to collapse to `'bash'`; when ACP `kind` is present, prefer its semantic metadata.
+  const baseMeta: ToolMetadata = (acpKindMeta && (!directMeta || toolName === 'bash'))
+    ? acpKindMeta
+    : directMeta || acpKindMeta || {
+      displayName: formatUnknownToolDisplayName(toolName),
+      category: 'system',
+      outputLanguage: 'text',
+      inputFields: [],
+    };
+  if (acpContext?.title && acpContext.title.trim()) {
+    return {
+      ...baseMeta,
+      displayName: acpContext.title.trim(),
+    };
+  }
+  return baseMeta;
 }
 
 export function detectToolOutputLanguage(
