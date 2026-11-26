@@ -6,6 +6,7 @@ import { ProviderLogo } from '@/components/ui/ProviderLogo';
 import { useI18n } from '@/lib/i18n';
 import { isAutoModel } from '@/lib/routing/autoModel';
 import { Icon } from '@/components/icon/Icon';
+import { spaceOfferAllows, useActiveSpaceTarget, useSpaceModelOffer } from '@/lib/spaces/space-model-offer';
 import { useModelMissingFromCatalog } from './agentAvailability';
 import { useChatSessionSelection } from './chatColumnSession';
 
@@ -25,12 +26,16 @@ export const MobileModelButton: React.FC<MobileModelButtonProps> = ({ onOpenMode
     const modelLabel = isAuto
         ? t('chat.modelControls.autoModel')
         : getModelDisplayName(currentProvider, currentModelId, t('chat.modelControls.selectModel'));
-    // The send would stop with an error, so the button says so beforehand.
-    // A controlled button (`model` given) belongs to its column's folder; the
-    // main chat's reads the active selection, so it checks the active catalog.
     const columnDirectory = useChatSessionSelection().directory ?? undefined;
     const modelUnavailable = useModelMissingFromCatalog(model === undefined ? undefined : columnDirectory, currentProviderId, currentModelId);
-    const unavailableText = modelUnavailable
+    const activeTarget = useActiveSpaceTarget();
+    const spaceTarget = React.useMemo(() => {
+        if (model === undefined) return activeTarget;
+        return columnDirectory ? { requestId: null, directory: columnDirectory } : null;
+    }, [activeTarget, columnDirectory, model]);
+    const offer = useSpaceModelOffer(spaceTarget);
+    const refusedBySpace = Boolean(currentProviderId) && !spaceOfferAllows(offer, currentProviderId ?? '');
+    const unavailableText = refusedBySpace ? t('spaces.modelPicker.modelRefused', { model: modelLabel }) : modelUnavailable
         ? t('chat.modelControls.modelUnavailable', { model: modelLabel })
         : undefined;
 
@@ -38,10 +43,6 @@ export const MobileModelButton: React.FC<MobileModelButtonProps> = ({ onOpenMode
         <button
             type="button"
             onClick={onOpenModel}
-            // Same guard as PermissionAutoAcceptButton/MobileAgentButton: block
-            // the focus transfer so the tap doesn't dismiss the keyboard. With
-            // interactive-widget=resizes-content (Android), the keyboard-close
-            // relayout moves this button mid-tap and the click never lands.
             onMouseDown={(event) => event.preventDefault()}
             onPointerDownCapture={(event) => {
                 if (event.pointerType === 'touch') {
@@ -49,7 +50,6 @@ export const MobileModelButton: React.FC<MobileModelButtonProps> = ({ onOpenMode
                 }
             }}
             className={cn(
-                // 36px to tap, drawn in the row's 26px: the margin keeps the row's height.
                 'inline-flex h-9 -my-[5px] min-h-0 min-w-0 items-stretch',
                 'rounded-lg',
                 'typography-micro font-medium text-foreground/80',

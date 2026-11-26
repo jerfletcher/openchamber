@@ -5,6 +5,7 @@ import { useFireworksCelebration } from '@/contexts/FireworksContext';
 import { Icon } from '@/components/icon/Icon';
 import { DiffViewIcon } from '@/components/icons/DiffIcon';
 import { ButtonTooltip } from '@/components/ui/action-toolbar';
+import { forgetLabelWrite } from '@/components/references/labelWrites';
 import { REFERENCE_META_TEXT, referenceNumberLabel } from '@/components/references/referencePickerItems';
 import type { IconName } from '@/components/icon/icons';
 import { toast } from '@/components/ui';
@@ -24,6 +25,7 @@ import type { RepositoryChangeRequestReference, RepositoryDiscussionReference, P
 import type { PullRequestSource } from '@/lib/diff/pullRequestDiff';
 import { useI18n, type I18nKey } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
+import type { IssueCloseReason } from '@/lib/source-control/mutation-writes';
 import type { ChangeRequestSubmitRequirement, DiscussionCloseReason, DraftChangeRequestInput, SetStateInput, SourceControlCapabilities } from '@/lib/source-control/types';
 import { useChangeRequestDiffServing, useSourceControlProvider } from '@/lib/source-control/providers/registry';
 import { formatChangeRequestReference } from '@/lib/source-control/providers/terminology';
@@ -39,7 +41,6 @@ import { resolvePullLinkTarget } from './boardRepository';
 import { landsWithIt, mergeChoiceOf } from './mergeChoice';
 import { newMutationKey } from './mutationKey';
 
-/** A project the board acts in: its id and root folder. */
 export type SourceBoardProject = { id: string; path: string };
 
 const MERGE_METHOD_LABELS = {
@@ -57,21 +58,15 @@ const MERGE_METHOD_KEYS = {
 } as const;
 
 
-/** A branch can be stacked on when it lives in the PR's own repository; a fork's cannot. */
 const isStackable = (pull: RepositoryChangeRequestReference): boolean => (
     !pull.headRepo
     || (pull.headRepo.owner.toLowerCase() === pull.sourceRepo.owner.toLowerCase() && pull.headRepo.repo.toLowerCase() === pull.sourceRepo.repo.toLowerCase())
 );
 
-/** What a session started from the item gets: the item itself, as a composer chip. */
 const selectionOf = (item: ReferencePickerItem): ReferencePickerSelection => (
     item.source === 'tracker' ? item : { source: 'repository', reference: item.reference, includeDiff: false }
 );
 
-/**
- * The project's capabilities on its host, for merge and ready. Null until
- * they are known or when they cannot be read; the actions stay hidden then.
- */
 function useCapabilities(context: SourceControlReadContext | null): SourceControlCapabilities | null {
     const { sourceControl } = useRuntimeAPIs();
     const [state, setState] = React.useState<{ context: SourceControlReadContext; capabilities: SourceControlCapabilities } | null>(null);
@@ -101,44 +96,21 @@ const ActionButton: React.FC<{
     </ButtonTooltip>
 );
 
-/**
- * What the board does with the previewed item: start work on it, or merge
- * a pull request.
- *
- * `project` is where work starts; for a tracker item the board picks it from
- * its container's mapping. `context` reads and changes the project's repository.
- */
 export const SourceBoardActions: React.FC<{
     item: ReferencePickerItem;
     project: SourceBoardProject | null;
     context: SourceControlReadContext | null;
     onStartWorktree: (project: SourceBoardProject, selection: ReferencePickerSelection) => void;
     onChanged: () => void;
-    /** Left of the actions: where a tracker item's session starts, with a way to pick another project. */
     startIn?: React.ReactNode;
-    /** The phone shell's page closes once a session starts; the desktop page closes on its own. */
     onLeave?: () => void;
-    /** False for an item of a repository under the project's root: a worktree needs the project itself to be one. */
     worktreeAvailable: boolean;
-    /** The previewed PR's stack, once its detail says; a merge lands the open layers below it too. */
     stack?: PullRequestStack | null;
-    /**
-     * Starts a new branch on top of the previewed PR's, in a worktree: the next
-     * layer of a stack. In the attach menu where the surface starts work there,
-     * else a button of its own.
-     */
     onStartOnTop?: (pull: RepositoryChangeRequestReference) => void;
-    /**
-     * What the previewed change needs before it can be submitted, once its
-     * detail says (`features.submitRequirements`); submit waits until then.
-     */
     submitRequirements?: ChangeRequestSubmitRequirement[];
-    /** The read that names `submitRequirements` failed: submit stays held and says why. */
     submitRequirementsUnreadable?: boolean;
-    /** Whether the host would merge or submit the previewed change, from its status; null when it does not say. */
     mergeable?: boolean | null;
 }> = ({ item, project, context: readContext, onStartWorktree, onChanged, startIn, onLeave, worktreeAvailable, stack = null, onStartOnTop, submitRequirements, submitRequirementsUnreadable = false, mergeable = null }) => {
-    // A linked item is only read: it can be attached, and nothing here acts on it.
     const context = readContext?.linked ? null : readContext;
     const { t } = useI18n();
     const { sourceControl, trackers } = useRuntimeAPIs();
@@ -153,7 +125,6 @@ export const SourceBoardActions: React.FC<{
         provider: context.provider, instance: context.instance, accountId: context.accountId,
         kind: 'pull', owner: openPull.sourceRepo.owner, repo: openPull.sourceRepo.repo, number: openPull.number,
     }] : [], [context, openPull]);
-    // The board/branch preview already owns visibility-scoped interest.
     const [liveRecord] = useTrackedRecords(trackedPulls);
     const liveMerge = liveRecord?.type === 'pull' ? liveRecord.state : null;
     const waitingMerge = liveMerge?.state === 'open' && (liveMerge.isInMergeQueue || liveMerge.autoMergeRequest);
@@ -162,14 +133,11 @@ export const SourceBoardActions: React.FC<{
             ? t('sourceBoard.merge.queuePosition', { position: liveMerge.mergeQueueEntry.position })
             : t('sourceBoard.merge.inQueue')
         : t('sourceBoard.merge.autoMerge');
-    // Asked only while an open PR is previewed: nothing else merges.
     const capabilities = useCapabilities(openPull ? context : null);
 
-    // The open session, when the chat shows one rather than a new-session draft.
     const currentSessionId = useSessionUIStore((state) => (state.newSessionDraft?.open ? null : state.currentSessionId));
     const currentSession = useSession(currentSessionId, currentSessionId ? useSessionUIStore.getState().getDirectoryForSession(currentSessionId) ?? undefined : undefined);
 
-    // The item lands on the composer as a chip, never as a sent message.
     const attachToComposer = (target: ComposerReferenceHandoff) => {
         void resolveComposerReferences([selectionOf(item)], {
             sourceControl,
@@ -189,12 +157,10 @@ export const SourceBoardActions: React.FC<{
         if (!project) return;
         useSessionUIStore.getState().openNewSessionDraft({ selectedProjectId: project.id, directoryOverride: project.path });
         onLeave?.();
-        // The draft opens first, so the chip lands on its composer.
         const { workDraftId } = useSessionUIStore.getState().newSessionDraft;
         if (workDraftId) attachToComposer({ kind: 'draft', workDraftId, runtimeKey: getRuntimeKey() });
     };
 
-    // Back to the chat the board covered; its composer takes the chip.
     const attachToCurrentSession = () => {
         if (!currentSessionId) return;
         useUIStore.getState().closeMainSurfaces();
@@ -202,7 +168,6 @@ export const SourceBoardActions: React.FC<{
         attachToComposer({ kind: 'session', sessionId: currentSessionId });
     };
 
-    // The last method chosen anywhere, while this repository allows it.
     const [chosenMethod, setChosenMethod] = React.useState<RememberedMergeMethod>(readMergeMethod);
     const { methods: mergeMethods, method: mergeMethod, unmet, hold: submitHold, blocked: submitBlocked } = mergeChoiceOf({
         allowed: capabilities?.mergeChangeRequests ? capabilities.mergeMethods ?? [] : [],
@@ -221,13 +186,11 @@ export const SourceBoardActions: React.FC<{
     const submits = mergeMethod === 'submit';
     const reference = pull ? formatChangeRequestReference(descriptor, pull.number) : '';
     const referenceOf = (number: number) => formatChangeRequestReference(descriptor, number);
-    // The open layers below that land with it: GitHub's stack on merge, a change's chain on submit.
     const landsBelow = openPull ? landsWithIt({ stack, number: openPull.number, method: mergeMethod }) : [];
     const submitsBelow = submits && landsBelow.length > 0
         ? t(landsBelow.length === 1 ? 'sourceBoard.submit.alsoBelow.one' : 'sourceBoard.submit.alsoBelow.other', { count: landsBelow.length })
         : null;
 
-    // A change whose head is a revision rather than a branch has nothing to stack on.
     const stackOnTop = onStartOnTop && openPull && descriptor.features.branchHeads && isStackable(openPull) ? () => onStartOnTop(openPull) : null;
     const stackOnTopLabel = t('stacks.actions.newOnTop');
 
@@ -258,7 +221,7 @@ export const SourceBoardActions: React.FC<{
                 method: mergeMethod,
             });
             const { merged, outcome, message } = receipt.result;
-            // One volley more than a push, plus one for each layer of a stack landing with it.
+            if (merged) forgetLabelWrite(openPull);
             if (merged) triggerFireworks({ kind: 'merge', volleys: 2 + landsBelow.length, origin });
             if (submits) {
                 if (merged) toast.success(t('sourceBoard.toast.submitted', { reference }));
@@ -308,14 +271,11 @@ export const SourceBoardActions: React.FC<{
                     <ActionButton icon="close" label={t('sourceBoard.merge.cancel')} tooltip={t('contextTooltips.tracker.cancelMerge')} onClick={() => void cancelMerge()} busy={busy === 'merge'} />
                 </>
             ) : openPull && !openPull.draft && mergeMethod ? (
-                // One control, as on the host: the button says how it merges,
-                // the arrow beside it picks another way.
                 <div className="flex shrink-0 items-center">
                     <ButtonTooltip label={t(submits ? 'contextTooltips.tracker.submitTo' : 'contextTooltips.tracker.mergeInto', { branch: openPull.base })}>
                         <Button
                             size="sm"
                             variant="outline"
-                            // Two halves of one control: the inner corners stay square.
                             className={cn(mergeMethods.length > 1 && 'rounded-e-none')}
                             disabled={busy === 'merge' || submitBlocked}
                             onClick={(event) => void merge(event.currentTarget)}
@@ -351,7 +311,6 @@ export const SourceBoardActions: React.FC<{
                 </div>
             ) : null}
             {openPull && !openPull.draft && unmet.length > 0 ? (
-                // What the disabled button waits for is said beside it.
                 <span
                     className="min-w-0 max-w-[16rem] truncate typography-meta text-muted-foreground"
                     title={unmet.map((requirement) => requirement.description ? `${requirement.name}: ${requirement.description}` : requirement.name).join('\n')}
@@ -363,7 +322,6 @@ export const SourceBoardActions: React.FC<{
                     {t(submitHold === 'unreadable' ? 'sourceBoard.submit.unreadable' : 'sourceBoard.submit.notSubmittable')}
                 </span>
             ) : openPull && !openPull.draft && submitsBelow ? (
-                // Submitting lands the open changes below it in the chain too.
                 <span className="min-w-0 max-w-[16rem] truncate typography-meta text-muted-foreground" title={submitsBelow}>
                     {submitsBelow}
                 </span>
@@ -372,8 +330,6 @@ export const SourceBoardActions: React.FC<{
         </>
     );
 
-    // One row: where the work starts or what the PR needs on the left, the
-    // ways to start on the right, the main one last as in a dialog footer.
     return (
         <div className="flex min-h-8 flex-wrap items-center gap-2">
             <div className="me-auto flex min-w-0 items-center gap-2">
@@ -439,31 +395,14 @@ const LINK_CLASS = cn(
     REFERENCE_META_TEXT,
 );
 
-/**
- * Where to look at a PR's changes: the diff view's PR comparison, or its
- * walkthrough. Both open in the panel beside the chat on screen and read the
- * PR through the project's own folder: the folder the app shows when it
- * belongs to the project, else the project's root, without the app moving
- * there; a PR of a repository under a root that is not one is read through
- * that repository, leaving the Git selection alone. With no chat on screen
- * the app opens a draft of the project first. The phone shell has no side
- * panel: there Changes opens the workspace drawer's Git tab on the PR, in the
- * project's draft when the app shows another, `onLeave` gives the chat back
- * underneath it, and the walkthrough is not offered. A host that does not
- * serve change-request diffs gets neither link: both would only say so.
- * With an earlier revision picked (`revision`), both read that revision, the
- * one whose counts sit beside them.
- */
 type PullLinkProps = {
     pull: RepositoryChangeRequestReference;
     project: SourceBoardProject;
-    /** The folder the board reads; a repository under the project's root when the root is not one. */
     repository: string | null;
     context: SourceControlReadContext;
     projectOwnsDirectory: (directory: string | undefined) => boolean;
     currentDirectory: string | undefined;
     onLeave?: () => void;
-    /** The earlier revision (a patchset's full SHA) the preview shows; null for the current one. */
     revision?: string | null;
 };
 
@@ -485,7 +424,6 @@ const useOpenPull = ({ pull, project, repository, context, projectOwnsDirectory,
         if (mobile) {
             if (target.mobileDirectory === currentDirectory) ui.closeMainSurfaces();
             else useSessionUIStore.getState().openNewSessionDraft({ selectedProjectId: project.id, directoryOverride: project.path });
-            // A repository under the folder is shown in place of the Git selection, which stays as it was.
             usePullRequestSelectionStore.getState().requestDiff(target.mobileRequestDirectory, source, target.mobileRepository);
             onLeave?.();
             mobile.openChanges();
@@ -493,9 +431,6 @@ const useOpenPull = ({ pull, project, repository, context, projectOwnsDirectory,
         }
         if (currentDirectory) ui.closeMainSurfaces();
         else useSessionUIStore.getState().openNewSessionDraft({ selectedProjectId: project.id, directoryOverride: project.path });
-        // Another project's PR, or one of a repository under a root that is
-        // not one, is read through the folder its tab names; the request is
-        // keyed by that same folder.
         const { panelDirectory, targetDirectory, requestDirectory } = target;
         if (surface === 'diff') {
             usePullRequestSelectionStore.getState().requestDiff(requestDirectory, source);
@@ -542,10 +477,6 @@ export const SourceBoardPullLinks: React.FC<PullLinkProps> = (props) => {
 };
 
 
-/**
- * The viewer's unsent review of the previewed PR, beside its reviewers: who it
- * is and how many comments wait. Opens the diff it was written on.
- */
 export const SourceBoardReviewDraft: React.FC<PullLinkProps> = (props) => {
     const { pull, context, project } = props;
     const { t } = useI18n();
@@ -582,11 +513,6 @@ const DISCUSSION_CLOSE_ICONS = {
     duplicate: 'file-copy',
 } as const satisfies Record<DiscussionCloseReason, IconName>;
 
-/**
- * What the previewed discussion's state pill offers: an open one closes for
- * a reason (answered or settled, no longer relevant, a copy of another), a
- * closed one reopens.
- */
 const DiscussionStateMenuItems: React.FC<{
     discussion: RepositoryDiscussionReference;
     context: SourceControlReadContext;
@@ -604,6 +530,7 @@ const DiscussionStateMenuItems: React.FC<{
                 target: { project: { owner: discussion.sourceRepo.owner, name: discussion.sourceRepo.repo }, number: discussion.number },
             };
             await sourceControl.discussionSetState(input.state === 'closed' ? { ...base, state: 'closed', reason: input.reason } : { ...base, state: 'open' });
+            forgetLabelWrite(discussion);
             toast.success(t(input.state === 'closed' ? 'sourceBoard.toast.closed' : 'sourceBoard.toast.reopened', { reference: label }));
         } catch (error) {
             toast.error(
@@ -634,35 +561,29 @@ const DiscussionStateMenuItems: React.FC<{
     );
 };
 
-/**
- * Close or reopen for the previewed issue, discussion or PR, as items of its
- * state pill's menu. Null for a merged PR or a tracker item, which have
- * neither here.
- */
 export const SourceBoardStateMenuItems: React.FC<{
     item: ReferencePickerItem;
     context: SourceControlReadContext;
+    writeAccess?: boolean;
     onChanged: () => void;
-}> = ({ item, context, onChanged }) => {
+}> = ({ item, context, writeAccess, onChanged }) => {
     if (item.source === 'repository' && item.reference.kind === 'discussion') {
         return <DiscussionStateMenuItems discussion={item.reference} context={context} onChanged={onChanged} />;
     }
-    return <ItemStateMenuItems item={item} context={context} onChanged={onChanged} />;
+    return <ItemStateMenuItems item={item} context={context} writeAccess={writeAccess} onChanged={onChanged} />;
 };
 
 const ItemStateMenuItems: React.FC<{
     item: ReferencePickerItem;
     context: SourceControlReadContext;
+    writeAccess?: boolean;
     onChanged: () => void;
-}> = ({ item, context, onChanged }) => {
+}> = ({ item, context, writeAccess, onChanged }) => {
     const { t } = useI18n();
     const { sourceControl } = useRuntimeAPIs();
-    // An open issue or PR closes, a closed one reopens; a merged PR stays as it is.
     const repositoryItem = item.source === 'repository' && item.reference.kind !== 'discussion' ? item.reference : null;
     const descriptor = useSourceControlProvider(repositoryItem?.provider);
     const nextState = !repositoryItem || repositoryItem.state === 'merged' ? null : repositoryItem.state === 'open' ? 'closed' : 'open';
-    // A draft is a state of an open change request too: the host that can move
-    // it either way is asked, and none is read for anything else.
     const openPull = repositoryItem?.kind === 'pull' && repositoryItem.state === 'open' ? repositoryItem : null;
     const capabilities = useCapabilities(openPull ? context : null);
     const stateLabel = (() => {
@@ -672,7 +593,7 @@ const ItemStateMenuItems: React.FC<{
         return t(nextState === 'closed' ? `sourceBoard.actions.closePull.${term}` : `sourceBoard.actions.reopenPull.${term}`);
     })();
 
-    const changeState = async () => {
+    const changeState = async (reason?: IssueCloseReason) => {
         if (!repositoryItem || !nextState) return;
         const label = referenceNumberLabel(repositoryItem, descriptor);
         try {
@@ -683,7 +604,8 @@ const ItemStateMenuItems: React.FC<{
                 state: nextState,
             };
             if (repositoryItem.kind === 'pull') await sourceControl.changeRequestSetState(payload);
-            else await sourceControl.issueSetState(payload);
+            else await sourceControl.issueSetState(reason === undefined ? payload : { ...payload, reason });
+            forgetLabelWrite(repositoryItem);
             toast.success(t(nextState === 'closed' ? 'sourceBoard.toast.closed' : 'sourceBoard.toast.reopened', { reference: label }));
         } catch (error) {
             toast.error(
@@ -714,10 +636,12 @@ const ItemStateMenuItems: React.FC<{
         }
     };
 
+    const asksCloseReason = writeAccess !== false && repositoryItem?.kind === 'issue' && nextState === 'closed'
+        && descriptor.features.issueCloseReason && descriptor.features.issueCloseReasonWrite;
+
     if (!repositoryItem) return null;
     return (
         <>
-            {/* The state pill says draft or open, so its menu offers the other one. */}
             {openPull?.draft && capabilities?.draftChangeRequests ? (
                 <DropdownMenuItem onSelect={() => void markDraft(false)}>
                     <Icon name="git-pull-request" className="size-4 shrink-0" />
@@ -730,7 +654,19 @@ const ItemStateMenuItems: React.FC<{
                     {t('sourceBoard.actions.convertToDraft')}
                 </DropdownMenuItem>
             ) : null}
-            {nextState ? (
+            {asksCloseReason ? (
+                <>
+                    <DropdownMenuItem onSelect={() => void changeState('completed')}>
+                        <Icon name="checkbox-circle" className="size-4 shrink-0" />
+                        {t('sourceBoard.actions.closeIssueCompleted')}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onSelect={() => void changeState('not_planned')}>
+                        <Icon name="close-circle" className="size-4 shrink-0" />
+                        {t('sourceBoard.actions.closeIssueNotPlanned')}
+                    </DropdownMenuItem>
+                </>
+            ) : null}
+            {nextState && !asksCloseReason ? (
                 <DropdownMenuItem onSelect={() => void changeState()}>
                     <Icon name={nextState === 'open' ? 'arrow-go-back' : repositoryItem.kind === 'pull' ? 'git-close-pull-request' : 'checkbox-circle'} className="size-4 shrink-0" />
                     {stateLabel}

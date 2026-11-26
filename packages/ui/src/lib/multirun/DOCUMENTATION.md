@@ -34,6 +34,12 @@ write fails keeps the old title and is reported.
 The run's model and agent are set on the session at creation (`selection`),
 because v2 pins a session to a model instead of taking one per prompt.
 
+A run launched from a draft in an isolated space (`spaceDirectory`) creates every
+session in that space's folder and binds it through the space's own route, since a
+session in the project would run on the host. It gets no worktrees: the host refuses
+worktree routes for a space. Added lanes and fusions follow their first session.
+A launch from a space being made or stopped is refused.
+
 A failed binding attempts to delete only that newly created session. Worktrees
 are retained because setup may already have written files. A lane, added lane
 or code fusion whose new worktree never populated has nothing in it; that
@@ -51,6 +57,19 @@ session again without any stored "resolved" state. Parsed identities are cached
 per session object (records are replaced on update), so the index can be
 rebuilt on every session-list change. Lanes sort by variant then creation;
 fusions come first.
+
+### Why the index resolves the legacy scope lazily and keeps its last result
+
+`RunAutoFusion` rebuilds the index on every streamed step of any session,
+because each step changes the deferred spend and the live records. Resolving
+every session's project scope (a worktree lookup and a path normalization) per
+step cost more than the rest of the index together, and only a session whose
+title names a run without membership metadata reads that scope.
+`readMultiRunIdentityWith` therefore asks for the scope only in that case and
+caches whether the identity read it. The index itself reads only the sessions
+that carry an identity, so `buildMultiRunIndex` returns the index it built last
+when those members are the same records with the same identities in the same
+order.
 
 Consumers: the sidebar row model and mobile sheet (see the sidebar
 DOCUMENTATION), the overview (`useMultiRun`), the header title
@@ -199,3 +218,10 @@ Old titles ending in `/2` or `/fusion` are inherently ambiguous. Preserve their
 previous suffix interpretation; do not write guessed membership back to them.
 Legacy names can still collide or lose recognition after renaming. Only new
 ID-bound records provide exact membership.
+
+## Invariants
+
+- Fusion reads prompt overrides before creating worktrees so a failed read leaves no checkout behind. Each fusion has its own branch, and detaching also clears a legacy lane title so it cannot rejoin through title parsing.
+- Lane prompt lookup walks beyond a fixed oldest page because plumbing records can fill it without a user message. Summary caches use runtime, session and latest idle time, and request identity rejects stale reads while busy lanes retain previous results.
+- Lane creation never cleans up through a switched runtime, leaving an unbound marker ineligible. Membership serialization omits undefined optional values so the record remains plain JSON.
+- The launcher ID is page-local and tolerates insecure contexts because module initialization must not fail when `randomUUID` is absent. Legacy title parsing caches include project scope because title-only membership depends on it.

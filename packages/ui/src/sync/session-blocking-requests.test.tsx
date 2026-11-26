@@ -3,7 +3,7 @@ import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { OpenCode } from '@opencode/client'
 import { opencodeClient } from '@/lib/opencode/client'
-import type { FormRequest, PermissionRequest } from '@/lib/opencode/model'
+import type { FormRequest, PermissionRequest, Session } from '@/lib/opencode/model'
 import { applyGlobalBlockingRequestEvents, readHostBlockingRequestsSnapshot, resetGlobalBlockingRequests } from './global-blocking-requests'
 import { SyncProvider, useDirectoryStore, useSessionBlockingRequests } from './sync-context'
 import { installHookTestDom } from '../components/session/sidebar/test-utils/testDom'
@@ -31,6 +31,11 @@ const createSdk = () => OpenCode.make({
 
 const permission = (id: string, sessionID: string): PermissionRequest => ({ id, sessionID, action: 'bash', resources: [] })
 const form = (id: string, sessionID: string): FormRequest => ({ id, sessionID, title: 'Answer', fields: [{ key: 'answer', type: 'boolean' }] })
+
+const childSession: Session = {
+  id: 'child', projectID: 'project', directory: CHILD_DIR, title: 'child', time: { created: 1, updated: 1 }, cost: 0,
+  tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+}
 
 type ProbeStores = {
   parent: ReturnType<typeof useDirectoryStore>
@@ -167,6 +172,23 @@ describe('useSessionBlockingRequests', () => {
     }
   })
 
+  test('shows a permission the host seed found waiting in a directory this client never opened', async () => {
+    resetGlobalBlockingRequests()
+    try {
+      await withProbe(true, async () => {
+        await act(async () => { await readHostBlockingRequestsSnapshot(async () => ({
+          sessions: {},
+          pending: { child: { permissions: [{ id: 'seeded-permission', sessionID: 'child', action: 'bash', resources: ['*'] }], forms: [], pages: [] } },
+          serverTime: 0,
+        }), () => CHILD_DIR) })
+        expect(stores!.child.getState().permission.child).toBeUndefined()
+        expect(rendered).toEqual({ hasPermission: true, hasForm: false })
+      })
+    } finally {
+      resetGlobalBlockingRequests()
+    }
+  })
+
   test('a store whose bootstrap completed outranks a form the index still holds', async () => {
     resetGlobalBlockingRequests()
     try {
@@ -180,7 +202,7 @@ describe('useSessionBlockingRequests', () => {
         expect(rendered?.hasForm).toBe(true)
 
         // The directory's own bootstrap read its pending forms and found none.
-        await act(async () => stores!.child.setState({ status: 'complete' }))
+        await act(async () => stores!.child.setState({ status: 'complete', session: [childSession], requestCoverage: new Set(['child']) }))
         expect(rendered?.hasForm).toBe(false)
 
         // A form the complete store holds still shows.

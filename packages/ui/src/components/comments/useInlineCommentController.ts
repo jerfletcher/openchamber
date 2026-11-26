@@ -14,6 +14,7 @@ import { useComposerDraftTarget } from '@/hooks/useComposerAddress';
 import { getRuntimeKey } from '@/lib/runtime-switch';
 import { focusChatInput } from '@/components/chat/composer/editor/dom';
 import { diffCommentOriginKey, type DiffCommentOrigin } from '@/lib/diffCommentOrigin';
+import { anchorComment, commentContext, type CommentAnchorInput, type CommentLineSource } from '@/lib/commentAnchor';
 
 type LineRangeBase = {
   start: number;
@@ -33,8 +34,10 @@ interface UseInlineCommentControllerOptions<TRange extends LineRangeBase> {
   getCodeForRange: (range: TRange) => string;
   toStoreRange: (range: TRange) => StoreRange;
   fromDraftRange: (draft: InlineCommentDraft) => TRange;
-  /** The diff these comments are written on; absent for uncommitted changes. */
   origin?: DiffCommentOrigin;
+  lineSource?: (range: TRange) => CommentLineSource | null;
+  contentVersion?: unknown;
+  onSelectionMoved?: (range: TRange) => void;
 }
 
 const normalizeStoreRange = (range: StoreRange): StoreRange => {
@@ -61,9 +64,11 @@ export function useInlineCommentController<TRange extends LineRangeBase>(
   options: UseInlineCommentControllerOptions<TRange>
 ) {
   const { t } = useI18n();
-  const { source, fileLabel, language, getCodeForRange, toStoreRange, fromDraftRange, origin } = options;
-  // The same path in a pull request and on disk are different lines, so a
-  // comment shows only on the diff it was written on.
+  const { source, fileLabel, language, getCodeForRange, toStoreRange, fromDraftRange, origin, contentVersion } = options;
+  const optionsRef = React.useRef(options);
+  React.useEffect(() => {
+    optionsRef.current = options;
+  });
   const originKey = diffCommentOriginKey(origin);
 
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
@@ -97,9 +102,54 @@ export function useInlineCommentController<TRange extends LineRangeBase>(
   const drafts = React.useMemo(() => {
     if (!target || !fileLabel) return [];
     return sessionDrafts.filter((draft) => (
-      draft.source === source && draft.fileLabel === fileLabel && diffCommentOriginKey(draft.origin) === originKey
+      draft.source === source && draft.fileLabel === fileLabel && (
+        diffCommentOriginKey(draft.origin) === originKey
+        || (draft.origin === undefined && (origin?.kind === 'working-tree' || origin?.kind === 'turn'))
+      )
     ));
-  }, [fileLabel, originKey, sessionDrafts, source, target]);
+  }, [fileLabel, origin?.kind, originKey, sessionDrafts, source, target]);
+
+  React.useEffect(() => {
+    if (!target) return;
+    const { lineSource, fromDraftRange: rangeOf } = optionsRef.current;
+    if (!lineSource) return;
+    for (const draft of drafts) {
+      const lines = lineSource(rangeOf(draft));
+      if (!lines) continue;
+      const anchored = anchorComment(lines, draft);
+      if (anchored.startLine === draft.startLine && anchored.endLine === draft.endLine && anchored.changedCode === draft.changedCode) continue;
+      updateDraft(target, draft.id, { startLine: anchored.startLine, endLine: anchored.endLine, changedCode: anchored.changedCode });
+    }
+  }, [contentVersion, drafts, target, updateDraft]);
+
+  const selectionAnchorRef = React.useRef<Omit<CommentAnchorInput, 'startLine' | 'endLine'> | null>(null);
+  const movedSelectionRef = React.useRef<{ start: number; end: number } | null>(null);
+  React.useEffect(() => {
+    const { lineSource, getCodeForRange: codeOf, toStoreRange: storeRangeOf } = optionsRef.current;
+    const lines = selection ? lineSource?.(selection) : null;
+    const moved = movedSelectionRef.current;
+    movedSelectionRef.current = null;
+    if (!selection || !lines) {
+      selectionAnchorRef.current = null;
+      return;
+    }
+    const range = normalizeLineRange(selection);
+    if (moved && moved.start === range.start && moved.end === range.end && selectionAnchorRef.current) return;
+    const stored = normalizeStoreRange(storeRangeOf(range));
+    selectionAnchorRef.current = { code: codeOf(range), ...commentContext(lines, stored.startLine, stored.endLine) };
+  }, [selection]);
+  React.useEffect(() => {
+    const anchor = selectionAnchorRef.current;
+    const { lineSource, toStoreRange: storeRangeOf, onSelectionMoved } = optionsRef.current;
+    const lines = selection ? lineSource?.(selection) : null;
+    if (!selection || !anchor || !lines) return;
+    const range = normalizeLineRange(selection);
+    const stored = normalizeStoreRange(storeRangeOf(range));
+    const anchored = anchorComment(lines, { ...anchor, startLine: stored.startLine, endLine: stored.endLine });
+    if (anchored.startLine === stored.startLine && anchored.endLine === stored.endLine) return;
+    movedSelectionRef.current = { start: anchored.startLine, end: anchored.endLine };
+    (onSelectionMoved ?? setSelection)({ ...range, start: anchored.startLine, end: anchored.endLine });
+  }, [contentVersion, selection]);
 
   const reset = React.useCallback(() => {
     setSelection(null);
@@ -126,8 +176,6 @@ export function useInlineCommentController<TRange extends LineRangeBase>(
     }
   }, [editingDraftId, removeDraft, reset, target]);
 
-  // True when the editor is done with the text. False keeps it open: a refused
-  // comment exists nowhere but in the field.
   const saveComment = React.useCallback((textToSave: string, rangeOverride?: TRange): boolean => {
     const targetRange = rangeOverride ?? selection;
     const trimmedText = textToSave.trim();
@@ -138,7 +186,6 @@ export function useInlineCommentController<TRange extends LineRangeBase>(
       return false;
     }
 
-    // The edited comment was sent or removed meanwhile: nothing left to save to.
     if (editingDraftId && !useInlineCommentDraftStore.getState().getDrafts(target).some((draft) => draft.id === editingDraftId)) {
       reset();
       return true;
@@ -147,6 +194,13 @@ export function useInlineCommentController<TRange extends LineRangeBase>(
     const normalizedRange = normalizeLineRange(targetRange);
     const normalizedStoreRange = normalizeStoreRange(toStoreRange(normalizedRange));
     const code = getCodeForRange(normalizedRange);
+    const lines = optionsRef.current.lineSource?.(normalizedRange);
+    const context = lines ? commentContext(lines, normalizedStoreRange.startLine, normalizedStoreRange.endLine) : null;
+    const anchor = {
+      contextBefore: context?.contextBefore,
+      contextAfter: context?.contextAfter,
+      changedCode: undefined,
+    };
 
     const isNewComment = !editingDraftId;
     const saved = editingDraftId
@@ -156,9 +210,10 @@ export function useInlineCommentController<TRange extends LineRangeBase>(
         endLine: normalizedStoreRange.endLine,
         side: normalizedStoreRange.side,
         code,
+        ...anchor,
         language,
         text: trimmedText,
-        origin,
+        origin: drafts.find((draft) => draft.id === editingDraftId)?.origin ?? origin,
       })
       : addDraft(target, {
         source,
@@ -167,6 +222,7 @@ export function useInlineCommentController<TRange extends LineRangeBase>(
         endLine: normalizedStoreRange.endLine,
         side: normalizedStoreRange.side,
         code,
+        ...anchor,
         language,
         text: trimmedText,
         origin,
@@ -181,7 +237,7 @@ export function useInlineCommentController<TRange extends LineRangeBase>(
       requestAnimationFrame(focusChatInput);
     }
     return true;
-  }, [addDraft, editingDraftId, fileLabel, getCodeForRange, language, origin, reset, selection, source, t, target, toStoreRange, updateDraft]);
+  }, [addDraft, drafts, editingDraftId, fileLabel, getCodeForRange, language, origin, reset, selection, source, t, target, toStoreRange, updateDraft]);
 
   return {
     drafts,

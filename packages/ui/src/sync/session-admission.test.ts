@@ -7,9 +7,12 @@ import type { Session } from '@/lib/opencode/model';
 import type { RuntimeAPIs } from '@/lib/api/types';
 import { registerRuntimeAPIs } from '@/contexts/runtimeAPIRegistry';
 import { useSessionUIStore } from './session-ui-store';
-import { admitSession, isSessionAdmitted, subscribeSessionAdmission } from './session-admission';
+import { admitSession, isSessionAdmitted, nestedLineageProject, subscribeSessionAdmission, withAdmittedLineage } from './session-admission';
 import { applySessionEventsToGlobalSessions } from './session-event-router';
 import type { SyncEvent } from '@/lib/opencode/events';
+import { z } from 'zod';
+import { useGlobalSyncStore } from './global-sync-store';
+import { startNestedSessionOwnerDiscovery } from '@/components/session/sidebar/sessions/nestedSessionOwnerDiscovery';
 
 const session = (id: string, directory: string): Session => ({
   id, directory, projectID: 'external', title: id, time: { created: 1, updated: 1 },
@@ -36,18 +39,33 @@ let trustFailures = 0;
 let registrationReads = 0;
 let registrationFailures = 0;
 let registeredProjectPath: string | null = null;
+let canonicalDirectory: string | null = null;
+let coldLinkedDirectory: string | null = null;
+let resolveColdGitListing: (() => void) | null = null;
+let coldGitListing: Promise<void>;
 
 beforeEach(() => {
   trusted = false; runsCode = true; registrations = []; trustWrites = 0;
   trustReads = 0; trustFailures = 0; registrationReads = 0; registrationFailures = 0; registeredProjectPath = null;
+  canonicalDirectory = null;
+  coldLinkedDirectory = null;
+  coldGitListing = new Promise((resolve) => { resolveColdGitListing = resolve; });
   forgetOpenCodeTrustDeclines();
   configureRuntimeUrlResolver({ apiBaseUrl: 'https://admission.test' });
-  useProjectsStore.setState({ projects: [{ id: 'kept', path: '/kept' }], activeProjectId: 'kept' });
+  useProjectsStore.setState({ hasServerSnapshot: true, serverSnapshotFailed: false, projects: [{ id: 'kept', path: '/kept' }], activeProjectId: 'kept' });
   useGlobalSessionsStore.setState({ activeSessions: [], archivedSessions: [], entityById: new Map(), hasLoaded: true });
   useSessionUIStore.setState({ currentSessionId: null, currentSessionDirectory: null, availableWorktreesByProject: new Map() });
-  globalThis.fetch = (async (input, init) => {
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
     const url = new URL(String(input));
     if (url.pathname === '/api/fs/home') return Response.json({ home: '/home', chatsRoot: '/managed/chats' });
+    if (url.pathname === '/api/git/project-worktrees' || url.pathname === '/api/git/projects') {
+      const { directories } = z.object({ directories: z.array(z.string()) }).parse(JSON.parse(String(init?.body)));
+      if (url.pathname === '/api/git/project-worktrees') resolveColdGitListing?.();
+      return Response.json({ projects: directories.map((directory) => ({ directory, isGitRepository: false,
+        worktrees: directory === coldLinkedDirectory ? [{ path: '/kept/repo' }, { path: directory }]
+          : directory === '/kept/repo' ? [{ path: '/kept/repo' }, { path: '/trees/nested' }] : [],
+      })) });
+    }
     if (url.pathname === '/api/opencode/trust') {
       if (init?.method === 'POST') { trusted = true; trustWrites += 1; }
       else {
@@ -65,10 +83,14 @@ beforeEach(() => {
       const body = JSON.parse(String(init?.body));
       registrations.push(body.directory);
       const path = registeredProjectPath ?? body.directory;
-      return Response.json({ project: { id: path, path } });
+      if (!canonicalDirectory) return Response.json({ project: { id: path, path } });
+      // The server moved the session; OpenCode reports it after the answer.
+      const moved = canonicalDirectory;
+      setTimeout(() => applySessionEventsToGlobalSessions([patchDirectory(body.sessionId, moved)]), 5);
+      return Response.json({ project: { id: path, path }, directory: moved });
     }
     return Response.json({});
-  }) as typeof fetch;
+  };
 });
 afterEach(async () => {
   await settleOpenCodeTrust('skip');
@@ -82,6 +104,88 @@ afterEach(async () => {
 });
 
 describe('session admission', () => {
+  test('a child stays under its associated parent without admitting the child folder', () => {
+    const root = session('nested-root', '/trees/parent');
+    const child = { ...session('worker', '/elsewhere'), parentID: root.id };
+    useGlobalSessionsStore.getState().upsertSessions([root, child]);
+    useSessionUIStore.setState({ nestedSessionOwners: new Map([[root.id, { directory: root.directory, projectId: 'kept', projectRoot: '/kept' }]]) });
+    expect(withAdmittedLineage(child.id, child.directory)).toBe(root.directory);
+    expect(nestedLineageProject(child.id, root.directory)?.id).toBe('kept');
+    expect(nestedLineageProject(child.id, child.directory)).toBeNull();
+    expect(isSessionAdmitted(child.directory)).toBe(false);
+  });
+  test('a cold open waits for a nested checkout association without adding a project', async () => {
+    runsCode = false;
+    useProjectsStore.setState({ hasServerSnapshot: false, projects: [] });
+    coldLinkedDirectory = '/cold-linked';
+    const record = session('cold', coldLinkedDirectory);
+    useGlobalSessionsStore.getState().upsertSession(record);
+    const open = admitSession(record.id, record.directory, true);
+    await settle();
+    expect(registrationReads).toBe(0);
+    useProjectsStore.setState({ hasServerSnapshot: true, projects: [{ id: 'kept', path: '/kept' }] });
+    await coldGitListing;
+    expect(registrationReads).toBe(0);
+    useSessionUIStore.setState({ nestedSessionOwners: new Map([[record.id, { projectId: 'kept', projectRoot: '/kept', directory: record.directory }]]) });
+    expect(await open).toBe(record.directory);
+    expect(registrationReads).toBe(0);
+  });
+  test('opening a confirmed nested checkout checks its own trust without registering it', async () => {
+    const record = session('linked', '/trees/linked');
+    useGlobalSessionsStore.getState().upsertSession(record);
+    const owner = { directory: record.directory, projectId: 'kept', projectRoot: '/kept' };
+    useSessionUIStore.setState({ nestedSessionOwners: new Map([[record.id, owner]]) });
+    useSessionUIStore.getState().setCurrentSession(record.id, record.directory);
+    await settle();
+    expect(getOpenCodeTrustSnapshot()?.directory).toBe(record.directory);
+    await settleOpenCodeTrust('skip');
+    await settle();
+    expect(useSessionUIStore.getState().currentSessionId).toBeNull();
+    expect(registrationReads).toBe(0);
+
+    useSessionUIStore.getState().setCurrentSession(record.id, record.directory);
+    await settle();
+    useProjectsStore.setState({ projects: [] });
+    await settleOpenCodeTrust('trust');
+    await settle();
+    expect(useSessionUIStore.getState().currentSessionId).toBeNull();
+    expect(registrationReads).toBe(0);
+  });
+
+  test('a linked checkout of a nested repository shows until its folder trust is declined; a clone stays hidden', async () => {
+    const originalSync = useGlobalSyncStore.getState();
+    useGlobalSyncStore.getState().actions.set({ projects: [
+      { id: 'repo', worktree: '/kept/repo', vcs: 'git', time: { created: 1, updated: 1 }, sandboxes: [] },
+    ] });
+    const linked = { ...session('nested', '/trees/nested'), projectID: 'repo' };
+    const clone = { ...session('clone', '/trees/clone'), projectID: 'repo' };
+    useGlobalSessionsStore.getState().upsertSessions([linked, clone]);
+    const associated = new Promise<void>((resolve) => {
+      const stop = useSessionUIStore.subscribe((state) => {
+        if (state.nestedSessionOwners.size) { stop(); resolve(); }
+      });
+    });
+    const discovery = startNestedSessionOwnerDiscovery();
+    try {
+      await associated;
+      const owners = useSessionUIStore.getState().nestedSessionOwners;
+      expect(owners.get(linked.id)).toEqual({ directory: linked.directory, projectId: 'kept', projectRoot: '/kept' });
+      expect(owners.has(clone.id)).toBe(false);
+
+      useSessionUIStore.getState().setCurrentSession(linked.id, linked.directory);
+      await settle();
+      expect(getOpenCodeTrustSnapshot()?.directory).toBe(linked.directory);
+      await settleOpenCodeTrust('skip');
+      await settle();
+      expect(useSessionUIStore.getState().currentSessionId).toBeNull();
+      expect(useSessionUIStore.getState().nestedSessionOwners.has(linked.id)).toBe(false);
+      expect(registrationReads).toBe(0);
+    } finally {
+      discovery.dispose();
+      useGlobalSyncStore.setState(originalSync, true);
+    }
+  });
+
   test('retries a failed trust read after backoff without waiting for a new global load', async () => {
     jest.useFakeTimers();
     trusted = true;
@@ -204,7 +308,7 @@ describe('session admission', () => {
   });
 
   test('resolves the server-owned chat root before importing a persisted managed chat', async () => {
-    expect(await admitSession('chat', '/managed/chats/day/session-chat')).toBe(true);
+    expect(await admitSession('chat', '/managed/chats/day/session-chat')).toBe('/managed/chats/day/session-chat');
     expect(registrations).toEqual([]);
     expect(getOpenCodeTrustSnapshot()).toBeNull();
   });
@@ -220,7 +324,7 @@ describe('session admission', () => {
 
   test('auto-adds a folder without executable configuration, without activation or a dialog', async () => {
     runsCode = false;
-    expect(await admitSession('one', '/empty')).toBe(true);
+    expect(await admitSession('one', '/empty')).toBe('/empty');
     expect(registrations).toEqual(['/empty']);
     expect(getOpenCodeTrustSnapshot()).toBeNull();
     expect(trustWrites).toBe(0);
@@ -230,7 +334,7 @@ describe('session admission', () => {
 
   test('auto-adds an already trusted fingerprint without asking again', async () => {
     trusted = true;
-    expect(await admitSession('one', '/trusted')).toBe(true);
+    expect(await admitSession('one', '/trusted')).toBe('/trusted');
     expect(registrations).toEqual(['/trusted']);
     expect(getOpenCodeTrustSnapshot()).toBeNull();
   });
@@ -243,8 +347,8 @@ describe('session admission', () => {
     expect(getOpenCodeTrustSnapshot()?.directory).toBe('/outside');
     expect(registrations).toEqual([]);
     expect(await settleOpenCodeTrust('trust')).toBe('saved');
-    expect(await first).toBe(true);
-    expect(await second).toBe(true);
+    expect(await first).toBe('/outside');
+    expect(await second).toBe('/outside');
     expect(trustWrites).toBe(1);
     expect(registrations).toEqual(['/outside']);
   });
@@ -253,8 +357,8 @@ describe('session admission', () => {
     const first = admitSession('one', '/declined');
     await settle();
     await settleOpenCodeTrust('skip');
-    expect(await first).toBe(false);
-    expect(await admitSession('one', '/declined')).toBe(false);
+    expect(await first).toBeNull();
+    expect(await admitSession('one', '/declined')).toBeNull();
     expect(getOpenCodeTrustSnapshot()).toBeNull();
     expect(registrations).toEqual([]);
     expect(trustWrites).toBe(0);
@@ -266,7 +370,7 @@ describe('session admission', () => {
     await settle();
     useGlobalSessionsStore.getState().upsertSession(session('moving', '/new'));
     await settleOpenCodeTrust('trust');
-    expect(await admission).toBe(false);
+    expect(await admission).toBeNull();
     expect(registrations).toEqual([]);
   });
 
@@ -353,6 +457,50 @@ describe('session admission', () => {
     expect(registrationReads).toBe(1);
   });
 
+  test('opening a session recorded under a symlinked spelling of a listed worktree opens it at the canonical path', async () => {
+    trusted = true;
+    registeredProjectPath = '/kept';
+    canonicalDirectory = '/private/tmp/respelled';
+    useSessionUIStore.setState({ availableWorktreesByProject: new Map([
+      ['/kept', [{ path: '/private/tmp/respelled', projectDirectory: '/kept', branch: 'task', label: 'task' }]],
+    ]) });
+    useGlobalSessionsStore.getState().upsertSession(session('respelled', '/tmp/respelled'));
+    useSessionUIStore.getState().setCurrentSession('respelled', '/tmp/respelled');
+    for (let round = 0; round < 10; round += 1) { await new Promise((resolve) => setTimeout(resolve, 5)); await settle(); }
+    expect(registrations).toEqual(['/tmp/respelled']);
+    expect(useSessionUIStore.getState().currentSessionId).toBe('respelled');
+    expect(useSessionUIStore.getState().currentSessionDirectory).toBe('/private/tmp/respelled');
+  });
+
+  test('admitting an unindexed session recorded under a symlinked spelling answers the canonical folder', async () => {
+    trusted = true;
+    registeredProjectPath = '/kept';
+    canonicalDirectory = '/private/tmp/unindexed';
+    useSessionUIStore.setState({ availableWorktreesByProject: new Map([
+      ['/kept', [{ path: '/private/tmp/unindexed', projectDirectory: '/kept', branch: 'task', label: 'task' }]],
+    ]) });
+    expect(await admitSession('unindexed', '/tmp/unindexed', true)).toBe('/private/tmp/unindexed');
+    expect(registrations).toEqual(['/tmp/unindexed']);
+  });
+
+  test('a live move to a symlinked spelling of a listed worktree is admitted once the record follows', async () => {
+    trusted = true;
+    registeredProjectPath = '/kept';
+    canonicalDirectory = '/private/tmp/live-respelled';
+    useSessionUIStore.setState({ availableWorktreesByProject: new Map([
+      ['/kept', [{ path: '/private/tmp/live-respelled', projectDirectory: '/kept', branch: 'task', label: 'task' }]],
+    ]) });
+    const stop = subscribeSessionAdmission();
+    try {
+      moveSession('live-respelled', '/tmp/live-respelled');
+      for (let round = 0; round < 10; round += 1) { await new Promise((resolve) => setTimeout(resolve, 5)); await settle(); }
+      expect(registrations).toEqual(['/tmp/live-respelled']);
+      const record = useGlobalSessionsStore.getState().entityById.get('live-respelled');
+      expect(record?.directory).toBe('/private/tmp/live-respelled');
+      expect(isSessionAdmitted(record?.directory)).toBe(true);
+    } finally { stop(); }
+  });
+
   test('notification and restore selection waits before publishing or changing the directory', async () => {
     useGlobalSessionsStore.getState().upsertSession(session('blocked-open', '/open-blocked'));
     useSessionUIStore.getState().setCurrentSession('blocked-open', '/open-blocked');
@@ -375,6 +523,11 @@ describe('session admission', () => {
   });
 
   test('admission preserves submitted-draft and project-picker selection options', async () => {
+    const selected = new Promise<void>((resolve) => {
+      const stop = useSessionUIStore.subscribe((state) => {
+        if (state.currentSessionId === 'options-open') { stop(); resolve(); }
+      });
+    });
     useGlobalSessionsStore.getState().upsertSession(session('options-open', '/options-open'));
     useSessionUIStore.getState().setCurrentSession('options-open', '/options-open', {
       transition: 'submitted-draft', keepSingleProject: true,
@@ -382,7 +535,7 @@ describe('session admission', () => {
     await settle();
     expect(useSessionUIStore.getState().currentSessionId).toBeNull();
     await settleOpenCodeTrust('trust');
-    await settle();
+    await selected;
     expect(useSessionUIStore.getState().currentSessionId).toBe('options-open');
     expect(useSessionUIStore.getState().materializedDraftSessionId).toBe('options-open');
     expect(useSessionUIStore.getState().currentSessionKeepsSingleProject).toBe(true);

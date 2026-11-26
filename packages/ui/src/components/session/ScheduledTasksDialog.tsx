@@ -32,6 +32,7 @@ import {
   type ScheduledTask,
   type ScheduledTaskStatus,
 } from '@/lib/scheduledTasksApi';
+import { ScheduledTaskNote } from './ScheduledTaskNote';
 import { ScheduledTaskEditorDialog, type ScheduledTaskScopeOption } from './ScheduledTaskEditorDialog';
 import { getModelDisplayName } from '@/lib/modelDisplay';
 import { agentLabel } from '@/lib/agentLabel';
@@ -46,12 +47,6 @@ import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { formatSchedule } from './scheduledTaskSchedule';
 
 
-/**
- * What a task runs with, drawn the way the composer shows it: the provider's
- * logo before the model name, then the variant, then the agent with the
- * composer's agent icon in that agent's colour. Tasks that follow the session
- * defaults say so instead.
- */
 const TaskModelLine: React.FC<{ task: ScheduledTask }> = ({ task }) => {
   const { t } = useI18n();
   const getAgentColor = useAgentColors();
@@ -145,8 +140,6 @@ const TaskTargetLine: React.FC<{ sessionId: string }> = ({ sessionId }) => {
   return <p className="truncate typography-meta text-muted-foreground">{t('sessions.scheduledTasks.editor.targetSession')}: {session?.title || sessionId}</p>;
 };
 
-// Next to "Paused" on a repository loop that waits for the user: the icon
-// says why, the sentence is its title. A loop the user paused has none.
 const LoopApprovalMark: React.FC<{ reason: NonNullable<ScheduledTask['loopApproval']> }> = ({ reason }) => {
   const { t } = useI18n();
   const label = reason === 'outdated'
@@ -159,26 +152,8 @@ const LoopApprovalMark: React.FC<{ reason: NonNullable<ScheduledTask['loopApprov
   );
 };
 
-const toneStyle = (tone: StatusTone): React.CSSProperties => {
-  if (tone === 'muted') {
-    return {};
-  }
-  return {
-    color: `var(--status-${tone})`,
-    backgroundColor: `var(--status-${tone}-background)`,
-    borderColor: `var(--status-${tone}-border)`,
-  };
-};
-
-/** Why the page is being left: a started session or a loop file to edit
- *  takes over the screen, and each shell decides how to get there. */
 export type ScheduledTasksLeaveReason = 'session' | 'file';
 
-/**
- * The scheduled tasks page. `page` is the desktop surface that replaces the
- * chat area (scope list at the left, tasks at the right); `mobile` is the
- * single-column body of the mobile shell's fullscreen surface.
- */
 export function ScheduledTasksView({ layout, onLeave }: {
   layout: 'page' | 'mobile';
   onLeave: (reason: ScheduledTasksLeaveReason) => void;
@@ -192,26 +167,15 @@ export function ScheduledTasksView({ layout, onLeave }: {
   const { currentTheme } = useThemeSystem();
 
   const [selectedProjectID, setSelectedProjectID] = React.useState<string>('');
-  // Ownership of the task flow lives in refs, decided in one place:
-  // - `selectedProjectRef` mirrors the selection the moment it changes, so an
-  //   async continuation can compare against it without waiting for a render;
-  // - `listOwnerRef` is the project whose tasks the visible list holds — task
-  //   actions name it instead of re-deriving the project from the selection;
-  // - `taskRequestGate` numbers fetches per project, so a slow older response
-  //   cannot overwrite a newer one (`scheduledTasksRequests.ts`).
   const selectedProjectRef = React.useRef<string>('');
   const listOwnerRef = React.useRef<string>('');
   const [taskRequestGate] = React.useState(createTaskRequestGate);
   const editorOwnerRef = React.useRef<string>('');
   const [tasks, setTasks] = React.useState<ScheduledTask[]>([]);
-  // Start in loading state so the first frame after open shows the spinner,
-  // not an empty/select-project flash before the fetch effect runs.
   const [loading, setLoading] = React.useState(true);
   const [editorOpen, setEditorOpen] = React.useState(false);
   const [editorTask, setEditorTask] = React.useState<ScheduledTask | null>(null);
   const [mutatingTaskID, setMutatingTaskID] = React.useState<string | null>(null);
-  // Chats are scheduled like a project; each run starts a new chat. VS Code
-  // has no chats, so the entry exists everywhere else.
   const chatsAvailable = !isVSCodeRuntime();
 
   const selectedProject = React.useMemo(
@@ -252,16 +216,11 @@ export function ScheduledTasksView({ layout, onLeave }: {
     );
   }, [homeDirectory, currentTheme.metadata.variant, currentTheme.colors.surface.foreground]);
 
-  // Every selection change routes through here once, so the mirror ref and
-  // the state can never disagree about which scope is on screen.
   const selectProjectScope = React.useCallback((nextProjectID: string) => {
     selectedProjectRef.current = nextProjectID;
     setSelectedProjectID(nextProjectID);
   }, []);
 
-  // The only writer of the task list. It refuses a list that does not belong
-  // to the scope on screen: a project change is the selection's to answer,
-  // and a slow fetch for an earlier project has no say over this view.
   const commitTaskList = React.useCallback((projectID: string, nextTasks: ScheduledTask[]) => {
     if (!mayCommitTaskList(projectID, selectedProjectRef.current)) {
       return;
@@ -271,9 +230,6 @@ export function ScheduledTasksView({ layout, onLeave }: {
   }, []);
 
   const reloadTasks = React.useCallback(async (projectID: string, options?: { silent?: boolean }) => {
-    // A newer request for the same project supersedes an older one; a
-    // request for another project is answered by the selection, since
-    // commitTaskList refuses anything that is not on screen.
     if (!projectID) {
       commitTaskList('', []);
       setLoading(false);
@@ -286,7 +242,7 @@ export function ScheduledTasksView({ layout, onLeave }: {
     try {
       const nextTasks = await fetchScheduledTasks(projectID);
       if (!taskRequestGate.isLatest(projectID, request)) {
-        return; // A newer fetch for this project owns the list; drop this one.
+        return;
       }
       nextTasks.sort((a, b) => {
         if (a.enabled !== b.enabled) {
@@ -308,16 +264,12 @@ export function ScheduledTasksView({ layout, onLeave }: {
         commitTaskList(projectID, []);
       }
     } finally {
-      // The latest load for the scope on screen decides the spinner, silent
-      // or not. A response for another scope is refused by commitTaskList
-      // and must not clear the new selection's pending load either.
       if (mayEndTaskLoad(taskRequestGate, projectID, request, selectedProjectRef.current)) {
         setLoading(false);
       }
     }
   }, [commitTaskList, taskRequestGate, t]);
 
-  // Keyed on the stored list: a "Recent" reorder must not reset the chosen scope.
   React.useEffect(() => {
     const preferredProjectID = activeProject?.id || storedProjects[0]?.id || (chatsAvailable ? CHAT_DRAFT_PROJECT_ID : '');
     selectProjectScope(preferredProjectID);
@@ -354,18 +306,12 @@ export function ScheduledTasksView({ layout, onLeave }: {
   }, [selectedProjectID, reloadTasks]);
 
   const handleSaveTask = React.useCallback(async (taskDraft: Partial<ScheduledTask>, targetProjectID: string) => {
-    // An existing task belongs to the scope whose list displayed it, captured
-    // when the editor opened, so a scope switch in the list meanwhile cannot
-    // misfile it. The editor's own scope field names where it is saved.
     const ownerProjectID = taskDraft.id ? editorOwnerRef.current : '';
     const projectID = targetProjectID || ownerProjectID || selectedProjectID;
     if (!projectID) {
       throw new Error(t('sessions.scheduledTasks.dialog.error.chooseProjectFirst'));
     }
     if (taskDraft.id && ownerProjectID && projectID !== ownerProjectID) {
-      // Tasks are stored per project, so a move is a new task there and a
-      // delete here. The new one is written first: a failed delete leaves
-      // two copies the user is told about, never none.
       const { id: originalTaskID, state: _state, ...movedTask } = taskDraft;
       await upsertScheduledTask(projectID, movedTask);
       try {
@@ -376,9 +322,6 @@ export function ScheduledTasksView({ layout, onLeave }: {
     } else {
       await upsertScheduledTask(projectID, taskDraft);
     }
-    // Refresh what is on screen: normally the scope that was just saved; if
-    // the user switched while the editor was open, the newer scope's list is
-    // what the view belongs to and it must stay consistent.
     if (selectedProjectID) {
       await reloadTasks(selectedProjectID);
     }
@@ -386,15 +329,11 @@ export function ScheduledTasksView({ layout, onLeave }: {
   }, [selectedProjectID, reloadTasks, t]);
 
   const handleToggleEnabled = React.useCallback(async (task: ScheduledTask, enabled: boolean) => {
-    // The row's own project decides where the mutation lands: a task shown
-    // under a scope belongs to that scope, even if the user has already
-    // switched and the selection now names another project.
     const projectID = listOwnerRef.current;
     if (!projectID) {
       return;
     }
     setMutatingTaskID(task.id);
-    // The reload brings the reason back if the server keeps the loop paused.
     setTasks((prev) => prev.map((item) => (item.id === task.id ? { ...item, enabled, loopApproval: undefined } : item)));
     try {
       if (task.loopFile) {
@@ -442,8 +381,6 @@ export function ScheduledTasksView({ layout, onLeave }: {
   const handleEditTask = React.useCallback((task: ScheduledTask) => {
     if (!task.loopFile) {
       setEditorTask(task);
-      // The editor saves into the task's own project, captured now, later
-      // switches of the selected scope must not redirect the save.
       editorOwnerRef.current = listOwnerRef.current;
       setEditorOpen(true);
       return;
@@ -457,16 +394,10 @@ export function ScheduledTasksView({ layout, onLeave }: {
     onLeave('file');
   }, [projects, onLeave]);
 
-  // The session of the task's latest run; a run records it as soon as it
-  // creates the session, so a running or failed run has one too. The session
-  // owns its directory: one in a linked worktree must not open on the
-  // project root, so the session's own record decides, not the selection.
   const openLastRunSession = React.useCallback((task: ScheduledTask) => {
     const sessionId = task.state?.lastSessionId;
     if (!sessionId) return;
     void openSessionFromRoute(sessionId);
-    // A run can create its session after the global list last loaded; that
-    // list cannot name the folder until it is fetched again.
     if (!useGlobalSessionsStore.getState().entityById.has(sessionId)) {
       void refreshGlobalSessions().then(() => openSessionFromRoute(sessionId));
     }
@@ -474,8 +405,6 @@ export function ScheduledTasksView({ layout, onLeave }: {
   }, [onLeave]);
 
   const handleRunNow = React.useCallback(async (task: ScheduledTask) => {
-    // Like every mutation here, the run belongs to the task's own project,
-    // not to whatever the selection has become since the list was rendered.
     const projectID = listOwnerRef.current;
     if (!projectID) {
       return;
@@ -493,7 +422,6 @@ export function ScheduledTasksView({ layout, onLeave }: {
         toast.success(t('sessions.scheduledTasks.dialog.toast.started'));
       }
       if (sessionId) {
-        // Jump straight into the started session.
         const project = projects.find((entry) => entry.id === projectID);
         useSessionUIStore.getState().setCurrentSession(sessionId, directory ?? project?.path ?? null);
         onLeave('session');
@@ -685,7 +613,7 @@ export function ScheduledTasksView({ layout, onLeave }: {
                         <Icon name="loader-4" className="h-3.5 w-3.5 animate-spin" />
                         {t('sessions.scheduledTasks.dialog.lastRun.runningNow')}
                       </span>
-                    ) : lastAt ? (
+                    ) : lastAt || status === 'queued' ? (
                       <>
                         {meta.tone !== 'muted' ? (
                           <span
@@ -696,8 +624,12 @@ export function ScheduledTasksView({ layout, onLeave }: {
                             {statusLabel}
                           </span>
                         ) : null}
-                        <span className="text-muted-foreground/50">·</span>
-                        <span>{formatRelativeTime(lastAt, t)}</span>
+                        {lastAt ? (
+                          <>
+                            <span className="text-muted-foreground/50">·</span>
+                            <span>{formatRelativeTime(lastAt, t)}</span>
+                          </>
+                        ) : null}
                       </>
                     ) : (
                       <span>{t('sessions.scheduledTasks.dialog.lastRun.never')}</span>
@@ -714,13 +646,7 @@ export function ScheduledTasksView({ layout, onLeave }: {
                 </div>
 
                 {task.state?.lastError ? (
-                  <div
-                    className={cn('mt-3 flex items-start gap-2 rounded-md border p-2 typography-micro', !task.enabled && 'opacity-60')}
-                    style={toneStyle('error')}
-                  >
-                    <Icon name="error-warning" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
-                    <span className="min-w-0 break-words">{task.state.lastError}</span>
-                  </div>
+                  <ScheduledTaskNote message={task.state.lastError} tone={status === 'queued' ? 'warning' : 'error'} dimmed={!task.enabled} />
                 ) : null}
 
                 <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
@@ -815,10 +741,6 @@ export function ScheduledTasksView({ layout, onLeave }: {
           </div>
         </div>
       ) : (
-        // Full-page surface replacing the chat area (mounted inside <main>).
-        // Master-detail: a scrollable scope list at the left, the selected
-        // scope's tasks at the right. The app Header shows the surface title,
-        // so the page itself only carries the close affordance.
         <div className="absolute inset-0 z-10 flex flex-col bg-background">
           <div className="flex min-h-0 flex-1">
             <div className="flex w-60 flex-shrink-0 flex-col border-e border-edge">
@@ -833,8 +755,6 @@ export function ScheduledTasksView({ layout, onLeave }: {
               </ScrollableOverlay>
             </div>
             <div className="flex min-w-0 flex-1 flex-col">
-              {/* Pages have no close button: you leave by picking a session,
-                  a draft, or another surface in the sidebar. */}
               <div className="flex items-center px-6 pt-3">
                 {newTaskButton()}
               </div>
@@ -851,8 +771,6 @@ export function ScheduledTasksView({ layout, onLeave }: {
       <ScheduledTaskEditorDialog
         open={editorOpen}
         task={editorTask}
-        // The editor works in the task's own scope: an existing task keeps
-        // the project it was captured with even if the selection has moved.
         projectId={editorOwnerRef.current || selectedProjectID}
         scopes={editorScopes}
         onOpenChange={setEditorOpen}
@@ -862,8 +780,6 @@ export function ScheduledTasksView({ layout, onLeave }: {
   );
 }
 
-/** The desktop page, open while the UI store says so. The mobile shell mounts
- *  ScheduledTasksView in its own fullscreen surface instead. */
 export function ScheduledTasksDialog() {
   const open = useUIStore((state) => state.isScheduledTasksDialogOpen);
   const setOpen = useUIStore((state) => state.setScheduledTasksDialogOpen);

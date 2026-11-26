@@ -3,13 +3,14 @@ import { focusChatInput } from '@/components/chat/composer/editor/dom';
 import { canUseElectronDesktopIPC, getMiniChatRuntimeArgs, invokeDesktop } from '@/lib/desktop';
 import { getNextFavoriteModel } from '@/lib/modelRefs';
 import { ShortcutDispatcher, getEffectiveShortcutCombo, shortcutRegistry } from '@/lib/shortcuts';
+import { activeSpaceTarget, providersOfSpaceOffer, spaceModelOffer } from '@/lib/spaces/space-model-offer';
 import { useConfigStore } from '@/stores/useConfigStore';
 import { cycleThinkingVariant } from '@/lib/cycleThinkingVariant';
 import { useUIStore } from '@/stores/useUIStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 import { useSelectionStore } from '@/sync/selection-store';
 import { useKeybinds } from './useKeybind';
-import { hasActiveBtwComposer, hasOpenDropdown, isEditableEventTarget } from './keyboard-shortcut-dom';
+import { hasActiveBtwComposer, hasOpenDropdown, isEditableEventTarget, typesOutsidePrefixField } from './keyboard-shortcut-dom';
 import { useComposerAbortEscape } from './useComposerAbortEscape';
 import { useCurrentSessionActivity } from './useSessionActivity';
 import * as sessionActions from '@/sync/session-actions';
@@ -20,9 +21,6 @@ export const useMiniChatKeyboardShortcuts = () => {
   const dispatcherRef = React.useRef<ShortcutDispatcher | null>(null);
   const currentSessionId = useSessionUIStore((state) => state.currentSessionId);
   const { phase: sessionPhase } = useCurrentSessionActivity();
-  // Double Escape from Mini Chat's composer stops its own session's run, as
-  // in the main window, so its composer can keep one disc while a draft is
-  // typed during a run (ComposerActionButtons).
   const { handleKeyDown: handleAbortEscapeKeyDown } = useComposerAbortEscape({
     isBlocked: () => hasOpenDropdown() || Boolean(document.querySelector('[role="dialog"], [role="alertdialog"]')),
     resolveTarget: () => ({ sessionId: currentSessionId, working: sessionPhase !== 'idle' }),
@@ -52,7 +50,7 @@ export const useMiniChatKeyboardShortcuts = () => {
     } = useConfigStore.getState();
     const next = getNextFavoriteModel(
       favoriteModels,
-      providers,
+      providersOfSpaceOffer(spaceModelOffer(activeSpaceTarget()), providers),
       hiddenModels,
       { providerID: currentProviderId, modelID: currentModelId },
       delta,
@@ -101,22 +99,17 @@ export const useMiniChatKeyboardShortcuts = () => {
     cycle_favorite_model_backward: () => cycleFavoriteModel(-1),
     toggle_dictation: () => {
       if (hasActiveBtwComposer()) return false;
-      // Same event the main app dispatches; ComposerDictation listens for it.
       window.dispatchEvent(new CustomEvent('openchamber:dictation-toggle'));
     },
   });
 
   React.useEffect(() => {
+    const handlePrefixPress = (event: PointerEvent) => {
+      if (isEditableEventTarget(event.target)) dispatcher.clear();
+    };
     const handleActivePrefixKeyDownCapture = (event: KeyboardEvent) => {
       if (!dispatcher.hasActivePrefix()) return;
-      // An unmodified completion key typed into an editable target is only a
-      // deliberate sequence when the prefix was armed from that same target;
-      // otherwise it is regular typing and must not be swallowed.
-      if (
-        !event.ctrlKey && !event.metaKey && !event.altKey
-        && isEditableEventTarget(event.target)
-        && dispatcher.getActivePrefixTarget() !== event.target
-      ) {
+      if (typesOutsidePrefixField(event, dispatcher.getActivePrefixTarget())) {
         dispatcher.clear();
         return;
       }
@@ -132,11 +125,13 @@ export const useMiniChatKeyboardShortcuts = () => {
     const handleBlur = () => dispatcher.handleBlur();
 
     window.addEventListener('keydown', handleActivePrefixKeyDownCapture, true);
+    window.addEventListener('pointerdown', handlePrefixPress, true);
     window.addEventListener('keydown', handleKeyDown);
     window.addEventListener('keydown', handleAbortEscapeKeyDown);
     window.addEventListener('blur', handleBlur);
     return () => {
       window.removeEventListener('keydown', handleActivePrefixKeyDownCapture, true);
+      window.removeEventListener('pointerdown', handlePrefixPress, true);
       window.removeEventListener('keydown', handleKeyDown);
       window.removeEventListener('keydown', handleAbortEscapeKeyDown);
       window.removeEventListener('blur', handleBlur);

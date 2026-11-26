@@ -20,14 +20,16 @@ import { formatCompactNumber } from '@/lib/numberFormat';
 import { runtimeFetch } from '@/lib/runtime-fetch';
 import { updateDesktopSettings } from '@/lib/persistence';
 import { opencodeClient } from '@/lib/opencode/client';
-import { getIntegrationClient, loadIntegrationCatalog, peekIntegrationCatalog, subscribeCredentialChanges, type IntegrationCatalog } from '@/lib/opencode/integration-catalog';
+import { loadIntegrationCatalog, peekIntegrationCatalog, subscribeCredentialChanges, type IntegrationCatalog } from '@/lib/opencode/integration-catalog';
 import { fetchDisabledProviders, setProviderDisabled as setProviderDisabledRequest } from '@/lib/disabledProviders';
-import { listConnectableProviders } from './connectableProviders';
+import { listCanonicalProviders, listConnectableProviders } from './connectableProviders';
+import { fetchProviderSource, type ProviderSources } from './providerSource';
 import { ProviderConnectPicker } from './ProviderConnectPicker';
 import {
   providerHasCredentials,
   providerHoldsStoredLogin,
   shouldShowApiKeyAuth,
+  providerPageSections,
   shouldShowModelsSection,
   usesMachineCredentials,
   findIntegrationForProvider,
@@ -47,27 +49,28 @@ import { SettingsBackButton } from '@/components/sections/shared/SettingsCards';
 import { ProviderAccounts } from './ProviderAccounts';
 import { ProviderAccountSwitchToggle } from './ProviderAccountSwitchToggle';
 import { isVSCodeRuntime } from '@/lib/desktop';
-import { CustomProviderForm } from './CustomProviderForm';
+import { CustomProviderForm, type CatalogProviders } from './CustomProviderForm';
 import { ProviderLogoImageControl } from './ProviderLogoImageControl';
 import { providerLogoUploadSupported, removeProviderLogo, uploadProviderLogo } from '@/lib/customProviderLogos';
 
 import { ProviderAuthMethodCards } from './ProviderAuthMethodCards';
+import { ProviderAuthMethodsLoading } from './ProviderAuthMethodsLoading';
 import type { IntegrationKeyRequest } from './ProviderApiKeyForm';
 import {
   buildIntegrationKeyRequest,
   buildProviderUpsertRequest,
-  storeKeyAfterConfigWrite,
   CUSTOM_PROVIDER_ID,
   isConfigDefinedCustomProvider,
+  isCustomOpenAICompatibleProvider,
   providerToEditFormState,
   resolveProviderConfigScope,
-  storedProviderEntrySchema,
   type CustomProviderFormState,
   type CustomProviderLogoPlan,
   type CustomProviderPersistPlan,
   type ProviderConfigScope,
-  type StoredProviderEntry,
+  type StoredProviderSource,
 } from './custom-provider-form';
+import { connectProviderKey, storeCustomProviderKey } from './provider-key-writes';
 
 const formatTokens = (value?: number | null) => {
   if (typeof value !== 'number' || Number.isNaN(value)) {
@@ -80,38 +83,15 @@ const formatTokens = (value?: number | null) => {
   return formatted.endsWith('.0') ? formatted.slice(0, -2) : formatted;
 };
 
-// OpenCode owns the credential and announces the catalog change itself
-// (`credential.updated` → catalog refresh); nothing to reload after it.
-const connectIntegrationKey = async (request: IntegrationKeyRequest): Promise<void> => {
-  await getIntegrationClient().integration.connect.key(request);
-};
-
 const ADD_PROVIDER_ID = '__add_provider__';
-/** Not an OpenCode provider id: the page for OpenChamber's own classification providers (Jev). */
 const CLASSIFICATION_PAGE_ID = '__classification__';
-
-interface ProviderSourceInfo {
-  exists: boolean;
-  path?: string | null;
-}
-
-interface ProviderSources {
-  user: ProviderSourceInfo;
-  project: ProviderSourceInfo;
-  custom?: ProviderSourceInfo;
-}
 
 export const ProvidersPage: React.FC = () => {
   const { t } = useI18n();
   const { isMobile } = useDeviceInfo();
-  // Settings browses whichever project its own selector points at; the app
-  // stays where it is.
   const settingsDirectory = useSettingsDirectory();
   const chatProviders = useConfigStore((state) => selectProvidersForDirectory(state, settingsDirectory));
   const settingsOnlyProviders = useConfigStore((state) => selectSettingsOnlyProvidersForDirectory(state, settingsDirectory));
-  // Which provider the page shows is its own state. The config store's
-  // selectedProviderId belongs to the chat's model selection; sharing it made
-  // Settings open on the chat's provider and marked the chat selection manual.
   const connectRequested = useUIStore((state) => state.settingsProvidersConnectRequested);
   const setConnectRequested = useUIStore((state) => state.setSettingsProvidersConnectRequested);
   const classificationRequested = useUIStore((state) => state.settingsProvidersClassificationRequested);
@@ -146,21 +126,16 @@ export const ProvidersPage: React.FC = () => {
   const hideAllModels = useUIStore((state) => state.hideAllModels);
   const showAllModels = useUIStore((state) => state.showAllModels);
 
-  // The app only loads providers for the project it is on; Settings has to ask
-  // for the one it is looking at. Without a project that is the app's own.
   const loadProviders = useConfigStore((state) => state.loadProviders);
+  const catalogReloadRevision = useConfigStore((state) => state.catalogReloadRevision);
   React.useEffect(() => {
     void loadProviders({ directory: settingsDirectory, source: 'settings:providers' });
-  }, [loadProviders, settingsDirectory]);
+  }, [catalogReloadRevision, loadProviders, settingsDirectory]);
 
-  // Starts from the list read earlier in this app session (prefetched at
-  // startup or from the last visit), then reads it again below.
-  const [catalog, setCatalog] = React.useState<IntegrationCatalog | null>(() => peekIntegrationCatalog());
+  const [catalog, setCatalog] = React.useState<IntegrationCatalog | null>(() => peekIntegrationCatalog(settingsDirectory));
+  const connectIntegrationKey = (request: IntegrationKeyRequest) => connectProviderKey(settingsDirectory, request);
   const [integrationsLoadFailed, setIntegrationsLoadFailed] = React.useState(false);
   const integrations = catalog?.integrations ?? null;
-  // A provider with no model at all gets a card only while it holds a stored
-  // login: without one there is nothing on its page to act on. Joined so a
-  // re-read of the integrations that changes no card keeps the same array.
   const storedLoginIds = settingsOnlyProviders
     .filter((provider) => providerHoldsStoredLogin(integrations, provider))
     .map((provider) => provider.id)
@@ -172,7 +147,6 @@ export const ProvidersPage: React.FC = () => {
     );
     return manageable.length > 0 ? [...chatProviders, ...manageable] : chatProviders;
   }, [chatProviders, settingsOnlyProviders, storedLoginIds]);
-  // Null until read, and where the runtime has no OpenChamber server (VS Code).
   const [disabledProviders, setDisabledProviders] = React.useState<string[] | null>(null);
   React.useEffect(() => {
     let active = true;
@@ -193,26 +167,17 @@ export const ProvidersPage: React.FC = () => {
       toast.error(error instanceof Error ? error.message : String(error));
     }
   }, [loadProviders, setSelectedProvider, settingsDirectory, t]);
-  // Only the first read blocks the credential forms; a re-read keeps showing
-  // the methods already known.
   const authLoading = catalog === null && !integrationsLoadFailed;
   const [authBusyKey, setAuthBusyKey] = React.useState<string | null>(null);
   const [accountBusyId, setAccountBusyId] = React.useState<string | null>(null);
   const [modelQuery, setModelQuery] = React.useState('');
   const [candidateProviderId, setCandidateProviderId] = React.useState('');
   const [providerSources, setProviderSources] = React.useState<Record<string, ProviderSources>>({});
-  // The config-file entry per provider; the edit form starts from it, not from
-  // the live provider (which lacks `env` and carries generated reasoning levels).
-  const [storedProviderConfigs, setStoredProviderConfigs] = React.useState<Record<string, StoredProviderEntry | null>>({});
-  // Bumped after auth writes so the source snapshot is refetched even when the
-  // selected provider id is unchanged (OAuth/API key success path).
+  const [storedProviderConfigs, setStoredProviderConfigs] = React.useState<Record<string, StoredProviderSource | null>>({});
+  const [sourcesFailedFor, setSourcesFailedFor] = React.useState<string | null>(null);
   const [providerSourcesRevision, setProviderSourcesRevision] = React.useState(0);
-  // Bumped after a credential write so the integration snapshot (which owns the
-  // "connected" signal in v2) is refetched even when the selection is unchanged.
   const [integrationsRevision, setIntegrationsRevision] = React.useState(0);
   const backgroundIntegrationsReadRef = React.useRef(false);
-  // An administrator turned on enterprise mode: providers come from the
-  // OpenCode config, and the server refuses new ones and new keys.
   const enterpriseLocked = useEnterpriseMode();
   const [editingCustomProviderId, setEditingCustomProviderId] = React.useState<string | null>(null);
   const [editingCustomFormInitial, setEditingCustomFormInitial] = React.useState<CustomProviderFormState | null>(null);
@@ -229,20 +194,13 @@ export const ProvidersPage: React.FC = () => {
   );
 
   React.useEffect(() => {
-    // Auth methods drive which credential UI to show (API key vs OAuth). Keep
-    // them loaded for the active provider view so OAuth-only plugins never fall
-    // back to an API key form merely because methods were never fetched, and so
-    // an already-listed provider can still offer re-authentication. The card
-    // grid reads the same list for each provider's status, and the connect
-    // page derives what can still be connected from it.
     let isMounted = true;
-    // A re-read nobody asked for keeps the list on screen quietly when it fails.
     const background = backgroundIntegrationsReadRef.current;
     backgroundIntegrationsReadRef.current = false;
 
     const loadIntegrations = async () => {
       try {
-        const next = await loadIntegrationCatalog();
+        const next = await loadIntegrationCatalog(settingsDirectory);
         if (!isMounted) return;
         setCatalog(next);
         setIntegrationsLoadFailed(false);
@@ -250,7 +208,6 @@ export const ProvidersPage: React.FC = () => {
         if (!isMounted) return;
         console.error('Failed to load provider integrations:', error);
         if (background) return;
-        // A list already on screen stays; only a page with none says it failed.
         setIntegrationsLoadFailed(true);
         toast.error(t('settings.providers.page.toast.authMethodsLoadFailed'));
       }
@@ -261,21 +218,24 @@ export const ProvidersPage: React.FC = () => {
     return () => {
       isMounted = false;
     };
-  }, [integrationsRevision, t]);
+  }, [integrationsRevision, settingsDirectory, t]);
 
-  // An account switch made outside this page (after a usage limit, by another
-  // client, in OpenCode's TUI) moves the Active mark too.
   React.useEffect(
     () => subscribeCredentialChanges(() => {
       backgroundIntegrationsReadRef.current = true;
       setIntegrationsRevision((revision) => revision + 1);
-    }),
-    [],
+    }, settingsDirectory),
+    [settingsDirectory],
   );
 
   const connectedProviderIds = React.useMemo(
     () => new Set(providers.map((provider) => provider.id)),
     [providers]
+  );
+
+  const catalogProviders = React.useMemo<CatalogProviders>(
+    () => (catalog ? listCanonicalProviders(catalog) : integrationsLoadFailed ? 'failed' : 'loading'),
+    [catalog, integrationsLoadFailed],
   );
 
   const unconnectedProviders = React.useMemo(
@@ -284,8 +244,6 @@ export const ProvidersPage: React.FC = () => {
   );
 
   React.useEffect(() => {
-    // A candidate requested from Classification providers arrives before the
-    // list does; judge it only once there is a list to judge it against.
     if (selectedProviderId !== ADD_PROVIDER_ID || !unconnectedProviders || unconnectedProviders.length === 0) {
       return;
     }
@@ -322,45 +280,26 @@ export const ProvidersPage: React.FC = () => {
     }
 
     let cancelled = false;
-
     const loadSources = async () => {
       try {
-        // OpenChamber-only metadata endpoint: the SDK exposes provider data but
-        // not local auth/source-file provenance used by this settings UI.
-        const query = settingsDirectory ? `?directory=${encodeURIComponent(settingsDirectory)}` : '';
-        const response = await runtimeFetch(`/api/provider/${encodeURIComponent(selectedProviderId)}/source${query}`, {
-          method: 'GET',
-          headers: { Accept: 'application/json' },
-        });
-
-        const payload = await response.json().catch(() => null);
-        if (!response.ok) {
-          throw new Error(payload?.error || t('settings.providers.page.toast.providerSourcesLoadFailed'));
+        const source = await fetchProviderSource(selectedProviderId, settingsDirectory, t('settings.providers.page.toast.providerSourcesLoadFailed'));
+        if (!cancelled && source) {
+          setProviderSources((prev) => ({ ...prev, [selectedProviderId]: source.sources }));
+          setStoredProviderConfigs((prev) => ({ ...prev, [selectedProviderId]: source.stored }));
         }
-
-        const sources = (payload?.sources ?? payload?.data?.sources) as ProviderSources | undefined;
-        if (!cancelled && sources) {
-          setProviderSources((prev) => ({
-            ...prev,
-            [selectedProviderId]: sources,
-          }));
-          setStoredProviderConfigs((prev) => ({
-            ...prev,
-            // A missing or malformed entry falls back to live data in the form.
-            [selectedProviderId]: storedProviderEntrySchema.safeParse(payload?.config ?? payload?.data?.config).data ?? null,
-          }));
-        }
+        if (!cancelled) setSourcesFailedFor(source ? null : selectedProviderId);
       } catch (error) {
         if (!cancelled) {
           console.error('Failed to load provider sources:', error);
+          setSourcesFailedFor(selectedProviderId);
         }
       }
     };
 
     loadSources();
-
     return () => {
       cancelled = true;
+      setSourcesFailedFor(null);
     };
   }, [selectedProviderId, providerSourcesRevision, settingsDirectory, t]);
 
@@ -373,9 +312,6 @@ export const ProvidersPage: React.FC = () => {
   }, []);
 
   const markAuthWriteSucceeded = React.useCallback((providerId: string) => {
-    // Optimistically record a connection so a providers refresh that has not yet
-    // landed cannot reopen the panel / hide models with a stale
-    // "Credentials missing" summary before the integration refetch arrives.
     setCatalog((prev) => prev && {
       ...prev,
       integrations: prev.integrations.map((integration) => (
@@ -394,7 +330,6 @@ export const ProvidersPage: React.FC = () => {
   const selectedSources = selectedProviderId ? providerSources[selectedProviderId] : undefined;
 
   const [logoBusyId, setLogoBusyId] = React.useState<string | null>(null);
-  /** Uploads or removes the provider's logo image; a failure is a toast and leaves the stored logo as it was. */
   const applyLogoPlan = async (providerId: string, logoPlan: CustomProviderLogoPlan) => {
     if (logoPlan.kind === 'keep' || !providerLogoUploadSupported()) return;
     if (logoPlan.kind === 'remove' && !useUIStore.getState().customProviderLogos[providerId]) return;
@@ -423,13 +358,8 @@ export const ProvidersPage: React.FC = () => {
     setCustomAuthFailureHint(null);
 
     try {
-      // Config first: OpenCode registers a custom provider's key method only
-      // once the provider is in its config, so the key follows the write.
       const keyRequest = buildIntegrationKeyRequest(plan);
       const upsertBody = buildProviderUpsertRequest(plan, {
-        // Create defaults to user. Edit must rewrite the winning config layer
-        // (custom > project > user) so project/custom providers are not copied
-        // into a global user override.
         scope: editingCustomProviderId
           ? (editingCustomScope ?? resolveProviderConfigScope(providerSources[editingCustomProviderId]))
           : 'user',
@@ -448,22 +378,18 @@ export const ProvidersPage: React.FC = () => {
       }
       if (keyRequest) {
         try {
-          await storeKeyAfterConfigWrite(() => getIntegrationClient().integration.connect.key(keyRequest));
+          await storeCustomProviderKey(settingsDirectory, keyRequest);
         } catch (error) {
           setCustomAuthFailureHint(t('settings.providers.page.custom.authFailure.keyAfterConfig'));
           throw error;
         }
       }
 
-      // Only a chosen icon is stored; "default" removes the entry so the
-      // provider's own logo (or the generic fallback) shows again.
       const nextCustomProviderIcons = { ...useUIStore.getState().customProviderIcons };
       if (plan.icon) nextCustomProviderIcons[plan.providerID] = plan.icon;
       else delete nextCustomProviderIcons[plan.providerID];
       await updateDesktopSettings({ customProviderIcons: nextCustomProviderIcons });
       setCustomProviderIcon(plan.providerID, plan.icon);
-      // The provider is saved by now; a failed image write is reported on its own
-      // and does not reopen the form, whose next Save would store the key again.
       await applyLogoPlan(plan.providerID, plan.logo);
 
       toast.success(t('settings.providers.page.toast.customProviderSaved', { provider: plan.name }));
@@ -473,7 +399,6 @@ export const ProvidersPage: React.FC = () => {
       setEditingCustomScope(null);
       setCustomAuthFailureHint(null);
       setLastCustomPersistId(null);
-      // OpenCode watches its config file and rebuilds the catalog on its own.
       markAuthWriteSucceeded(plan.providerID);
     } catch (error) {
       console.error('Failed to save custom provider:', error);
@@ -488,8 +413,6 @@ export const ProvidersPage: React.FC = () => {
   };
 
   const handleOAuthConnected = (providerId: string) => {
-    // Optimistic mark + sources refetch so the page does not stick on a stale
-    // "Credentials missing" summary while the providers refresh lands.
     markAuthWriteSucceeded(providerId);
   };
 
@@ -498,9 +421,6 @@ export const ProvidersPage: React.FC = () => {
     setAuthBusyKey(busyKey);
 
     try {
-      // v2 keeps credentials in OpenCode, one record per stored login; the
-      // provider is disconnected once every one of them is gone. Env-backed
-      // connections are not removable from here — they live in the environment.
       const credentials = getCredentialConnections(
         findIntegrationForProvider(integrations ?? [], providerId),
       );
@@ -533,9 +453,6 @@ export const ProvidersPage: React.FC = () => {
     setCandidateProviderId('');
   };
 
-  // Each account action waits for the server's answer and then rereads the
-  // integration list; OpenCode owns which credential is active, so nothing is
-  // flipped locally first.
   const runAccountAction = async (
     account: CredentialConnection,
     action: () => Promise<void>,
@@ -592,8 +509,6 @@ export const ProvidersPage: React.FC = () => {
   const backButton = <SettingsBackButton label={t('settings.providers.page.back')} onClick={backToGrid} />;
 
 
-  // A classification source that needs a key links to the provider holding it:
-  // its own page when OpenCode already lists it, the connect form otherwise.
   const openProviderForKey = (providerId: string) => {
     if (providers.some((provider) => provider.id === providerId)) {
       setSelectedProvider(providerId);
@@ -607,7 +522,6 @@ export const ProvidersPage: React.FC = () => {
     return <ClassificationProvidersPage titleLeading={backButton} onOpenProvider={openProviderForKey} />;
   }
 
-  // Enterprise mode: the way in stays hidden and the server refuses anyway.
   if (isAddMode && !enterpriseLocked && !candidateProviderId) {
     return (
       <SettingsPageLayout
@@ -626,7 +540,6 @@ export const ProvidersPage: React.FC = () => {
   }
 
   if (isAddMode && !enterpriseLocked) {
-    // A chosen provider: back returns to the picker, not to the grid.
     const candidateBackButton = (
       <SettingsBackButton label={t('settings.providers.page.back')} onClick={() => setCandidateProviderId('')} />
     );
@@ -646,6 +559,7 @@ export const ProvidersPage: React.FC = () => {
             <CustomProviderForm
               mode="create"
               existingProviderIDs={connectedProviderIds}
+              catalogProviders={catalogProviders}
               busy={authBusyKey?.startsWith('custom:') ?? false}
               authFailureHint={customAuthFailureHint}
               onCancel={() => {
@@ -684,6 +598,7 @@ export const ProvidersPage: React.FC = () => {
                         )}
                         credentials={[]}
                         canAdd
+                        directory={settingsDirectory}
                         connectKey={connectIntegrationKey}
                         onKeySaved={() => markAuthWriteSucceeded(candidateProviderId)}
                         onSignedIn={() => handleOAuthConnected(candidateProviderId)}
@@ -714,7 +629,6 @@ export const ProvidersPage: React.FC = () => {
   }
 
   const providerModels = Array.isArray(selectedProvider.models) ? selectedProvider.models : [];
-  // Hiding a model only takes it out of the chat pickers, which never list image models.
   const canHideModels = !settingsOnlyProviders.includes(selectedProvider);
   const selectedIntegration = findIntegrationForProvider(integrations ?? [], selectedProvider.id);
   const signInMethods = getSignInMethods(
@@ -723,24 +637,23 @@ export const ProvidersPage: React.FC = () => {
   const showApiKeyAuth = shouldShowApiKeyAuth(selectedIntegration);
   const integrationsLoaded = integrations !== null;
   const sourcesLoaded = Boolean(selectedSources);
-  const isEditableCustomProvider = sourcesLoaded
-    && isConfigDefinedCustomProvider(selectedProvider, selectedSources);
+  const isEditableCustomProvider = isConfigDefinedCustomProvider(selectedProvider, selectedSources);
   const hasCredentials = providerHasCredentials({
     connections: getProviderConnections(integrations ?? [], selectedProvider.id),
     optionsApiKey: readProviderApiKeySetting(selectedProvider),
     machineCredentials: usesMachineCredentials(selectedProvider),
   });
-  const showModelsSection = shouldShowModelsSection({
-    modelCount: providerModels.length,
-    integrationsLoaded,
+  const sections = providerPageSections({
+    canBeConfigDefined: isCustomOpenAICompatibleProvider(selectedProvider), isEditableCustomProvider,
+    sources: sourcesLoaded ? 'loaded' : sourcesFailedFor === selectedProvider.id ? 'failed' : 'loading',
+    canUploadLogo: providerLogoUploadSupported(), locked: enterpriseLocked,
+  });
+  const showModelsSection = sections.models && shouldShowModelsSection({
+    modelCount: providerModels.length, integrationsLoaded,
     hasCredentials,
     isEditableCustomProvider,
   });
   const providerConnections = getProviderConnections(integrations ?? [], selectedProvider.id) ?? [];
-  // Requests go through one integration only: the provider's own, or the one it
-  // is bound to (OpenCode Go moves to the Console once you are signed in there).
-  // Its first credential is the active account; credentials stored under the
-  // other integration stay listed so they can be removed, but are not in use.
   const usedIntegrationId = selectedProvider.integrationID ?? selectedProvider.id;
   const usedCredentials = getCredentialConnections(findIntegrationForProvider(integrations ?? [], usedIntegrationId));
   const activeAccountId = usedCredentials[0]?.id ?? null;
@@ -755,8 +668,6 @@ export const ProvidersPage: React.FC = () => {
     (connection): connection is CredentialConnection => connection.type === 'credential',
   );
   const environmentConnections = providerConnections.filter((connection) => connection.type === 'env');
-  // With no stored account in use, OpenCode can still use a key from an
-  // environment variable or the config, or credentials on the server machine.
   const inUseWithoutCredential = activeAccountId !== null
     ? null
     : usesMachineCredentials(selectedProvider)
@@ -785,9 +696,7 @@ export const ProvidersPage: React.FC = () => {
   );
 
   const modelCountAccessory = (
-    <span className="typography-micro text-muted-foreground font-normal">
-      ({providerModels.length})
-    </span>
+    <span className="typography-micro text-muted-foreground font-normal">({providerModels.length})</span>
   );
 
   const filteredModels = rankByQuery(providerModels, modelQuery, (model) => [
@@ -806,6 +715,7 @@ export const ProvidersPage: React.FC = () => {
         <CustomProviderForm
           mode="edit"
           existingProviderIDs={connectedProviderIds}
+          catalogProviders={catalogProviders}
           initialValues={editingCustomFormInitial}
           allowExistingAuth={hasCredentials || !sourcesLoaded}
           busy={authBusyKey?.startsWith('custom:') ?? false}
@@ -886,7 +796,7 @@ export const ProvidersPage: React.FC = () => {
         ) : null}
 
         {authLoading ? (
-          <div className="py-1.5 typography-meta text-muted-foreground">{t('settings.providers.page.auth.loadingMethods')}</div>
+          <ProviderAuthMethodsLoading integrationId={selectedProvider.id} canAdd={!enterpriseLocked} />
         ) : (
           <ProviderAuthMethodCards
             key={selectedProvider.id}
@@ -907,13 +817,13 @@ export const ProvidersPage: React.FC = () => {
             }}
             inUseWithoutCredential={inUseWithoutCredential}
             canAdd={!enterpriseLocked}
+            directory={settingsDirectory}
             connectKey={connectIntegrationKey}
             onKeySaved={() => markAuthWriteSucceeded(selectedProvider.id)}
             onSignedIn={() => handleOAuthConnected(selectedProvider.id)}
           />
         )}
 
-        {/* The switch happens in the managed OpenCode plugin; VS Code runs its own OpenCode without it. */}
         {usedCredentials.length > 0 && !isVSCodeRuntime() ? (
           <ProviderAccountSwitchToggle providerId={selectedProvider.id} accountCount={usedCredentials.length} />
         ) : null}
@@ -923,8 +833,7 @@ export const ProvidersPage: React.FC = () => {
         ) : null}
       </SettingsSection>
 
-      {/* A custom provider sets its logo in the edit form, unless enterprise mode hides the form. */}
-      {providerLogoUploadSupported() && sourcesLoaded && (!isEditableCustomProvider || enterpriseLocked) ? (
+      {sections.logo ? (
         <SettingsSection
           title={t('settings.providers.page.logo.title')}
           info={t('settings.providers.page.logo.info')}
@@ -941,7 +850,7 @@ export const ProvidersPage: React.FC = () => {
         </SettingsSection>
       ) : null}
 
-      {providerModels.length === 0 ? (
+      {sections.models && providerModels.length === 0 ? (
         <SettingsSection
           title={t('settings.providers.page.models.title')}
           titleAccessory={modelCountAccessory}
@@ -1029,8 +938,6 @@ export const ProvidersPage: React.FC = () => {
                       </span>
                       <div className="flex items-center gap-2 flex-shrink-0">
                         {isMobile ? (
-                          // A phone row has room for the name only; the limits
-                          // and capabilities move behind a tap.
                           (tokenSummary || capabilityIcons.length > 0) ? (
                             <SettingsInfoHint className="h-6 w-6">
                               <div className="space-y-1.5">

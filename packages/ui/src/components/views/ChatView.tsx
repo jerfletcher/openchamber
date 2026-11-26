@@ -9,6 +9,7 @@ type ChatViewProps = {
     hideReadOnlyBanner?: boolean;
     /** Shows this session instead of the app's selection (see ChatContainer). */
     pinnedSession?: { sessionId: string; directory: string | null };
+    registerParentSessionBack?: (handler: (() => void) | null) => void;
 };
 
 export const ChatView: React.FC<ChatViewProps> = ({
@@ -16,6 +17,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
     readOnly = false,
     hideReadOnlyBanner = false,
     pinnedSession,
+    registerParentSessionBack,
 }) => {
     const currentSessionId = useSessionUIStore((state) => (pinnedSession ? null : state.currentSessionId));
 
@@ -26,6 +28,7 @@ export const ChatView: React.FC<ChatViewProps> = ({
                 readOnly={readOnly}
                 hideReadOnlyBanner={hideReadOnlyBanner}
                 pinnedSession={pinnedSession}
+                registerParentSessionBack={registerParentSessionBack}
             />
         </ChatErrorBoundary>
     );

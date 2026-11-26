@@ -281,7 +281,7 @@ describe("what a session row says keeps its turn open", () => {
     // An image the session waits on comes after a command and before a pull request.
     expect(resolveSessionTurnActivity(null, false, false, true, true)).toBe("image")
     expect(resolveSessionTurnActivity(null, false, true, false, true)).toBe("shell")
-    // So does one waiting on an extension, last of all.
+    // So does one waiting on a timer or an extension, last of all.
     expect(resolveSessionTurnActivity(null, false, false, false, false, true)).toBe("extensionWait")
     expect(resolveSessionTurnActivity(null, false, false, true, false, true)).toBe("pullRequest")
     expect(resolveSessionTurnActivity("subagent", false, false, false, false, true)).toBe("subagent")
@@ -454,5 +454,49 @@ describe("a pull request watch keeps its session's turn open", () => {
     applyPrWatches(1, "session", [watch])
     applyGlobalSessionStatusSnapshot("/repo", {}, ["session"])
     expect(timing().startedAt.has("session")).toBe(true)
+  })
+})
+
+describe("a child session's background work keeps its ancestor's turn open", () => {
+  const busy = (sessionID: string): SyncEvent => ({
+    type: "session.status",
+    properties: { sessionID, status: { type: "busy" }, turnStart: { at: Date.now(), source: "live" } },
+  })
+  const idle = (sessionID: string): SyncEvent => ({
+    type: "session.status",
+    properties: { sessionID, status: { type: "idle" } },
+  })
+  const childShellStarted: SyncEvent = {
+    type: "shell.started",
+    properties: { shell: { id: "sh_child", sessionID: "child", command: "sleep 300", file: "/tmp/sh_child.out", startedAt: 1 } },
+  }
+  const childShellEnded: SyncEvent = {
+    type: "shell.ended",
+    properties: { shellID: "sh_child", end: { kind: "exited", status: "exited", exit: 0 }, endedAt: 2 },
+  }
+  const timing = () => useSessionActivityTimingStore.getState()
+
+  beforeEach(() => {
+    resetBackgroundShells()
+    setSessionParentResolver((sessionId) => (sessionId === "child" ? "parent" : undefined))
+  })
+
+  test("the parent's timer holds through an idle child's background command and settles when the command ends", () => {
+    applyGlobalSessionStatusEvents("/repo", [busy("parent"), busy("child")])
+    applyBackgroundShellEvents("/repo", [childShellStarted])
+    applyGlobalSessionStatusEvents("/repo", [idle("child"), idle("parent")])
+
+    expect(useGlobalSessionStatusStore.getState().activeSessionIds.size).toBe(0)
+    expect(timing().startedAt.has("child")).toBe(true)
+    expect(timing().startedAt.has("parent")).toBe(true)
+
+    applyGlobalSessionStatusSnapshot("/repo", {}, ["parent", "child"])
+    expect(timing().startedAt.has("parent")).toBe(true)
+
+    applyBackgroundShellEvents("/repo", [childShellEnded])
+    expect(timing().startedAt.has("child")).toBe(false)
+    expect(timing().settledMs.has("child")).toBe(true)
+    expect(timing().startedAt.has("parent")).toBe(false)
+    expect(timing().settledMs.has("parent")).toBe(true)
   })
 })

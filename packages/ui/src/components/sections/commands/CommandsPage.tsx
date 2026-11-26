@@ -4,6 +4,7 @@ import { Input } from '@/components/ui/input';
 import { Switch } from '@/components/ui/switch';
 import { Textarea } from '@/components/ui/textarea';
 import { toast } from '@/components/ui';
+import { useDraftFill } from '@/components/sections/skills/useDraftFill';
 import { useSettingsDirectory } from '@/hooks/useSettingsDirectory';
 import { selectCommandsForDirectory, useCommandsStore, type CommandConfig, type CommandScope } from '@/stores/useCommandsStore';
 import { useShallow } from 'zustand/react/shallow';
@@ -34,7 +35,6 @@ import {
   SETTINGS_CUSTOM_TRIGGER_CLASS,
 } from '@/components/sections/shared/SettingsSection';
 
-/** Everything the page writes into the command's config file. */
 interface CommandFormState {
   draftName: string;
   draftScope: CommandScope;
@@ -66,8 +66,6 @@ export const CommandsPage: React.FC = () => {
     setSelectedCommand: s.setSelectedCommand,
   })));
 
-  // Settings browses whichever project its own selector points at; the app
-  // stays where it is.
   const settingsDirectory = useSettingsDirectory();
   const commands = useCommandsStore((state) => selectCommandsForDirectory(state, settingsDirectory));
   const selectedCommand = selectedCommandName ? getCommandByName(selectedCommandName, settingsDirectory) : null;
@@ -82,17 +80,19 @@ export const CommandsPage: React.FC = () => {
   const [subagent, setSubagent] = React.useState(false);
   const [template, setTemplate] = React.useState('');
   const [isCreating, setIsCreating] = React.useState(false);
-  // What the command file currently holds; a save writes only the difference.
   const savedRef = React.useRef<CommandFormState | null>(null);
 
   const formIdentity = JSON.stringify([settingsDirectory, selectedCommandName]);
   const formIdentityRef = React.useRef<string | null>(null);
   const writeEchoRef = React.useRef<{ identity: string; form: CommandFormState } | null>(null);
 
+  const draftNeedsFill = useDraftFill<NonNullable<typeof commandDraft>>();
+
   React.useEffect(() => {
     const sameCommand = formIdentityRef.current === formIdentity;
     formIdentityRef.current = formIdentity;
-    if (isNewCommand && commandDraft) {
+    const fillDraft = draftNeedsFill(formIdentity, isNewCommand ? commandDraft : null);
+    if (fillDraft && commandDraft) {
       const draftNameValue = commandDraft.name || '';
       const draftScopeValue = commandDraft.scope || 'user';
       const descriptionValue = commandDraft.description || '';
@@ -131,9 +131,6 @@ export const CommandsPage: React.FC = () => {
       const templateValue = selectedCommand.template || '';
       const pending = writeEchoRef.current;
       const echoes = [savedRef.current, pending?.identity === formIdentity ? pending.form : null];
-      // OpenCode re-reads the file right after our own write, so the store
-      // echoes back what we just saved. Only a genuinely different server
-      // value is allowed to replace what the user has in the form.
       if (
         sameCommand && echoes.some((saved) => saved &&
           saved.description === descriptionValue &&
@@ -163,7 +160,7 @@ export const CommandsPage: React.FC = () => {
         template: templateValue,
       };
     }
-  }, [selectedCommand, isNewCommand, selectedCommandName, commands, commandDraft, formIdentity]);
+  }, [selectedCommand, isNewCommand, selectedCommandName, commands, commandDraft, draftNeedsFill, formIdentity]);
 
   const buildConfig = React.useCallback((commandName: string): CommandConfig => {
     const trimmedAgent = agent.trim();
@@ -186,8 +183,6 @@ export const CommandsPage: React.FC = () => {
     };
   }, [agent, description, draftScope, isNewCommand, model, subagent, template, variant]);
 
-  // An existing command writes itself; a new one only exists once the user
-  // confirms it, so an abandoned draft never reaches disk.
   const save = React.useCallback(async (): Promise<AutosaveResult> => {
     const saved = savedRef.current;
     const commandName = selectedCommandName?.trim();
@@ -220,7 +215,6 @@ export const CommandsPage: React.FC = () => {
         template: config.template || '',
       },
     };
-    // The store publishes its reload before updateCommand resolves.
     writeEchoRef.current = pending;
     try {
       const success = await updateCommand(commandName, config, settingsDirectory);

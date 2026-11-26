@@ -4,14 +4,11 @@ import {
   type BuiltinSidebarSectionId,
   type CustomSidebarSection,
   type SidebarSectionEntry,
+  type SidebarSectionFilter,
   type SidebarWorkFacts,
 } from '@/lib/sidebarSections';
 import type { SidebarWorkRef } from '../works/sidebarWorks';
 
-/**
- * A section the sidebar draws, in order. `claims`: it takes its works out of
- * their projects; a group of projects always takes its projects from Projects. `preview`: the section being edited, drawn as it stands.
- */
 export type VisibleSidebarSection =
   | { kind: 'pages' }
   | { kind: 'chats' }
@@ -20,11 +17,6 @@ export type VisibleSidebarSection =
   | { kind: 'custom'; section: CustomSidebarSection; preview: boolean }
   | { kind: 'projects' };
 
-/**
- * The sections a surface draws, in the saved order. The built-in ones follow
- * their show toggles; the user's follow the surface's hidden list, and the
- * section being edited shows whatever the list says (a new one under Pinned).
- */
 export const resolveVisibleSidebarSections = ({
   sections,
   hiddenSections,
@@ -43,12 +35,7 @@ export const resolveVisibleSidebarSections = ({
   show: Readonly<Record<Exclude<BuiltinSidebarSectionId, 'projects' | 'pages'>, boolean>>;
   keepWorkInPlace: boolean;
   keepPinnedInPlace: boolean;
-  /** False where the user's sections do not apply (VS Code). */
   customSections: boolean;
-  /**
-   * False where the sidebar does not list the app's pages (VS Code, phones).
-   * Pages has no show toggle of its own: it follows the hidden list.
-   */
   pages: boolean;
 }): VisibleSidebarSection[] => {
   const entries: SidebarSectionEntry[] = [...sections];
@@ -74,48 +61,38 @@ export const resolveVisibleSidebarSections = ({
 };
 
 type SidebarSectionMembership = {
-  /** Pinned root sessions and pinned worktree works the Pinned section lists. */
   pinned: readonly SidebarWorkRef[];
-  /** The works In work lists. */
   work: readonly SidebarWorkRef[];
-  /** Each of the user's sections listed by time: its works, in order. */
   custom: ReadonlyMap<string, readonly SidebarWorkRef[]>;
-  /** Each group of projects: the projects it lists, in the filter's order. */
   projectGroups: ReadonlyMap<string, readonly string[]>;
-  /** Works a section took out of their projects. */
   claimedKeys: ReadonlySet<string>;
-  /** Projects a group of projects took from the Projects section and the list by time. */
   claimedProjectIds: ReadonlySet<string>;
 };
 
-/**
- * Which works each section lists. The user's sections list every work that
- * matches, so one work can show in several; a section that takes its works
- * (`claims`) takes them out of their projects only, and a group of projects
- * takes its projects from the Projects section. Pinned and In work never share
- * a work: a pinned work is never in work, so their order decides nothing.
- */
+const takesFromWork = (filter: SidebarSectionFilter): boolean => filter.states.length === 0;
+
 export const resolveSidebarSectionMembership = ({
   sections,
   pinned,
   work,
+  isPinned,
   all,
   projectIds,
   factsOf,
   now,
 }: {
   sections: readonly VisibleSidebarSection[];
-  /** Candidates of the built-in sections, in their own order. */
   pinned: readonly SidebarWorkRef[];
   work: readonly SidebarWorkRef[];
-  /** Every work, most recent first: the candidates of the user's sections. */
+  isPinned: (ref: SidebarWorkRef) => boolean;
   all: readonly SidebarWorkRef[];
-  /** The projects the sidebar knows, for groups of projects. */
   projectIds: ReadonlySet<string>;
   factsOf: (ref: SidebarWorkRef) => SidebarWorkFacts;
   now: number;
 }): SidebarSectionMembership => {
   const claimedKeys = new Set<string>();
+  const takenFromWork = new Set<string>();
+  let workClaims = false;
   const claimedProjectIds = new Set<string>();
   const custom = new Map<string, readonly SidebarWorkRef[]>();
   const projectGroups = new Map<string, readonly string[]>();
@@ -135,28 +112,28 @@ export const resolveSidebarSectionMembership = ({
         show(pinnedRefs, section.claims);
         continue;
       case 'work':
-        workRefs = [...work];
-        show(workRefs, section.claims);
+        workRefs = work;
+        workClaims = section.claims;
         continue;
       case 'custom': {
         const { section: definition } = section;
         if (definition.grouping === 'project') {
-          // A project is drawn in one place: the first group that names it has it.
           const ids = definition.filter.projectIds.filter((id) => projectIds.has(id) && !claimedProjectIds.has(id));
           projectGroups.set(definition.id, ids);
           ids.forEach((id) => claimedProjectIds.add(id));
           continue;
         }
-        // The user's sections show every work that matches, whatever the
-        // other sections show; only the projects lose what they take.
         const refs = hasSidebarSectionConditions(definition.filter)
           ? all.filter((ref) => matchesSidebarSectionFilter(definition.filter, factsOf(ref), now))
           : [];
         custom.set(definition.id, refs);
+        if (takesFromWork(definition.filter)) for (const ref of refs) takenFromWork.add(ref.key);
         show(refs, definition.claims);
         continue;
       }
     }
   }
+  workRefs = workRefs.filter((ref) => !takenFromWork.has(ref.key));
+  show(workRefs.filter((ref) => !isPinned(ref)), workClaims);
   return { pinned: pinnedRefs, work: workRefs, custom, projectGroups, claimedKeys, claimedProjectIds };
 };

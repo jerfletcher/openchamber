@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { Window } from 'happy-dom';
 import { useChatTimelineScroll, type TimelineListHandle } from './useChatTimelineScroll';
 import { requestMessageFocus, releaseMessageFocusOutside } from '@/lib/router/messageFocus';
-import { dispatchPageWaiting, dispatchTabStep } from '@/components/chat/lib/scroll/timelineScrollIntent';
+import { dispatchNavigationRelease, dispatchPageWaiting, dispatchTabStep } from '@/components/chat/lib/scroll/timelineScrollIntent';
 import { isWaitingPageRevealPending, releaseWaitingPageRevealOutside, revealWaitingPage } from '@/sync/request-reveal';
 import { useUIStore } from '@/stores/useUIStore';
 import { KeepAlive } from '@/components/ui/KeepAlive';
@@ -260,6 +260,21 @@ test('a message link opened while the follow glides keeps the reader on the mess
     expect(node.scrollTop).toBe(200);
 });
 
+test('a quote reveal leaves the hold of a message link alone, and a search step ends it', async () => {
+    await render('visible'); await frame();
+    alignAnchor = () => { node.scrollTop = 200; return 'aligned'; };
+    act(() => requestMessageFocus('session', 'linked-message'));
+    await frame();
+    dispatchNavigationRelease(node);
+    node.scrollTop = 900;
+    await frame();
+    expect(node.scrollTop).toBe(200);
+    act(() => scroll.takeViewport());
+    node.scrollTop = 900;
+    for (let i = 0; i < 5; i++) await frame();
+    expect(node.scrollTop).toBe(900);
+});
+
 test('does not start a history search from a linked-message check completed after cleanup', async () => {
     let complete!: (value: 'exists') => void;
     checkLinkedMessage = () => new Promise((resolve) => { complete = resolve; });
@@ -343,6 +358,27 @@ test('leaves a reader with auto-follow off where they are when a page waits for 
         act(() => dispatchPageWaiting(block));
         await frame();
         expect(targets).toEqual([]);
+    } finally {
+        useUIStore.getState().setStreamingAutoFollowEnabled(true);
+    }
+});
+
+test('a question card named by its dock line comes into view with auto-follow off, past a card above it', async () => {
+    useUIStore.getState().setStreamingAutoFollowEnabled(false);
+    try {
+        await render('visible'); await frame();
+        node.scrollTop = 300;
+        // Two waiting blocks at the end; the dock's line names the lower one.
+        const { targets } = waitingPage(1100);
+        const named = document.createElement('div');
+        named.dataset.waitingPage = 'form-2';
+        node.append(named);
+        Object.defineProperty(named, 'getBoundingClientRect', { value: () => ({ top: 1500 - node.scrollTop, bottom: 1700 - node.scrollTop }) });
+        act(() => revealWaitingPage('session', 'form-2'));
+        await frame();
+        // Whole, ending at the viewport's bottom (1700 - 500); the block above would aim at 1088.
+        expect(targets).toEqual([1200]);
+        expect(isWaitingPageRevealPending('session')).toBe(false);
     } finally {
         useUIStore.getState().setStreamingAutoFollowEnabled(true);
     }

@@ -20,6 +20,8 @@ import {
   remoteTraits,
   instanceHost,
   defaultSourceControlIdentities,
+  gitRemoteOf,
+  withRepositorySshHostNames,
 } from './identity';
 import { acmeDescriptor, githubLikeDescriptor, gitlabLikeDescriptor } from './providers/descriptor.fixture';
 
@@ -91,6 +93,25 @@ describe('source-control identity resolution', () => {
     expect(resolveSourceControlIdentity(remote('https://gitea.example.com/team/repo.git'), [identity])).toBe(identity);
     expect(resolveSourceControlIdentity(remote('git@giteassh.example.com:team/repo.git'), [identity])).toBeNull();
     expect(resolveSourceControlIdentity(remote('ssh://git@giteassh.example.com:2200/team/repo.git'), [identity])).toBeNull();
+  });
+
+  test('matches a remote on an SSH alias by the host the server resolved it to', () => {
+    const expected = { provider: 'github', instance: 'github.com' };
+    const aliased = { ...remote('git@gh-work:team/repo.git'), sshHostName: 'github.com' };
+    expect(resolveSourceControlIdentity(aliased, defaults)).toEqual(expected);
+    expect(resolveSourceControlIdentity({ ...aliased, sshHostName: 'example.invalid' }, defaults)).toBeNull();
+    expect(resolveSourceControlIdentity(remote('git@gh-work:team/repo.git'), defaults)).toBeNull();
+    expect(resolveSourceControlIdentity({ ...remote('gh-work:team/repo.git'), sshHostName: 'github.com' }, defaults)).toEqual(expected);
+  });
+
+  test('carries a resolved alias host only onto the same remote addresses', () => {
+    const read = { remotes: [{ name: 'origin', sshHostName: 'github.com',
+      fetch: { displayUrl: 'git@gh-work:team/repo.git', fingerprint: 'f' }, push: { displayUrl: 'git@gh-work:team/repo.git', fingerprint: 'p' } }] };
+    const origin = { name: 'origin', fetchUrl: 'git@gh-work:team/repo.git', pushUrl: 'git@gh-work:team/repo.git' };
+    expect(withRepositorySshHostNames([origin], read)).toEqual([{ ...origin, sshHostName: 'github.com' }]);
+    const moved = { ...origin, fetchUrl: 'git@gh-other:team/repo.git', pushUrl: 'git@gh-other:team/repo.git' };
+    expect(withRepositorySshHostNames([moved], read)).toEqual([moved]);
+    expect(gitRemoteOf(read.remotes[0])).toEqual({ ...origin, sshHostName: 'github.com' });
   });
 
   test('normalizes the default SSH port on a separate SSH address', () => {
@@ -420,6 +441,18 @@ describe('buildManagedAccountOptions for GitHub', () => {
     const options = buildManagedAccountOptions(identity, github, [{ ...oauth, current: true }, gh(false)], sourceLabel);
     expect(options.map((option) => option.reference.accountId)).toEqual([oauth.id]);
   });
+
+  test('offers every gh login the host lists as usable, not only the one in use', () => {
+    // A host gh is signed in to twice: the switch is on, and both logins are
+    // usable, while `current` names the one an unbound use falls back to.
+    const work = { ...gh(false), id: 'github.com#cli:10', credentialId: 'github.com#cli:10', providerUserId: 'github.com#10', usable: true };
+    const options = buildManagedAccountOptions(identity, github, [{ ...oauth, current: true }, { ...gh(true), usable: true }, work], sourceLabel);
+    expect(options.map((option) => option.reference.accountId)).toEqual([
+      oauth.id,
+      'github.com#cli:9',
+      'github.com#cli:10',
+    ]);
+  });
 });
 
 describe('accountUsableByIdentity', () => {
@@ -428,6 +461,16 @@ describe('accountUsableByIdentity', () => {
     expect(accountUsableByIdentity({ source: 'cli', current: false }, true)).toBe(false);
     expect(accountUsableByIdentity({ source: 'oauth', current: false }, true)).toBe(true);
     expect(accountUsableByIdentity({ source: 'cli', current: true }, false)).toBe(false);
+  });
+
+  test('a server that says which accounts are usable is believed over `current`', () => {
+    // A gh host with several logins: each usable one can answer, though only
+    // one of them is `current`. A server that says nothing keeps the old rule,
+    // which the case above covers.
+    expect(accountUsableByIdentity({ source: 'cli', current: false, usable: true }, true)).toBe(true);
+    expect(accountUsableByIdentity({ source: 'cli', current: true, usable: false }, true)).toBe(false);
+    // A provider that does not use its CLI for transport never does.
+    expect(accountUsableByIdentity({ source: 'cli', current: false, usable: true }, false)).toBe(false);
   });
 
 });
@@ -441,6 +484,9 @@ describe('unavailableAccountReason', () => {
     expect(unavailableAccountReason(ghBound, [{ source: 'oauth', current: true }], true)).toBe('cli-not-in-use');
     // gh is in use, as another person: switching in Integrations cannot help.
     expect(unavailableAccountReason(ghBound, [{ source: 'cli', current: true }], true)).toBe('gone');
+    // A host with several usable logins where the bound one is not among them:
+    // the switch is on, so switching in Integrations still cannot help.
+    expect(unavailableAccountReason(ghBound, [{ source: 'cli', current: false, usable: true }], true)).toBe('gone');
   });
 
   test('any other account is gone', () => {

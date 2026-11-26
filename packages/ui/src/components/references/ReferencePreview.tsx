@@ -2,35 +2,47 @@ import * as React from 'react';
 
 import { SimpleMarkdownRenderer } from '@/components/chat/MarkdownRenderer';
 import { Icon } from '@/components/icon/Icon';
+import { toast } from '@/components/ui';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { dropdownTriggerVariants } from '@/components/ui/dropdown-trigger';
+import { Input } from '@/components/ui/input';
 import { ScrollableOverlay } from '@/components/ui/ScrollableOverlay';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import type { CISummary, ChangeRequestListStatus, ChangeRequestRevision, ChangeRequestRevisionKind, RepositoryReference, RepositoryReferenceComment, RepositoryReferenceDetail, TrackerItem, TrackerItemSummary, PullRequestStackLayer } from '@/lib/api/types';
 import { useAvatarImage } from '@/hooks/useAvatarImage';
 import { useEmojiShortcodes } from '@/lib/emoji/shortcodes';
 import { useI18n, type I18nKey } from '@/lib/i18n';
+import { isIMECompositionEvent } from '@/lib/ime';
 import { cn } from '@/lib/utils';
 
 import { ButtonTooltip } from '@/components/ui/action-toolbar';
 import type { CachedValue } from './referenceCache';
 import { ReferenceMarkdownRewriteContext, useProjectUploadRewrite } from './projectUploads';
+import { ReferenceMarkdownEditor } from './ReferenceMarkdownEditor';
+import { foldTrackerCollapsibles } from './trackerCollapsibles';
+import { PreviewRefreshButton } from './PreviewRefreshButton';
 import { ReferenceLinksContext, useReferenceLinks } from './referenceLinks';
 import { useSourceControlProvider } from '@/lib/source-control/providers/registry';
 import { trackerPresentation } from '@/lib/trackers/presentation';
 import { useTrackerDescriptor } from '@/lib/trackers/registry';
 import { isSettledTrackerState, trackerStateGlyph } from '@/lib/trackers/stateLook';
-import { ReferenceComments, type ReferenceThreadActions } from './ReferenceComments';
+import { type ReferenceCommentActions, type ReferenceThreadActions, type ScopedCommentActions } from './ReferenceComments';
+import { ReferenceCommentsSection, type CommentAttachments } from './ReferenceCommentsSection';
+import { commentDraftScope } from './referenceCommentDrafts';
+import { useRepositoryReadContext } from './referenceSources';
+import { getRuntimeKey } from '@/lib/runtime-switch';
 import { buildReferenceTimeline, type ReferenceCommentItem, type ReferenceTimelineEntry } from './referenceTimeline';
 import { ChecksGlyph, DiscussionCategory, ReferenceLabelChips } from './ReferencePickerRow';
 import { PullStackRows } from './PullStackRows';
 import { useReferenceImagePreview } from './useReferenceImagePreview';
 import { useCopyReferenceLink } from './useCopyReferenceLink';
+import { LoadError, MetaRow, ReferenceAssigneesRow } from './ReferenceMetaEditors';
 import {
     repositoryStateLook,
     labelColor,
+    newerTrackerRead,
     REFERENCE_META_TEXT,
     relativeTimeOf,
     type ReferencePickerItem,
@@ -39,20 +51,13 @@ import {
 } from './referencePickerItems';
 import { joinProjectPath } from '@/lib/source-control/projectPath';
 import { DiffCount } from '@/components/ui/diff-count';
+import { forgetReferenceTextDraft, referenceTextDraft, referenceTextDraftKey, rememberReferenceTextDraft } from './referenceTextDrafts';
 
 export type ReferencePreviewPurpose = 'attach' | 'worktree';
 
 const MARKDOWN_CLASS = '[&_img]:max-w-full [&_img]:h-auto';
-// The pictures `useReferenceImagePreview` opens; one inside a link keeps its link, a decorative one stays plain.
 const ZOOMABLE_IMAGE_CLASS = '[&_[data-markdown-content]_img:not(a_img):not([aria-hidden=true])]:cursor-zoom-in';
 
-/**
- * `pinned` (desktop pane): the item header and the send summary stay in view
- * while the meta grid, description and comments scroll between them, so a
- * long preview never hides the diff switch. Inline (mobile): one flow inside
- * the sheet's own scroll. Either way a divider sets the meta grid apart from
- * what follows it.
- */
 const PreviewFrame: React.FC<{ pinned: boolean; header: React.ReactNode; meta: React.ReactNode; footer: React.ReactNode; children: React.ReactNode }> = ({ pinned, header, meta, footer, children }) => {
     const imagePreview = useReferenceImagePreview();
     if (!pinned) {
@@ -83,14 +88,6 @@ const PreviewFrame: React.FC<{ pinned: boolean; header: React.ReactNode; meta: R
     );
 };
 
-const MetaRow: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
-    <>
-        <dt className={cn('typography-meta', REFERENCE_META_TEXT)}>{label}</dt>
-        <dd className="min-w-0 typography-meta text-muted-foreground">{children}</dd>
-    </>
-);
-
-/** An item's state as a tinted pill; `trailing` adds a chevron when the pill opens a menu. */
 export const StatePill: React.FC<{
     icon: React.ComponentProps<typeof Icon>['name'];
     color: string;
@@ -124,7 +121,6 @@ const ChecksSummaryText: React.FC<{ checks: CISummary }> = ({ checks }) => {
     return null;
 };
 
-/** A checks total as the preview and the board's checks dialog show it. */
 export const ChecksSummaryLine: React.FC<{ checks: CISummary }> = ({ checks }) => (
     <>
         <ChecksGlyph checks={checks} />
@@ -132,7 +128,6 @@ export const ChecksSummaryLine: React.FC<{ checks: CISummary }> = ({ checks }) =
     </>
 );
 
-/** What the agent gets from an attached item, and what a worktree started from one gets. */
 const SENDS_KEYS = {
     issue: 'references.picker.preview.sends.issue',
     pull: 'references.picker.preview.sends.pull',
@@ -160,17 +155,12 @@ const REVISION_KIND_KEYS = {
     'no-change': 'references.picker.preview.revision.kind.noChange',
 } as const satisfies Record<ChangeRequestRevisionKind, I18nKey>;
 
-/** A change's revisions to choose from, oldest first, and the one shown: null for the latest. */
 export type RevisionChoice = {
     revisions: ChangeRequestRevision[];
     selected: string | null;
     onSelect: (sha: string | null) => void;
 };
 
-/**
- * Which revision (patchset) of a change the Changes row shows, beside it.
- * Only where there is more than one to choose from.
- */
 const RevisionPicker: React.FC<{ choice: RevisionChoice }> = ({ choice }) => {
     const { t } = useI18n();
     const latest = choice.revisions.at(-1);
@@ -215,12 +205,10 @@ const RevisionPicker: React.FC<{ choice: RevisionChoice }> = ({ choice }) => {
     );
 };
 
-/** A review host's flags on a change: work in progress, private, its topic. Nothing for other hosts. */
 const ChangeFlags: React.FC<{ reference: RepositoryReference }> = ({ reference }) => {
     const { t } = useI18n();
     if (reference.kind !== 'pull') return null;
     const flags = [
-        // The state pill already says Draft for a draft; saying work in progress beside it repeats it.
         reference.workInProgress && !reference.draft ? t('references.picker.preview.wip') : null,
         reference.private ? t('references.picker.preview.private') : null,
     ].filter((flag): flag is string => flag !== null);
@@ -239,7 +227,6 @@ const ChangeFlags: React.FC<{ reference: RepositoryReference }> = ({ reference }
     );
 };
 
-/** Description with images and the HTML GitHub allows; the agent gets the source. */
 const ReferenceBody: React.FC<{ content: string }> = ({ content }) => {
     const rewrite = React.useContext(ReferenceMarkdownRewriteContext);
     const links = React.useContext(ReferenceLinksContext);
@@ -259,63 +246,6 @@ const ReferenceBody: React.FC<{ content: string }> = ({ content }) => {
     );
 };
 
-/** The thread section under the body: loading, failure, empty, or the comments. */
-const CommentsSection: React.FC<{
-    state: CachedValue<ReferenceTimelineEntry[]>;
-    /** How many comments there are in all, to say when only the newest show. */
-    total: number | null;
-    /** A PR's thread carries its commits too. */
-    activity?: boolean;
-    now: number;
-    attachments?: CommentAttachments;
-    threadActions?: ReferenceThreadActions;
-}> = ({ state, total, activity = false, now, attachments, threadActions }) => {
-    const { t } = useI18n();
-    const shown = state.status === 'ready' ? state.value.filter((entry) => entry.kind === 'comment').length : 0;
-    return (
-        <section className="flex flex-col gap-3 border-t border-edge pt-4">
-            <h4 className="flex items-center gap-2 typography-ui-label font-semibold text-foreground">
-                {t(activity ? 'references.picker.preview.activity' : 'references.picker.preview.comments')}
-                {state.status === 'ready' && total !== null && total > shown ? (
-                    <span className={cn('typography-meta font-normal', REFERENCE_META_TEXT)}>
-                        {t('references.picker.preview.commentsLatest', { shown, total })}
-                    </span>
-                ) : null}
-                {attachments && shown > 0 && state.status === 'ready' ? (
-                    <Tooltip>
-                        <TooltipTrigger asChild>
-                            <button
-                                type="button"
-                                onClick={() => attachments.onAttachAll(state.value.flatMap((entry) => (entry.kind === 'comment' ? [entry, ...(entry.thread?.replies ?? [])] : [])))}
-                                className={cn('ms-auto inline-flex items-center gap-1 typography-meta font-normal hover:text-foreground', REFERENCE_META_TEXT)}
-                            >
-                                <Icon name="attachment-2" className="size-3.5" />
-                                {t('gitView.pr.comments.addAll')}
-                            </button>
-                        </TooltipTrigger>
-                        <TooltipContent sideOffset={6}>{t('contextTooltips.tracker.attachAllComments')}</TooltipContent>
-                    </Tooltip>
-                ) : null}
-            </h4>
-            {state.status === 'error' ? (
-                <p className="typography-meta text-[var(--status-error-text)]">{t('references.picker.error.load', { error: state.error })}</p>
-            ) : state.status !== 'ready' ? (
-                <Pending />
-            ) : state.value.length === 0 ? (
-                <p className="typography-meta text-muted-foreground">{t('references.picker.preview.commentsEmpty')}</p>
-            ) : (
-                <ReferenceComments entries={state.value} now={now} onAttachComment={attachments?.onAttach} threadActions={threadActions} />
-            )}
-        </section>
-    );
-};
-
-/** Pins a comment, or all of them, above the composer. */
-type CommentAttachments = {
-    onAttach: (comment: ReferenceCommentItem) => void;
-    onAttachAll: (comments: ReferenceCommentItem[]) => void;
-};
-
 const REVIEW_VERDICT_KEYS = {
     approved: 'references.picker.preview.review.approved',
     changes_requested: 'references.picker.preview.review.changesRequested',
@@ -326,20 +256,10 @@ const mapDetail = <T, R>(state: CachedValue<T>, map: (value: T) => R): CachedVal
     state.status === 'ready' ? { status: 'ready', value: map(state.value) } : state
 );
 
-const LoadError: React.FC<{ error: string }> = ({ error }) => {
-    const { t } = useI18n();
-    return <span className="text-[var(--status-error-text)]">{t('references.picker.error.load', { error })}</span>;
-};
-
-/**
- * Size and review of the previewed PR from its detail, and its checks from
- * `checks`: the status that colours a GitHub PR, or a GitLab detail's pipeline.
- */
 const PullDetailRows: React.FC<{
     detail: CachedValue<RepositoryReferenceDetail>;
     checks: CachedValue<CISummary | null>;
     links?: React.ReactNode;
-    /** Opens the PR's check runs; the totals become a button. */
     onOpenChecks?: () => void;
     revisionChoice?: RevisionChoice;
 }> = ({ detail, checks, links, onOpenChecks, revisionChoice }) => {
@@ -399,7 +319,6 @@ const PullDetailRows: React.FC<{
     );
 };
 
-/** Copies the item's address, beside the link that opens it on its host. */
 const CopyReferenceLinkButton: React.FC<{ url: string; className?: string }> = ({ url, className }) => {
     const { t } = useI18n();
     const copyLink = useCopyReferenceLink();
@@ -422,13 +341,6 @@ const CopyReferenceLinkButton: React.FC<{ url: string; className?: string }> = (
 
 const NO_CHECKS: CachedValue<CISummary | null> = { status: 'ready', value: null };
 
-/**
- * The previewed PR's checks as its row has them, the status that stays
- * current while the preview is open. Until that arrives they come with the
- * PR's own detail (GitHub's head commit, GitLab's pipeline), so the preview
- * never waits for the statuses a whole list asks for. Closed and merged PRs
- * have none to show.
- */
 const previewChecks = (
     reference: RepositoryReference,
     pullStatus: CachedValue<ChangeRequestListStatus | null>,
@@ -453,6 +365,7 @@ const RepositoryPreview: React.FC<{
     reply?: React.ReactNode;
     labelsControl?: React.ReactNode;
     reviewersControl?: React.ReactNode;
+    assigneesControl?: React.ReactNode;
     onOpenChecks?: () => void;
     commentAttachments?: CommentAttachments;
     stateMenu?: React.ReactNode;
@@ -460,14 +373,11 @@ const RepositoryPreview: React.FC<{
     threadActions?: ReferenceThreadActions;
     onOpenStackLayer?: (layer: PullRequestStackLayer) => void;
     revisionChoice?: RevisionChoice;
-}> = ({ reference, pullStatus, detail, purpose, pinned, includeDiff, onIncludeDiffChange, now, footer: footerOverride, pullLinks, reply, labelsControl, reviewersControl, onOpenChecks, commentAttachments, stateMenu, onRefresh, threadActions, onOpenStackLayer, revisionChoice }) => {
+    onSaveText?: (input: { title: string; body: string }) => Promise<void>;
+    commentActions?: ScopedCommentActions;
+}> = ({ reference, pullStatus, detail, purpose, pinned, includeDiff, onIncludeDiffChange, now, footer: footerOverride, pullLinks, reply, labelsControl, reviewersControl, assigneesControl, onOpenChecks, commentAttachments, stateMenu, onRefresh, threadActions, onOpenStackLayer, revisionChoice, onSaveText, commentActions }) => {
     const { t } = useI18n();
-    const [refreshing, setRefreshing] = React.useState(false);
     const { broken: authorBroken, onError } = useAvatarImage(reference.author?.avatarUrl);
-    const refresh = onRefresh ? () => {
-        setRefreshing(true);
-        void onRefresh().finally(() => setRefreshing(false));
-    } : null;
     const comments = React.useMemo(() => {
         const commentItem = (comment: RepositoryReferenceComment, key: string): ReferenceCommentItem => {
             const location = comment.path ? `${comment.path}${comment.line ? `:${comment.line}` : ''}` : null;
@@ -481,6 +391,9 @@ const RepositoryPreview: React.FC<{
                 context: location ?? (comment.review && comment.review !== 'commented' ? t(REVIEW_VERDICT_KEYS[comment.review]) : null),
                 location,
             };
+            if (comment.id !== undefined) item.id = comment.id;
+            if (comment.canUpdate !== undefined) item.canUpdate = comment.canUpdate;
+            if (comment.canDelete !== undefined) item.canDelete = comment.canDelete;
             if (comment.answer) item.answer = comment.answer;
             if (comment.excerpt) item.excerpt = comment.excerpt;
             if (comment.thread) {
@@ -489,7 +402,6 @@ const RepositoryPreview: React.FC<{
                     resolved: comment.thread.resolved,
                     canResolve: comment.thread.canResolve,
                     canReply: comment.thread.canReply,
-                    // A reply sits on the opener's line; saying it again is noise.
                     replies: comment.thread.replies.map((reply, index) => ({ ...commentItem(reply, `${key}/${index}`), context: null })),
                 };
             }
@@ -502,18 +414,104 @@ const RepositoryPreview: React.FC<{
             avatarUrl: commit.author?.avatarUrl ?? null,
             committedAt: commit.committedAt,
             url: commit.url,
-        }))));
+        })), value.references ?? []));
     }, [detail, t]);
     const relative = useRelative(now);
     const descriptor = useSourceControlProvider(reference.provider);
     const look = repositoryStateLook(reference, pullStatus.status === 'ready' ? pullStatus.value : null);
     const labels = reference.labels.map((label) => ({ name: label.name, color: labelColor(label.color) }));
+    const assignees = reference.kind === 'issue' && detail.status === 'ready' ? detail.value.assignees : undefined;
+    const showsAssignees = reference.kind === 'issue' && (detail.status === 'ready'
+        ? assignees !== undefined && (Boolean(assigneesControl) || assignees.length > 0)
+        : detail.status !== 'error' && Boolean(assigneesControl));
     const updated = relative(reference.updatedAt);
     const body = reference.body.trim() ? reference.body : '';
     const stack = reference.kind === 'pull' && detail.status === 'ready' ? detail.value.pull?.stack ?? null : null;
     const numberLabel = (number: number) => referenceNumberLabel({ ...reference, number }, descriptor);
-    // Counted from the bottom, as GitHub numbers layers.
     const stackPosition = stack ? stack.layers.findIndex((layer) => layer.number === reference.number) + 1 : 0;
+
+    const draftKey = referenceTextDraftKey(reference);
+    const currentDraftKey = React.useRef(draftKey);
+    currentDraftKey.current = draftKey;
+    const [openEditor, setOpenEditor] = React.useState<{ key: string; title: string; body: string } | null>(null);
+    const editing = openEditor?.key === draftKey ? openEditor : null;
+    const [savingKeys, setSavingKeys] = React.useState<ReadonlySet<string>>(() => new Set());
+    const savingRef = React.useRef(new Set<string>());
+    const saving = savingKeys.has(draftKey);
+    const titleInput = React.useRef<HTMLInputElement>(null);
+    const editButton = React.useRef<HTMLButtonElement>(null);
+    const focusEditButton = () => { requestAnimationFrame(() => editButton.current?.focus()); };
+    const isEditing = editing !== null;
+    const editDraft = (next: { title: string; body: string }) => {
+        rememberReferenceTextDraft(draftKey, next);
+        setOpenEditor({ key: draftKey, ...next });
+    };
+    const markSaving = (key: string, on: boolean) => {
+        if (on) savingRef.current.add(key);
+        else savingRef.current.delete(key);
+        setSavingKeys(new Set(savingRef.current));
+    };
+    const detailBody = detail.status === 'ready' ? detail.value.body : undefined;
+    const storedBody = detailBody ?? reference.body;
+    const canEditText = onSaveText !== undefined
+        && reference.linked !== true
+        && !(reference.bodyTruncated && detailBody === undefined)
+        && (detail.status !== 'ready' || detail.value.viewerCanUpdate !== false)
+        && (reference.kind === 'pull'
+            ? descriptor.features.changeRequestEdit
+            : reference.kind === 'discussion'
+                ? descriptor.features.discussions
+                : descriptor.features.issueEdit);
+    const showEdit = canEditText && !isEditing;
+    const trimmedTitle = editing?.title.trim() ?? '';
+    const changed = editing !== null && (trimmedTitle !== reference.title || editing.body !== storedBody);
+    const canSave = changed && trimmedTitle.length > 0 && !saving;
+    React.useEffect(() => {
+        if (!isEditing) return;
+        const input = titleInput.current;
+        if (!input) return;
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+    }, [isEditing]);
+    const closeEditor = (key: string) => {
+        setOpenEditor((current) => (current?.key === key ? null : current));
+        if (currentDraftKey.current === key) focusEditButton();
+    };
+    const cancelEditing = () => {
+        if (savingRef.current.has(draftKey)) return;
+        forgetReferenceTextDraft(draftKey);
+        closeEditor(draftKey);
+    };
+    const saveText = async () => {
+        if (!editing || !canSave || !onSaveText || savingRef.current.has(draftKey)) return;
+        const key = draftKey;
+        const save = onSaveText;
+        const input = { title: trimmedTitle, body: editing.body };
+        markSaving(key, true);
+        try {
+            await save(input);
+            forgetReferenceTextDraft(key);
+            closeEditor(key);
+        } catch (error) {
+            toast.error(t('sourceBoard.edit.saveFailed'), { description: error instanceof Error ? error.message : String(error) });
+        } finally {
+            markSaving(key, false);
+        }
+    };
+    const onEditorKeyDown = (event: React.KeyboardEvent<HTMLInputElement | HTMLTextAreaElement>) => {
+        event.stopPropagation();
+        if (isIMECompositionEvent(event)) return;
+        if (event.key === 'Escape') {
+            event.preventDefault();
+            cancelEditing();
+        } else if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) {
+            event.preventDefault();
+            void saveText();
+        } else if (event.key === 'Enter' && event.currentTarget instanceof HTMLInputElement) {
+            event.preventDefault();
+            void saveText();
+        }
+    };
 
     const footer = footerOverride ?? (
         <div className="flex flex-col gap-2">
@@ -565,20 +563,21 @@ const RepositoryPreview: React.FC<{
                         <span className={cn('truncate typography-meta', REFERENCE_META_TEXT)}>
                             {joinProjectPath(reference.sourceRepo.owner, reference.sourceRepo.repo)} {referenceNumberLabel(reference, descriptor)}
                         </span>
-                        {refresh ? (
-                            <ButtonTooltip label={t('references.picker.preview.refresh')} side="bottom" className="ms-auto shrink-0">
+                        {showEdit ? (
+                            <ButtonTooltip label={t('sourceBoard.edit.action')} side="bottom" className="ms-auto shrink-0">
                                 <button
+                                    ref={editButton}
                                     type="button"
                                     className={cn('inline-flex size-6 shrink-0 items-center justify-center rounded-md hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:pointer-events-none', REFERENCE_META_TEXT)}
-                                    aria-label={t('references.picker.preview.refresh')}
-                                    disabled={refreshing}
-                                    onClick={refresh}
+                                    aria-label={t('sourceBoard.edit.action')}
+                                    onClick={() => setOpenEditor({ key: draftKey, ...(referenceTextDraft(draftKey) ?? { title: reference.title, body: storedBody }) })}
                                 >
-                                    <Icon name="refresh" className={cn('size-3.5', refreshing && 'animate-spin')} />
+                                    <Icon name="pencil" className="size-3.5" />
                                 </button>
                             </ButtonTooltip>
                         ) : null}
-                        <CopyReferenceLinkButton url={reference.url} className={refresh ? undefined : 'ms-auto'} />
+                        {onRefresh ? <PreviewRefreshButton onRefresh={onRefresh} className={showEdit ? undefined : 'ms-auto'} /> : null}
+                        <CopyReferenceLinkButton url={reference.url} className={onRefresh || showEdit ? undefined : 'ms-auto'} />
                         <Tooltip>
                             <TooltipTrigger asChild>
                                 <a
@@ -594,7 +593,33 @@ const RepositoryPreview: React.FC<{
                             <TooltipContent side="bottom" sideOffset={6}>{t('contextTooltips.tracker.openOnHost', { host: descriptor.label })}</TooltipContent>
                         </Tooltip>
                     </div>
-                    <h3 dir="auto" className="typography-ui-header font-semibold break-words text-foreground">{reference.title}</h3>
+                    {editing ? (
+                        <div className="flex min-w-0 flex-1 items-center gap-2">
+                            <Input
+                                ref={titleInput}
+                                dir="auto"
+                                inputSize="compact"
+                                value={editing.title}
+                                onChange={(event) => {
+                                    if (!editing) return;
+                                    editDraft({ title: event.target.value, body: editing.body });
+                                }}
+                                onKeyDown={onEditorKeyDown}
+                                aria-label={t('sourceBoard.edit.title')}
+                                placeholder={t('sourceBoard.edit.title')}
+                                disabled={saving}
+                            />
+                            <Button size="sm" onClick={() => void saveText()} disabled={!canSave}>
+                                {saving ? <Icon name="loader-4" className="size-3.5 animate-spin" /> : null}
+                                {t('sourceBoard.edit.save')}
+                            </Button>
+                            <Button size="sm" variant="ghost" onClick={cancelEditing} disabled={saving}>
+                                {t('sourceBoard.edit.cancel')}
+                            </Button>
+                        </div>
+                    ) : (
+                        <h3 dir="auto" className="typography-ui-header font-semibold break-words text-foreground">{reference.title}</h3>
+                    )}
                     <ChangeFlags reference={reference} />
                 </>
             }
@@ -648,7 +673,6 @@ const RepositoryPreview: React.FC<{
                                         <span className="truncate">{reference.base}</span>
                                     </span>
                                 ) : (
-                                    // The head is a revision's ref, not a branch: only where it lands reads as one.
                                     <span className="block truncate font-mono">{reference.base}</span>
                                 )}
                             </MetaRow>
@@ -664,8 +688,10 @@ const RepositoryPreview: React.FC<{
                     {reviewersControl && reference.kind === 'pull' ? (
                         <MetaRow label={t('references.picker.preview.reviewers')}>{reviewersControl}</MetaRow>
                     ) : null}
+                    {showsAssignees ? (
+                        <ReferenceAssigneesRow control={assigneesControl} assignees={assignees ?? []} />
+                    ) : null}
                     {labelsControl ? (
-                        // Shown with no labels too, so some can be added.
                         <MetaRow label={t('references.picker.preview.labels')}>{labelsControl}</MetaRow>
                     ) : labels.length > 0 ? (
                         <MetaRow label={t('references.picker.preview.labels')}><ReferenceLabelChips labels={labels} /></MetaRow>
@@ -683,7 +709,6 @@ const RepositoryPreview: React.FC<{
                             </span>
                         ) : null}
                         {stack.number !== null && stack.layers.filter((layer) => layer.state === 'open').length > 1 ? (
-                            // GitHub rebases a stack only from its own page; its API has no such action.
                             <a
                                 href={reference.url}
                                 target="_blank"
@@ -700,7 +725,33 @@ const RepositoryPreview: React.FC<{
             ) : null}
 
             <div className="min-w-0 flex-1">
-                {body ? (
+                {editing ? (
+                    <>
+                        <ReferenceMarkdownEditor
+                            value={editing.body}
+                            onChange={(text) => {
+                                if (!editing) return;
+                                editDraft({ title: editing.title, body: text });
+                            }}
+                            onSubmit={() => void saveText()}
+                            onCancel={cancelEditing}
+                            placeholder={t('sourceBoard.edit.body')}
+                            disabled={saving}
+                            maxLines={8}
+                            aria-label={t('sourceBoard.edit.body')}
+                        />
+                        {}
+                        <div className="mt-2 hidden items-center gap-2 pointer-coarse:flex">
+                            <Button size="sm" onClick={() => void saveText()} disabled={!canSave}>
+                                {saving ? <Icon name="loader-4" className="size-3.5 animate-spin" /> : null}
+                                {t('sourceBoard.edit.save')}
+                            </Button>
+                            <Button size="sm" variant="ghost" onClick={cancelEditing} disabled={saving}>
+                                {t('sourceBoard.edit.cancel')}
+                            </Button>
+                        </div>
+                    </>
+                ) : body ? (
                     <ReferenceBody content={body} />
                 ) : (
                     <p className="typography-meta text-muted-foreground">{t('references.picker.preview.noDescription')}</p>
@@ -710,20 +761,15 @@ const RepositoryPreview: React.FC<{
                 ) : null}
             </div>
 
-            <CommentsSection state={comments} total={detail.status === 'ready' ? detail.value.commentTotal : null} activity={reference.kind === 'pull'} now={now} attachments={commentAttachments} threadActions={threadActions} />
+            <ReferenceCommentsSection key={draftKey} state={comments} total={detail.status === 'ready' ? detail.value.commentTotal : null} activity={reference.kind === 'pull'} now={now} attachments={commentAttachments} threadActions={threadActions} commentActions={commentActions} />
             {reply}
         </PreviewFrame>
     );
 };
 
-/**
- * A parent or child item as one line: its state, identifier and title. A button
- * that previews it when the surface can, plain text otherwise.
- */
 const RelatedTrackerItem: React.FC<{
     issue: TrackerItemSummary;
     onOpen?: (issue: TrackerItemSummary) => void;
-    /** A child row also names its assignee. */
     showAssignee?: boolean;
 }> = ({ issue, onOpen, showAssignee = false }) => {
     const look = trackerStateGlyph(issue.state?.category);
@@ -752,7 +798,6 @@ const RelatedTrackerItem: React.FC<{
     );
 };
 
-/** A tracker item's children, finished of all, in the tracker's order. */
 const SubIssuesSection: React.FC<{
     issue: TrackerItem;
     onOpen?: (issue: TrackerItemSummary) => void;
@@ -789,7 +834,6 @@ const SubIssuesSection: React.FC<{
     );
 };
 
-/** A tracker's work item; parent, children, labels and priority show where its capabilities say so. */
 const TrackerPreview: React.FC<{
     issue: TrackerItemSummary;
     detail: CachedValue<TrackerItem>;
@@ -799,19 +843,19 @@ const TrackerPreview: React.FC<{
     footer?: React.ReactNode;
     stateControl?: React.ReactNode;
     onOpenIssue?: (issue: TrackerItemSummary) => void;
-}> = ({ issue, detail, purpose, pinned, now, footer: footerOverride, stateControl, onOpenIssue }) => {
+    onRefresh?: () => Promise<void>;
+}> = ({ issue: listed, detail, purpose, pinned, now, footer: footerOverride, stateControl, onOpenIssue, onRefresh }) => {
     const { t } = useI18n();
     const relative = useRelative(now);
+    const full = detail.status === 'ready' && detail.value.id === listed.id ? detail.value : null;
+    const issue = newerTrackerRead(listed, full);
     const descriptor = useTrackerDescriptor(issue.provider);
     const { capabilities } = descriptor;
     const look = trackerStateGlyph(issue.state?.category);
-    const full = detail.status === 'ready' ? detail.value : null;
-    // A parent or child opened from another preview comes without its
-    // labels and parent; its own detail brings them.
     const labels = capabilities.labels
-        ? (full?.labels ?? issue.labels ?? []).map((label) => ({ name: label.name, color: labelColor(label.color) }))
+        ? (issue.labels ?? full?.labels ?? listed.labels ?? []).map((label) => ({ name: label.name, color: labelColor(label.color) }))
         : [];
-    const parent = capabilities.children ? full?.parent ?? issue.parent ?? null : null;
+    const parent = capabilities.children ? issue.parent ?? full?.parent ?? listed.parent ?? null : null;
     const updated = relative(issue.updatedAt);
     const assignee = issue.assignee?.name;
     const comments = React.useMemo(
@@ -820,7 +864,7 @@ const TrackerPreview: React.FC<{
             key: comment.id,
             author: comment.author?.name ?? null,
             avatarUrl: comment.author?.avatarUrl ?? null,
-            body: comment.body,
+            body: foldTrackerCollapsibles(comment.body),
             createdAt: comment.createdAt,
             context: null,
             location: null,
@@ -843,7 +887,8 @@ const TrackerPreview: React.FC<{
                     <div className="flex items-center gap-2">
                         {stateControl ?? (issue.state?.name ? <StatePill icon={look.icon} color={look.color} label={issue.state.name} /> : null)}
                         <span className={cn('truncate typography-meta', REFERENCE_META_TEXT)}>{issue.identifier}</span>
-                        <CopyReferenceLinkButton url={issue.url} className="ms-auto" />
+                        {onRefresh ? <PreviewRefreshButton onRefresh={onRefresh} className="ms-auto" /> : null}
+                        <CopyReferenceLinkButton url={issue.url} className={onRefresh ? undefined : 'ms-auto'} />
                         <Tooltip>
                             <TooltipTrigger asChild>
                                 <a
@@ -890,63 +935,56 @@ const TrackerPreview: React.FC<{
                 ) : detail.status === 'error' ? (
                     <p className="typography-meta text-[var(--status-error-text)]">{t('references.picker.error.load', { error: detail.error })}</p>
                 ) : full?.description?.trim() ? (
-                    <ReferenceBody content={full.description} />
+                    <ReferenceBody content={foldTrackerCollapsibles(full.description)} />
                 ) : (
                     <p className="typography-meta text-muted-foreground">{t('references.picker.preview.noDescription')}</p>
                 )}
             </div>
 
             {full && capabilities.children ? <SubIssuesSection issue={full} onOpen={onOpenIssue} /> : null}
-            {detail.status === 'ready' ? <CommentsSection state={comments} total={null} now={now} /> : null}
+            {detail.status === 'ready' ? <ReferenceCommentsSection state={comments} total={null} now={now} /> : null}
         </PreviewFrame>
     );
 };
 
 export const ReferencePreview: React.FC<{
     item: ReferencePickerItem | null;
-    /** The project the item was listed for; GitLab attachments are read through it. */
     directory: string | null;
-    /** The previewed PR's checks and mergeability, as its row has them. */
     pullStatus: CachedValue<ChangeRequestListStatus | null>;
     trackerDetail: CachedValue<TrackerItem>;
     repositoryDetail: CachedValue<RepositoryReferenceDetail>;
     purpose: ReferencePreviewPurpose;
-    /** Desktop pane: own scroll with the send summary pinned below. */
     pinned: boolean;
     includeDiff: boolean;
     onIncludeDiffChange: (include: boolean) => void;
     now: number;
-    /** Replaces what the agent gets with what the surface does with the item. */
     footer?: React.ReactNode;
-    /** Beside a PR's size: where to look at its changes. */
     pullLinks?: React.ReactNode;
-    /** Replaces a tracker item's state pill, such as with one that changes the state. */
     trackerStateControl?: React.ReactNode;
-    /** After an issue's or PR's activity: a way to answer it. */
     reply?: React.ReactNode;
-    /** Replace an issue's or PR's labels, and a PR's reviewers, with ones that change them. */
     labelsControl?: React.ReactNode;
     reviewersControl?: React.ReactNode;
-    /** Opens the previewed PR's check runs from its checks totals. */
+    assigneesControl?: React.ReactNode;
     onOpenChecks?: () => void;
-    /** An issue's or PR's comments, pinned above the composer one by one or together. */
     commentAttachments?: CommentAttachments;
-    /** Menu items on an issue's or PR's state pill, such as close or reopen. */
     stateMenu?: React.ReactNode;
-    /** Previews a tracker item's parent or child; without it they are plain text. */
     onOpenTrackerItem?: (item: TrackerItemSummary) => void;
-    /** Reads an issue or PR again from its host, past every cached answer; settles when the reads are asked. */
     onRefresh?: () => Promise<void>;
-    /** Answer and resolve a PR's review threads, or answer a discussion's comments and choose its answer; without it they are read only. */
     threadActions?: ReferenceThreadActions;
-    /** Opens another layer of the previewed PR's stack; without it the layers are plain text. */
+    commentActions?: ReferenceCommentActions;
     onOpenStackLayer?: (layer: PullRequestStackLayer) => void;
-    /** A change's revisions to pick the shown one from, where the host keeps revisions. */
     revisionChoice?: RevisionChoice;
-}> = ({ item, directory, pullStatus, trackerDetail, repositoryDetail, purpose, pinned, includeDiff, onIncludeDiffChange, now, footer, pullLinks, trackerStateControl, reply, labelsControl, reviewersControl, onOpenChecks, commentAttachments, stateMenu, onOpenTrackerItem, onRefresh, threadActions, onOpenStackLayer, revisionChoice }) => {
+    onSaveText?: (input: { title: string; body: string }) => Promise<void>;
+}> = ({ item, directory, pullStatus, trackerDetail, repositoryDetail, purpose, pinned, includeDiff, onIncludeDiffChange, now, footer, pullLinks, trackerStateControl, reply, labelsControl, reviewersControl, assigneesControl, onOpenChecks, commentAttachments, stateMenu, onOpenTrackerItem, onRefresh, threadActions, onOpenStackLayer, revisionChoice, onSaveText, commentActions }) => {
     const { t } = useI18n();
-    const rewriteMarkdown = useProjectUploadRewrite(directory, item?.source === 'repository' ? item.reference : null);
-    const links = useReferenceLinks(directory, item?.source === 'repository' ? item.reference : null);
+    const reference = item?.source === 'repository' ? item.reference : null;
+    const rewriteMarkdown = useProjectUploadRewrite(directory, reference);
+    const links = useReferenceLinks(directory, reference);
+    const commentWrites = useSourceControlProvider(reference?.provider ?? null).features.commentEdit;
+    const readContext = useRepositoryReadContext(reference ? directory : null);
+    const commentAccount = readContext && readContext !== 'missing'
+        ? [readContext.provider, readContext.instance, readContext.accountId].join('\u0000')
+        : '';
     if (!item) {
         return (
             <div className="flex h-full items-center justify-center px-6 text-center typography-meta text-muted-foreground">
@@ -955,7 +993,7 @@ export const ReferencePreview: React.FC<{
         );
     }
     if (item.source === 'tracker') {
-        return <TrackerPreview issue={item.item} detail={trackerDetail} purpose={purpose} pinned={pinned} now={now} footer={footer} stateControl={trackerStateControl} onOpenIssue={onOpenTrackerItem} />;
+        return <TrackerPreview issue={item.item} detail={trackerDetail} purpose={purpose} pinned={pinned} now={now} footer={footer} stateControl={trackerStateControl} onOpenIssue={onOpenTrackerItem} onRefresh={onRefresh} />;
     }
     return (
         <ReferenceMarkdownRewriteContext.Provider value={rewriteMarkdown}>
@@ -974,6 +1012,7 @@ export const ReferencePreview: React.FC<{
                     reply={reply}
                     labelsControl={labelsControl}
                     reviewersControl={reviewersControl}
+                    assigneesControl={assigneesControl}
                     onOpenChecks={onOpenChecks}
                     commentAttachments={commentAttachments}
                     stateMenu={stateMenu}
@@ -981,6 +1020,8 @@ export const ReferencePreview: React.FC<{
                     threadActions={threadActions}
                     onOpenStackLayer={onOpenStackLayer}
                     revisionChoice={revisionChoice}
+                    onSaveText={onSaveText}
+                    commentActions={commentWrites && commentActions ? { ...commentActions, draftScope: commentDraftScope(getRuntimeKey(), directory, commentAccount, item.reference.url) } : undefined}
                 />
             </ReferenceLinksContext.Provider>
         </ReferenceMarkdownRewriteContext.Provider>

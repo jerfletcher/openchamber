@@ -60,7 +60,9 @@ describe("catalogRefreshTasks", () => {
 
   test("invalidations during a catalog read coalesce into one trailing read per resource", async () => {
     const previousProjects = useProjectsStore.getState();
+    const previousConfig = useConfigStore.getState();
     useProjectsStore.setState({ projects: [{ id: "catalog", path: "/workspace/ambient" }], activeProjectId: "catalog" });
+    useConfigStore.setState({ activeDirectoryKey: "/workspace/ambient" });
     let release = () => {};
     const pending = new Promise<void>((resolve) => { release = resolve; });
     const agents = spyOn(useAgentsStore.getState(), "loadAgents").mockImplementation(async () => { await pending; return true; });
@@ -77,6 +79,7 @@ describe("catalogRefreshTasks", () => {
       const reloads = new Map([
         ["config" as const, ["/workspace/event"]],
         ["agent" as const, ["/workspace/event"]],
+        ["command" as const, ["/workspace/event", "/workspace/command-only"]],
         ["provider" as const, []],
         ["model" as const, []],
         ["skill" as const, []],
@@ -85,19 +88,24 @@ describe("catalogRefreshTasks", () => {
       const triggers = Array.from({ length: 8 }, () => refreshStoresForCatalogKinds(reloads));
       expect(agents.mock.calls.map(([directory]) => directory).sort()).toEqual(["/workspace/ambient", "/workspace/event"]);
       expect(configAgents).toHaveBeenCalledTimes(2);
-      for (const request of [providers, commands, skills, catalog, mcp, plugins]) expect(request).toHaveBeenCalledTimes(1);
+      expect(commands.mock.calls.map(([directory]) => directory).sort()).toEqual(["/workspace/ambient", "/workspace/command-only", "/workspace/event"]);
+      expect(providers.mock.calls.map(([options]) => options?.directory).sort()).toEqual(["/workspace/ambient", "/workspace/event"]);
+      for (const request of [skills, catalog, mcp, plugins]) expect(request).toHaveBeenCalledTimes(1);
       expect(metadata).not.toHaveBeenCalled();
       release();
       await Promise.all(triggers);
-      for (const request of [providers, commands, skills, catalog, mcp, plugins]) expect(request).toHaveBeenCalledTimes(2);
+      expect(providers).toHaveBeenCalledTimes(4);
+      for (const request of [skills, catalog, mcp, plugins]) expect(request).toHaveBeenCalledTimes(2);
+      expect(commands).toHaveBeenCalledTimes(6);
       expect(agents).toHaveBeenCalledTimes(4);
       // Settled work is removed: a later file edit still refreshes the lists.
       await refreshStoresForCatalogKinds(reloads);
-      expect(providers).toHaveBeenCalledTimes(3);
+      expect(providers).toHaveBeenCalledTimes(6);
     } finally {
       release();
       for (const spy of spies) spy.mockRestore();
       useProjectsStore.setState(previousProjects);
+      useConfigStore.setState(previousConfig);
     }
   });
 
@@ -120,7 +128,7 @@ describe("catalogRefreshTasks", () => {
 
   test("a credential change tells an open provider page to read its accounts again", async () => {
     let notified = 0;
-    const unsubscribe = subscribeCredentialChanges(() => { notified += 1; });
+    const unsubscribe = subscribeCredentialChanges(() => { notified += 1; }, null);
     try {
       await catalogRefreshTasks("credential")[3]();
     } finally {

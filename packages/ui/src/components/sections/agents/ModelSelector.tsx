@@ -18,6 +18,8 @@ import { dropdownTriggerVariants } from '@/components/ui/dropdown-trigger';
 import { selectProvidersForDirectory, useConfigStore } from '@/stores/useConfigStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { ModelPickerList, type ModelPickerEntry, type ModelPickerProvider } from '@/components/model-picker/ModelPickerList';
+import { useSpaceCatalogDirectory } from '@/lib/spaces/useSpaceCatalogDirectory';
+import { useSpaceModelPicker } from '@/lib/spaces/useSpaceModelPicker';
 import { AUTO_MODEL_ID, AUTO_PROVIDER_ID, isAutoModel } from '@/lib/routing/autoModel';
 import { selectAutoReady, useRoutingStore } from '@/stores/useRoutingStore';
 
@@ -32,25 +34,10 @@ interface ModelSelectorProps {
     tooltipsEnabled?: boolean;
     dropdownPortalToBody?: boolean;
     directory?: string;
-    /**
-     * Drop the model name and the chevron, leaving the provider logo. For
-     * headers that run out of room before they run out of controls — the logo
-     * still says which provider is answering, which is the part a glance is
-     * usually after.
-     */
+    spaceDirectory?: string | null;
     compact?: boolean;
-    /**
-     * Offer the Auto routing row on top, as the composer does. Only for
-     * selections that are later sent through the routing rewrite (Session
-     * Defaults); a routing category or fallback must name a real model.
-     */
     offerAuto?: boolean;
-    /**
-     * Tooltip on the desktop trigger alone, so it never catches focus or the
-     * mouse from the list.
-     */
     triggerTooltip?: string;
-    /** Shown but closed, so a row can keep its layout while its option is off. */
     disabled?: boolean;
 }
 
@@ -66,11 +53,16 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     dropdownPortalToBody = false,
     compact = false,
     directory,
+    spaceDirectory,
     offerAuto = false,
     triggerTooltip,
     disabled = false,
 }) => {
     const { t } = useI18n();
+    const spaceTarget = React.useMemo(() => {
+        const chosenFor = spaceDirectory ?? directory ?? null;
+        return chosenFor ? { requestId: null, directory: chosenFor } : null;
+    }, [directory, spaceDirectory]);
     const autoReady = useRoutingStore(selectAutoReady);
     const autoEntry = React.useMemo<ModelPickerEntry | null>(() => (offerAuto && autoReady
         ? { providerID: AUTO_PROVIDER_ID, modelID: AUTO_MODEL_ID, model: { id: AUTO_MODEL_ID, name: t('chat.modelControls.autoModel') } }
@@ -78,8 +70,9 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     const isAutoSelected = isAutoModel(providerId, modelId);
     const { isReady, isUnavailable } = useOpenCodeReadiness('models', directory);
     const canOpen = isReady && !disabled;
+    const spaceCatalog = useSpaceCatalogDirectory(spaceDirectory);
     const providers: ModelPickerProvider[] = useConfigStore((state) => directory === undefined
-        ? state.providers : selectProvidersForDirectory(state, directory));
+        ? selectProvidersForDirectory(state, spaceCatalog) : selectProvidersForDirectory(state, directory));
     const loadProviders = useConfigStore((state) => state.loadProviders);
     React.useEffect(() => {
         if (directory !== undefined) void loadProviders({ directory });
@@ -90,7 +83,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
     const isFavoriteModel = useUIStore((state) => state.isFavoriteModel);
     const addRecentModel = useUIStore((state) => state.addRecentModel);
     const providerOrder = useUIStore((state) => state.providerOrder);
-    const { favoriteModelsList, recentModelsList } = useModelLists(directory);
+    const { favoriteModelsList, recentModelsList } = useModelLists(directory ?? spaceCatalog);
     const { isMobile: deviceIsMobile } = useDeviceInfo();
     const isActuallyMobile = isMobile || deviceIsMobile;
 
@@ -104,9 +97,10 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
         setSearchQuery('');
     }, []);
 
+    const space = useSpaceModelPicker(spaceTarget, providers, isActuallyMobile ? setIsMobilePanelOpen : setIsDropdownOpen);
+
     const handleSelect = React.useCallback((entry: ModelPickerEntry) => {
         onChange(entry.providerID, entry.modelID);
-        // Auto has its own pinned row; it does not belong in Recent.
         if (!isAutoModel(entry.providerID, entry.modelID)) addRecentModel(entry.providerID, entry.modelID);
         closePicker();
     }, [addRecentModel, closePicker, onChange]);
@@ -137,7 +131,6 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
 
     const selectedModel = providerId && modelId ? { providerID: providerId, modelID: modelId } : null;
     const displayReady = isReady || Boolean(selectedModel);
-    // Show the model's display name (as in the picker list), not the raw provider/model id.
     const triggerLabel = React.useMemo(() => {
         if (!providerId || !modelId) {
             return placeholder || t('settings.agents.modelSelector.notSelected');
@@ -163,6 +156,7 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
             hiddenModels={hiddenModels}
             allowedProviderIds={allowedProviderIds}
             isModelAllowed={isModelAllowed}
+            space={space}
             includeNotSelected
             onSelectNone={handleSelectNone}
             onEscape={closePicker}
@@ -229,8 +223,6 @@ export const ModelSelector: React.FC<ModelSelectorProps> = ({
                     !canOpen && 'opacity-60 cursor-not-allowed',
                     className,
                 )}
-                // The name is gone from the trigger, so it has to stay
-                // reachable somewhere.
                 title={compact && displayReady && !triggerTooltip ? triggerLabel : undefined}
             >
                 {!displayReady ? (

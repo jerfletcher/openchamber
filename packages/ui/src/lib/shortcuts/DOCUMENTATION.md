@@ -53,7 +53,7 @@ Find by key on the Shortcuts page records chords the same way, with Backspace as
 
 # Native menu shortcuts
 
-Entries with `nativeMenu` are keys of the desktop app menu. They have no renderer handler: `useMenuActions` sends their effective combos to the main process, which rebuilds the menu with those accelerators (`packages/electron/menu-shortcuts.mjs`). `isShortcutAvailable` keeps them out of Settings, Help and conflict checks where that menu item does not exist, and the recorder limits them to one chord the menu can show: a mapped key with a modifier other than Shift. `abort_run` stays out of Settings because stopping is a double Escape from the composer, a gesture the recorder cannot express.
+Entries with `nativeMenu` are keys of the desktop app menu. `useMenuActions` sends their effective combos to the main process, which rebuilds the menu with those accelerators (`packages/electron/menu-shortcuts.mjs`). In the web app, the terminal capture route also handles the three zoom bindings while the terminal has focus; elsewhere browser zoom remains unchanged. Desktop, VS Code and the mobile surfaces (hosted mobile and the Capacitor app) do not use that route for zoom. `isShortcutAvailable` keeps native menu keys out of Settings, Help and conflict checks where that menu item does not exist, and the recorder limits them to one chord the menu can show: a mapped key with a modifier other than Shift. `abort_run` stays out of Settings because stopping is a double Escape from the composer, a gesture the recorder cannot express.
 
 ### Why the menu keeps the accelerators and not the renderer
 
@@ -61,7 +61,7 @@ A renderer handler would stop working wherever the page does not get the key: a 
 
 # Dispatching
 
-`ShortcutDispatcher` is DOM-independent. It invokes only currently registered handlers, resolves bindings when dispatching, and holds an active sequence prefix for 3000ms. The application keydown route clears that prefix on window blur and consumes Escape only when it cancels a prefix. A handler returns `false` to leave the completed binding unconsumed. When a sequence prefix is active, only its second key is dispatched during window capture so local input handlers cannot block it. The second key also matches with the leader's modifiers still held, so Ctrl+K then Ctrl+B completes `mod+k b` while an exact second chord wins; an exact second key remains eligible during IME composition and is prevented when handled, while an IME mismatch clears the prefix and retains normal composition input. Normal application shortcuts remain window-bubble listeners.
+`ShortcutDispatcher` is DOM-independent. It invokes only currently registered handlers, resolves bindings when dispatching, and holds an active sequence prefix for 3000ms. The application keydown route clears that prefix on window blur and consumes Escape only when it cancels a prefix. A handler returns `false` to leave the completed binding unconsumed. When a sequence prefix is active, only its second key is dispatched during window capture so local input handlers cannot block it. A plain second key typed in another editable cancels the prefix, unless the field the leader was pressed in is gone (a closing palette gave focus back). Pressing an editable with the pointer cancels it too. The second key also matches with the leader's modifiers still held, so Ctrl+K then Ctrl+B completes `mod+k b` while an exact second chord wins; an exact second key remains eligible during IME composition and is prevented when handled, while an IME mismatch clears the prefix and retains normal composition input. Normal application shortcuts remain window-bubble listeners.
 
 `shortcutRegistry.suspend()` disables all application handlers and returns an idempotent cleanup. Suspensions nest; handlers resume only after the final cleanup. Starting or ending a suspension invalidates every pending global dispatcher prefix, so stale second keys and Escape cannot consume it. Interaction surfaces that need shortcuts while suspended must own a dedicated scoped dispatcher and process it before the global route.
 
@@ -94,3 +94,9 @@ Local key handling remains appropriate for text editing, IME composition, menu a
 - Avoid exact default-binding conflicts. When runtime-exclusive commands intentionally share one, document the reason beside both declarations and make each handler return `false` outside its runtime.
 - Persist bindings as normalized strings. Never change the `Record<string, string>` override contract without an explicit migration and compatibility tests.
 - Preserve the two-chord maximum in configuration, recording UI, parsing, conflict detection, display, and tests.
+
+## Invariants
+
+- A leader remembers its arming target so an unmodified completion in another editable field remains typing. Normalized bindings cache by string because every keydown resolves the same small profile repeatedly.
+- Layout-produced Latin keys retain their meaning, while non-Latin layouts and macOS Option substitutions match physical codes; digit selection uses the physical code as well. Browser-risk checks include every chord because a dangerous second chord can close the tab too.
+- Default bindings avoid browser reload, Open File and macOS screenshot chords, and the composer's Control+B movement. Bare digit prefixes participate in conflict checks as prefixes; native-menu accelerators remain single chords with a non-Shift modifier.

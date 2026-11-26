@@ -1,16 +1,5 @@
-/**
- * Keeps the marks extensions put on sidebar rows current while the app runs.
- *
- * A service sets a mark on the server, which announces the change on the
- * control stream with no payload; this hook reads the marks again then, and
- * when the stream reconnects, since a change made during the gap was not
- * announced to this client. It also reads when the catalog starts showing an
- * extension that may put marks, and asks the server nothing while there is
- * none. The store joins every answer with the catalog and the folders this
- * client knows, so a mark of an extension that was paused or lost its
- * approval is gone with the catalog change, before any read.
- */
 
+import { listIntegrateCheckouts } from '@/lib/worktrees/integrateCheckouts';
 import React from 'react';
 
 import { reloadGuestMarks, stopGuestMarksRetry } from '@/lib/guests/load-marks';
@@ -22,7 +11,6 @@ import { normalizePath } from '@/lib/pathNormalization';
 import { useProjectsStore } from '@/stores/useProjectsStore';
 import { useSessionUIStore } from '@/sync/session-ui-store';
 
-/** Project roots and worktree paths, each with its project: where a branch target's folder is looked up. */
 const knownPlaces = (): GuestMarkPlace[] => {
   const places: GuestMarkPlace[] = [];
   const projectByPath = new Map<string, string>();
@@ -40,12 +28,15 @@ const knownPlaces = (): GuestMarkPlace[] => {
       if (path && !projectByPath.has(path)) places.push({ path, projectId });
     }
   }
+  for (const checkout of listIntegrateCheckouts()) {
+    const projectId = checkout.projectPaths.flatMap((path) => projectByPath.get(path) ?? [])[0];
+    if (projectId) places.push({ path: checkout.path, projectId });
+  }
   return places;
 };
 
 export const useGuestMarksSync = (): void => {
   React.useEffect(() => {
-    // Which extensions of which server may show marks; a read follows each change of it.
     let showing = '';
     const followCatalog = (): void => {
       const { guests, runtimeKey } = useGuestsStore.getState();

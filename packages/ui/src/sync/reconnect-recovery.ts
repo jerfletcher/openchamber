@@ -21,7 +21,6 @@ type ReconnectCandidateOptions = {
 
 type BootstrapSessionRevisionOptions = {
   baselineRevision: number
-  /** Pages add coverage; only the completed list may remove absent sessions. */
   partial?: boolean
   eventRevision?: Record<string, number>
   deletedRevision?: Record<string, number>
@@ -100,8 +99,6 @@ export function mergeBootstrapSessions(
     .map((id) => sessionsById.get(id))
     .filter((session): session is Session => Boolean(session))
     .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
-    // An unchanged record keeps its reference, so rows that did not change
-    // do not re-render when the authoritative list replaces the cached one.
     .map((session) => {
       const existing = existingById.get(session.id)
       return existing && isSameSession(existing, session) ? existing : session
@@ -117,6 +114,20 @@ export function mergeBootstrapSessions(
   return { sessions, rootCount }
 }
 
+export function getReconnectRequestSessionIds(
+  state: { permission: Record<string, unknown[]>; form: Record<string, unknown[]> },
+  candidateSessionIds: readonly string[],
+  indexedSessionIds: readonly string[],
+): string[] {
+  const ids = new Set([...candidateSessionIds, ...indexedSessionIds])
+  for (const requestsBySession of [state.permission, state.form]) {
+    for (const [sessionId, requests] of Object.entries(requestsBySession)) {
+      if (requests.length > 0) ids.add(sessionId)
+    }
+  }
+  return [...ids]
+}
+
 export function getReconnectCandidateSessionIds(state: ReconnectMaterializationState, options?: ReconnectCandidateOptions) {
   const ids = new Set<string>()
 
@@ -125,9 +136,6 @@ export function getReconnectCandidateSessionIds(state: ReconnectMaterializationS
   }
 
   for (const [sessionId, messages] of Object.entries(state.message ?? {})) {
-    // Plumbing roles (synthetic, skill, shell, switches) can trail a still
-    // streaming assistant message, so recovery looks at the last
-    // conversation message rather than the last record.
     const lastMessage = getLastConversationMessage(messages)
     if (isIncompleteAssistantTurn(lastMessage)) {
       ids.add(sessionId)
@@ -152,8 +160,6 @@ export function getReconnectCandidateSessionIds(state: ReconnectMaterializationS
     }
   }
 
-  // Parentage in cached history is not live work. Recover ancestors only when
-  // their child is active, viewed, or has an unresolved materialized snapshot.
   if (ids.size > 0) {
     const sessionsById = new Map(state.session.map((session) => [session.id, session]))
     const pending = [...ids]

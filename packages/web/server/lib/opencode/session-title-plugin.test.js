@@ -12,8 +12,21 @@ afterEach(async () => {
   await Promise.all(temporaryDirectories.splice(0).map((directory) => fs.rm(directory, { recursive: true, force: true })));
 });
 
+const free = [{ input: 0, output: 0, cache: { read: 0, write: 0 } }];
+// OpenCode's catalog as plugins read it: free Zen models are priced at zero,
+// and not all of them carry a -free suffix.
+const catalog = [
+  { providerID: 'opencode', id: 'glm-5.3-flash-free', cost: free },
+  { providerID: 'opencode', id: 'big-pickle', cost: free },
+  { providerID: 'opencode', id: 'paid-model', cost: [{ input: 3, output: 15, cache: { read: 0.3, write: 3.75 } }] },
+  // Free up to a context size, paid above it: not free.
+  { providerID: 'opencode', id: 'tiered-model', cost: [...free, { tier: { type: 'context', size: 200000 }, input: 3, output: 15, cache: { read: 0.3, write: 3.75 } }] },
+  { providerID: 'other', id: 'glm-5.3-flash-free', cost: free },
+];
+const modelCatalog = { list: async () => ({ location: { directory: '/repo' }, data: catalog }) };
+
 /** Load the written plugin and register it against a fake plugin context. */
-const loadPlugin = async (sessionContext = async () => []) => {
+const loadPlugin = async (sessionContext = async () => [], model = modelCatalog) => {
   const instanceDir = await fs.mkdtemp(path.join(os.tmpdir(), 'openchamber-session-title-'));
   temporaryDirectories.push(instanceDir);
   const directory = await materializeSessionTitlePlugin({ fsPromises: fs, path, instanceDir });
@@ -21,6 +34,7 @@ const loadPlugin = async (sessionContext = async () => []) => {
   const transforms = [];
   const hooks = new Map();
   await plugin.setup({
+    model,
     agent: { transform: async (callback) => { transforms.push(callback); } },
     session: {
       hook: async (name, callback) => { hooks.set(name, callback); },
@@ -31,14 +45,14 @@ const loadPlugin = async (sessionContext = async () => []) => {
 };
 
 /** Load the written plugin and run its agent transform over the given agents. */
-const runTransform = async (agents) => {
-  const { directory, plugin, transforms } = await loadPlugin();
+const runTransform = async (agents, model) => {
+  const { directory, plugin, transforms, hooks } = await loadPlugin(undefined, model);
   const editor = {
     get: (id) => agents.get(id),
     update: (id, update) => update(agents.get(id)),
   };
   for (const transform of transforms) transform(editor);
-  return { directory, plugin };
+  return { directory, plugin, hooks };
 };
 
 describe('session title plugin', () => {
@@ -86,6 +100,9 @@ describe('session title plugin', () => {
     // example language and drifts on a Chinese first message, so the prompt pins
     // the output language and carries an example in another language.
     expect(title.system).toContain('检查项目的 git 记录和未完成的计划 → 项目进度检查');
+    // An English first message of one word and a path took the language of
+    // that Chinese example, so the prompt says when a path's words count.
+    expect(title.system).toContain('Words inside a path or file name count only when the message has no other words');
   });
 
   it('does nothing when there is no title agent', async () => {
@@ -113,6 +130,104 @@ describe('session title plugin', () => {
       return draft;
     };
     const comment = { type: 'synthetic', text: 'Comment on src/relay.ts:12\nThe reconnect backoff never resets' };
+
+    it('keeps OpenCode free-model titles working while retaining the title style', async () => {
+      const title = { id: 'title', system: 'OpenCode title prompt' };
+      const { hooks } = await runTransform(new Map([['title', title]]));
+      // The gateway answers no title to a replaced prompt on any free Zen model,
+      // big-pickle included, which has no -free suffix.
+      for (const id of ['glm-5.3-flash-free', 'big-pickle']) {
+        const draft = titleDraft('Explain what an API endpoint is.');
+        draft.model = { providerID: 'opencode', id, variant: 'default' };
+        draft.system = [{ type: 'text', text: title.system }];
+
+        await hooks.get('title')(draft);
+
+        expect(draft.system[0].text).toBe('OpenCode title prompt');
+        expect(draft.messages[0].content[1].text).toContain('labels a folder');
+      }
+    });
+
+    it('goes by the -free suffix when the catalog has no price for the model', async () => {
+      const offline = { list: async () => { throw new Error('offline'); } };
+      // A response with no body, as a client gives when the read returns nothing.
+      const missing = { list: async () => null };
+      for (const [catalogSource, id, swapped] of [
+        [offline, 'big-pickle', false],
+        [offline, 'deepseek-v4.1-flash-free', true],
+        [missing, 'big-pickle', false],
+        [missing, 'deepseek-v4.1-flash-free', true],
+        [modelCatalog, 'unlisted-free', true],
+        [modelCatalog, 'unlisted-model', false],
+      ]) {
+        const title = { id: 'title', system: 'OpenCode title prompt' };
+        const { hooks } = await runTransform(new Map([['title', title]]), catalogSource);
+        const draft = titleDraft('Explain what an API endpoint is.');
+        draft.model = { providerID: 'opencode', id };
+        draft.system = [{ type: 'text', text: title.system }];
+
+        await hooks.get('title')(draft);
+
+        expect(draft.system[0].text).toBe(swapped ? 'OpenCode title prompt' : title.system);
+        expect(draft.messages[0].content).toHaveLength(swapped ? 2 : 1);
+      }
+    });
+
+    it('keeps user title overrides and other models unchanged', async () => {
+      const title = { id: 'title', system: 'OpenCode title prompt' };
+      const { hooks } = await runTransform(new Map([['title', title]]));
+      for (const [model, system] of [
+        [{ providerID: 'opencode', id: 'glm-5.3-flash-free' }, 'user title prompt'],
+        [{ providerID: 'opencode', id: 'paid-model' }, title.system],
+        [{ providerID: 'opencode', id: 'tiered-model' }, title.system],
+        [{ providerID: 'other', id: 'glm-5.3-flash-free' }, title.system],
+      ]) {
+        const draft = titleDraft('Explain what an API endpoint is.');
+        draft.model = model;
+        draft.system = [{ type: 'text', text: system }];
+        await hooks.get('title')(draft);
+        expect(draft.system[0].text).toBe(system);
+        expect(draft.messages[0].content).toHaveLength(1);
+      }
+    });
+
+    it('keeps attached context on a short free-model prompt', async () => {
+      const { transforms, hooks } = await loadPlugin(async () => [comment, { type: 'user', text: 'fix this' }]);
+      const title = { id: 'title', system: 'OpenCode title prompt' };
+      for (const transform of transforms) transform({ get: () => title, update: (_id, update) => update(title) });
+      const draft = titleDraft('fix this');
+      draft.model = { providerID: 'opencode', id: 'glm-5.3-flash-free' };
+      draft.system = [{ type: 'text', text: title.system }];
+
+      await hooks.get('title')(draft);
+
+      expect(draft.system[0].text).toBe('OpenCode title prompt');
+      expect(draft.messages[0].content[1].text).toContain('labels a folder');
+      expect(draft.messages[0].content[2].text).toContain('The reconnect backoff never resets');
+    });
+
+    it('keeps the original prompt scoped to each plugin setup', async () => {
+      const { plugin } = await loadPlugin();
+      const setup = async (original) => {
+        let titleHook;
+        const title = { id: 'title', system: original };
+        await plugin.setup({
+          model: modelCatalog,
+          agent: { transform: async (transform) => transform({ get: () => title, update: (_id, update) => update(title) }) },
+          session: { hook: async (_name, hook) => { titleHook = hook; }, context: async () => [] },
+        });
+        return { title, titleHook };
+      };
+      const a = await setup('original A');
+      const b = await setup('original B');
+      for (const [instance, expected] of [[a, 'original A'], [b, 'original B']]) {
+        const draft = titleDraft('Explain what an API endpoint is.');
+        draft.model = { providerID: 'opencode', id: 'glm-5.3-flash-free' };
+        draft.system = [{ type: 'text', text: instance.title.system }];
+        await instance.titleHook(draft);
+        expect(draft.system[0].text).toBe(expected);
+      }
+    });
 
     it('adds the context attached to an empty first message', async () => {
       const draft = await runHook([comment, { type: 'user', text: '' }], '');

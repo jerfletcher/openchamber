@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react';
 import { Icon } from '@/components/icon/Icon';
 import { ModelSelector } from '@/components/sections/agents/ModelSelector';
+import { toast } from '@/components/ui';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useCallableModelProviders } from '@/hooks/useCallableModelProviders';
@@ -15,30 +16,24 @@ interface WalkthroughBlockerProps {
   requiredChars?: number;
   availableChars?: number;
   onRetry: () => void;
+  onModelSaved: () => void;
 }
 
 const modelLabel = (model?: WalkthroughModel) =>
   model ? `${model.providerID}/${model.modelID}` : '';
 
-/**
- * A refusal the user can act on. Both blocking reasons come down to "this small
- * model cannot do this job", so the remedy — pick a different one — is offered
- * in place rather than sending the user to Settings to guess.
- */
 export const WalkthroughBlocker = ({
   reason,
   model,
   requiredChars,
   availableChars,
   onRetry,
+  onModelSaved,
 }: WalkthroughBlockerProps) => {
   const { t } = useI18n();
   const modelsMetadata = useConfigStore((state) => state.modelsMetadata);
   const [saving, setSaving] = useState(false);
 
-  // Every one of these means "this small model cannot do this job", so the
-  // remedy is the same: choose a different one, here, without a detour through
-  // Settings.
   const canChooseModel = reason === 'context-too-small'
     || reason === 'structured-output-unsupported'
     || reason === 'output-exhausted';
@@ -50,22 +45,18 @@ export const WalkthroughBlocker = ({
       const value = `${providerId}/${modelId}`;
       setSaving(true);
       try {
-        // Scoped to this feature: fixing the walkthrough must not quietly
-        // change the model used for commit messages and recaps.
-        // A level saved for the previous model does not carry over.
-        await updateDesktopSettings({ walkthroughModelOverride: value, walkthroughModelVariant: '' });
-        onRetry();
+        const { ok } = await updateDesktopSettings({ walkthroughModelOverride: value, walkthroughModelVariant: '' });
+        if (ok) onModelSaved();
+        else toast.error(t('settings.common.status.saveFailed'));
       } catch (error) {
         console.warn('Failed to save small model override:', error);
       } finally {
         setSaving(false);
       }
     },
-    [onRetry, saving]
+    [onModelSaved, saving, t]
   );
 
-  // Offering a model the catalog already says cannot do this would just move
-  // the same refusal one click later.
   const isStructuredOutputCapable = useCallback(
     (providerId: string, modelId: string) =>
       modelsMetadata.get(`${providerId}/${modelId}`)?.structured_output !== false,
@@ -85,11 +76,12 @@ export const WalkthroughBlocker = ({
         : t('walkthrough.blocked.outputExhausted.descriptionUnknownModel');
     }
     if (reason === 'structured-output-unsupported') {
-      // Naming the model that was actually tried is the whole point of this
-      // screen; the unnamed variant is a defensive fallback, not the norm.
       return label
         ? t('walkthrough.blocked.structuredOutput.description', { model: label })
         : t('walkthrough.blocked.structuredOutput.descriptionUnknownModel');
+    }
+    if (label && requiredChars === undefined) {
+      return t('walkthrough.blocked.contextTooSmall.descriptionRefused', { model: label });
     }
     const required = Math.ceil((requiredChars ?? 0) / 1000);
     const available = Math.ceil((availableChars ?? 0) / 1000);
@@ -135,8 +127,6 @@ export const WalkthroughBlocker = ({
         </div>
       )}
 
-      {/* Retry is the whole remedy once the server is updated, so it stays in
-          reach rather than sending the user back through the panel header. */}
       {(reason === 'empty-diff' || reason === 'only-generated' || reason === 'server-unsupported') && (
         <Tooltip>
           <TooltipTrigger asChild>

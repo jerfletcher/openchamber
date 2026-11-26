@@ -167,6 +167,111 @@ printf '4321\\n'`);
     expect(await fsp.readFile(path.join(tempDir, 'askpass.ps1'), 'utf8')).toContain('OPENCHAMBER_SSH_ASKPASS_VALUE');
   });
 
+  const runPosixAskpass = async (prompt, extraEnv = {}, extraBins = {}) => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-ssh-askpass-test-'));
+    tempDirs.push(tempDir);
+    const binDir = path.join(tempDir, 'bin');
+    await fsp.mkdir(binDir);
+    // A fake zenity that answers with the arguments it was given.
+    await fsp.writeFile(
+      path.join(binDir, 'zenity'),
+      '#!/bin/sh\nprintf "zenity:%s\\n" "$*"\nif [ -n "$ZENITY_PRINT_DISPLAY" ]; then printf "display=%s\\n" "${DISPLAY-<unset>}"; fi\n',
+      { mode: 0o755 },
+    );
+    for (const [name, content] of Object.entries(extraBins)) {
+      await fsp.writeFile(path.join(binDir, name), content, { mode: 0o755 });
+    }
+    const manager = new ElectronSshManager({
+      settingsFilePath: path.join(tempDir, 'settings.json'),
+      appVersion: '0.0.0-test',
+      emit: () => undefined,
+      platform: 'linux',
+    });
+    const { askpassPath } = await manager.writeAskpassFiles(tempDir);
+    return execFileSync(askpassPath, [prompt], {
+      encoding: 'utf8',
+      timeout: 5000,
+      env: { PATH: `${binDir}:/usr/bin:/bin`, ...extraEnv },
+    });
+  };
+
+  test.skipIf(process.platform !== 'linux')('answers a password prompt with the stored SSH password', async () => {
+    const output = await runPosixAskpass("user@example.test's password: ", { OPENCHAMBER_SSH_ASKPASS_VALUE: 'secret-value' });
+    expect(output).toBe('secret-value\n');
+  });
+
+  test.skipIf(process.platform !== 'linux')('asks for a one-time code in a dialog on Linux instead of sending the stored password', async () => {
+    for (const prompt of ['Verification code: ', 'One-time password (OATH) for `user\': ', 'Passcode or option (1-3): ']) {
+      const output = await runPosixAskpass(prompt, { OPENCHAMBER_SSH_ASKPASS_VALUE: 'secret-value', DISPLAY: ':0' });
+      expect(output).not.toContain('secret-value');
+      expect(output).toStartWith('zenity:');
+      expect(output).toContain('--hide-text');
+      expect(output).toContain(prompt.trim());
+    }
+  });
+
+  test.skipIf(process.platform !== 'linux')('prefers the user SSH_ASKPASS program on Linux', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-ssh-askpass-user-'));
+    tempDirs.push(tempDir);
+    const userAskpass = path.join(tempDir, 'user-askpass');
+    await fsp.writeFile(userAskpass, '#!/bin/sh\nprintf "user:%s\\n" "$1"\n', { mode: 0o755 });
+    const output = await runPosixAskpass('Verification code: ', { OPENCHAMBER_SSH_ASKPASS_FALLBACK: userAskpass, DISPLAY: ':0' });
+    expect(output).toBe('user:Verification code: \n');
+  });
+
+  test.skipIf(process.platform !== 'linux')('finds a user SSH_ASKPASS given by name on PATH', async () => {
+    const output = await runPosixAskpass('Verification code: ', { OPENCHAMBER_SSH_ASKPASS_FALLBACK: 'user-askpass', DISPLAY: ':0' }, {
+      'user-askpass': '#!/bin/sh\nprintf "user:%s\\n" "$1"\n',
+    });
+    expect(output).toBe('user:Verification code: \n');
+  });
+
+  test.skipIf(process.platform !== 'linux')('hides the DISPLAY placeholder from the dialog on Wayland', async () => {
+    const output = await runPosixAskpass('Verification code: ', {
+      DISPLAY: '1',
+      WAYLAND_DISPLAY: 'wayland-0',
+      ZENITY_PRINT_DISPLAY: '1',
+    });
+    expect(output).toStartWith('zenity:');
+    expect(output).toContain('display=<unset>');
+  });
+
+  test.skipIf(process.platform !== 'linux')('opens no dialog on Linux without a graphical session', async () => {
+    const output = await runPosixAskpass('Verification code: ', { DISPLAY: '1' });
+    expect(output).toBe('\n');
+  });
+
+  test('keeps the real DISPLAY and passes the user SSH_ASKPASS on', () => {
+    const manager = new ElectronSshManager({
+      settingsFilePath: path.join(os.tmpdir(), 'unused-settings.json'),
+      appVersion: '0.0.0-test',
+      emit: () => undefined,
+      platform: 'linux',
+    });
+    const parsed = { destination: 'user@example.test', args: [] };
+    manager.sshAuth.set(parsed, { askpassPath: '/tmp/oc/askpass.sh', sshPassword: null, children: new Set() });
+    const previous = { DISPLAY: process.env.DISPLAY, SSH_ASKPASS: process.env.SSH_ASKPASS };
+    try {
+      process.env.DISPLAY = ':1';
+      process.env.SSH_ASKPASS = '/usr/bin/ksshaskpass';
+      const env = manager.authEnvironment(parsed);
+      expect(env.DISPLAY).toBe(':1');
+      expect(env.SSH_ASKPASS).toBe('/tmp/oc/askpass.sh');
+      expect(env.OPENCHAMBER_SSH_ASKPASS_FALLBACK).toBe('/usr/bin/ksshaskpass');
+
+      delete process.env.DISPLAY;
+      delete process.env.SSH_ASKPASS;
+      const bare = manager.authEnvironment(parsed);
+      expect(bare.DISPLAY).toBe('1');
+      expect(bare.OPENCHAMBER_SSH_ASKPASS_FALLBACK).toBeUndefined();
+    } finally {
+      for (const [key, value] of Object.entries(previous)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   test('runs each Windows port forward as an independent hidden SSH process', async () => {
     const calls = [];
     const manager = new ElectronSshManager({
@@ -440,6 +545,17 @@ printf '4321\\n'`);
     });
     expect(settings.desktopHosts).toEqual([{ id: 'ssh-1', label: 'SSH Host', url: localUrl, apiUrl: localUrl, clientToken: 'ssh-client-token' }]);
   });
+  test('leaves a settings file it cannot read as it was', async () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-ssh-manager-test-'));
+    tempDirs.push(tempDir);
+    const settingsFilePath = path.join(tempDir, 'settings.json');
+    const unreadable = '{"projects":[{"id":"a","path":"/work/a"}],';
+    fs.writeFileSync(settingsFilePath, unreadable);
+    const manager = new ElectronSshManager({ settingsFilePath, appVersion: '0.0.0-test', emit: () => undefined });
+
+    await expect(manager.setInstances({ instances: [] })).rejects.toThrow();
+    expect(fs.readFileSync(settingsFilePath, 'utf8')).toBe(unreadable);
+  }, 15_000);
   test.skipIf(process.platform === 'win32')('finds the newest nvm npm that the SSH login shell does not have on PATH', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-ssh-nvm-'));
     const executable = (file, script) => {
@@ -595,6 +711,113 @@ printf '4321\\n'`);
       '/home/pi/.bun/bin/openchamber',
     )).rejects.toThrow(/opencode CLI is not installed/);
   });
+
+  test('starts a remote OpenChamber with a bundled OpenCode server without requiring opencode CLI', async () => {
+    let started = '';
+    const manager = new ElectronSshManager({
+      settingsFilePath: path.join(os.tmpdir(), 'unused-settings.json'),
+      appVersion: '2.8.0',
+      emit: () => undefined,
+    });
+    manager.resolveRemoteTool = async () => {
+      throw new Error('should not look up opencode CLI when remote package bundles OpenCode');
+    };
+    manager.runRemoteCommand = async (_parsed, _controlPath, script) => {
+      if (script.includes('opencode-server')) return 'bundled\n';
+      started = script;
+      return '4321\n';
+    };
+
+    const port = await manager.startRemoteServerManaged(
+      { destination: 'user@example.test', args: [] },
+      '/tmp/control.sock',
+      { id: 'ssh-1', auth: {}, remoteOpenchamber: { mode: 'managed' } },
+      4321,
+      '/home/pi/.bun/bin/openchamber',
+    );
+
+    expect(port).toBe(4321);
+    expect(started).toContain("'/home/pi/.bun/bin/openchamber' serve");
+    expect(started).not.toContain('OPENCODE_BINARY=');
+  });
+
+  test.skipIf(process.platform === 'win32')('counts on the remote bundled OpenCode server only when the remote Node is 22.16+ or 24+', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-ssh-bundled-node-'));
+    tempDirs.push(home);
+    const binPath = path.join(home, 'web', 'build', 'bin', 'cli.js');
+    const serverDir = path.join(home, 'web', 'build', 'opencode-server');
+    fs.mkdirSync(path.dirname(binPath), { recursive: true });
+    fs.mkdirSync(path.join(serverDir, 'assets'), { recursive: true });
+    fs.writeFileSync(binPath, '');
+    fs.writeFileSync(path.join(serverDir, 'serve.mjs'), '');
+    fs.writeFileSync(path.join(serverDir, 'assets', 'manifest.json'), '{}');
+    const reportVersion = path.join(home, 'report-version.cjs');
+    fs.writeFileSync(reportVersion, `Object.defineProperty(process.versions, "node", { value: process.env.REMOTE_NODE_VERSION });
+process.report.getReport = () => ({ header: { glibcVersionRuntime: '2.39' } });`);
+    const node = execFileSync('node', ['-p', 'process.execPath'], { encoding: 'utf8' }).trim();
+    const manager = new ElectronSshManager({
+      settingsFilePath: path.join(home, 'settings.json'),
+      appVersion: '1.2.3',
+      emit: () => undefined,
+    });
+    const verdicts = {};
+    for (const version of ['22.15.0', '22.16.0', '23.11.1', '24.0.0']) {
+      const env = { HOME: home, PATH: `${path.dirname(node)}:/usr/bin:/bin`, NODE_OPTIONS: `--require ${JSON.stringify(reportVersion)}`, REMOTE_NODE_VERSION: version };
+      manager.runRemoteCommand = async (_parsed, _controlPath, script) =>
+        execFileSync('/bin/sh', ['-c', script], { env, encoding: 'utf8', timeout: 5000 });
+      verdicts[version] = await manager.remoteHasBundledOpenCode({ destination: 'user@example.test', args: [] }, '/unused.sock', binPath);
+    }
+
+    expect(verdicts).toEqual({ '22.15.0': false, '22.16.0': true, '23.11.1': false, '24.0.0': true });
+  });
+
+  test.skipIf(process.platform === 'win32')('starts a Node 23 remote with the OPENCODE_BINARY of its login shell and refuses without one', async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'openchamber-ssh-node23-override-'));
+    tempDirs.push(home);
+    const executable = (file, script) => {
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+    };
+    const override = path.join(home, 'custom dir', 'opencode-cli');
+    const installed = path.join(home, '.opencode', 'bin', 'opencode');
+    const launched = path.join(home, 'launch-opencode');
+    const binPath = path.join(home, 'web', 'build', 'bin', 'openchamber');
+    const serverDir = path.join(home, 'web', 'build', 'opencode-server');
+    executable(override, 'exit 0');
+    executable(binPath, `printf '%s' "$OPENCODE_BINARY" > "$HOME/launch-opencode"; printf '4321\\n'`);
+    fs.mkdirSync(path.join(serverDir, 'assets'), { recursive: true });
+    fs.writeFileSync(path.join(serverDir, 'serve.mjs'), '');
+    fs.writeFileSync(path.join(serverDir, 'assets', 'manifest.json'), '{}');
+    const remoteRuntime = path.join(home, 'remote-runtime.cjs');
+    fs.writeFileSync(remoteRuntime, `Object.defineProperty(process.versions, "node", { value: '23.11.1' });
+process.report.getReport = () => ({ header: { glibcVersionRuntime: '2.39' } });`);
+    const nodeBin = path.join(home, 'node-bin');
+    fs.mkdirSync(nodeBin);
+    fs.symlinkSync(execFileSync('node', ['-p', 'process.execPath'], { encoding: 'utf8' }).trim(), path.join(nodeBin, 'node'));
+    const manager = new ElectronSshManager({
+      settingsFilePath: path.join(home, 'settings.json'),
+      appVersion: '1.2.3',
+      emit: () => undefined,
+    });
+    const start = async (remoteOverride) => {
+      const env = { HOME: home, PATH: `${nodeBin}:/usr/bin:/bin`, NODE_OPTIONS: `--require ${JSON.stringify(remoteRuntime)}`, ...remoteOverride };
+      manager.runRemoteCommand = async (_parsed, _controlPath, script) =>
+        execFileSync('/bin/sh', ['-c', script], { env, encoding: 'utf8', timeout: 5000 });
+      fs.rmSync(launched, { force: true });
+      await manager.startRemoteServerManaged({ destination: 'user@example.test', args: [] }, '/unused.sock', { id: 'ssh-1', auth: {} }, 4321, binPath);
+      return fs.readFileSync(launched, 'utf8');
+    };
+
+    expect(await start({ OPENCODE_BINARY: override })).toBe(override);
+    await expect(start({})).rejects.toThrow(/opencode CLI is not installed/);
+    expect(fs.existsSync(launched)).toBe(false);
+
+    executable(installed, 'exit 0');
+    expect(await start({ OPENCODE_BINARY: override })).toBe(override);
+    // A directory passes a bare `-x`, and `serve` would reject it.
+    expect(await start({ OPENCODE_BINARY: path.dirname(override) })).toBe(installed);
+  });
+
   test('prefers a bun that only exists in the home directory over npm', async () => {
     const commands = [];
     const manager = new ElectronSshManager({

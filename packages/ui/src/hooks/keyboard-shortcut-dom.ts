@@ -32,6 +32,11 @@ export function isEditableEventTarget(target: EventTarget | null): boolean {
 export function canUseDigitShortcut(event: KeyboardEvent): boolean {
   if (isIMECompositionEvent(event)) return false;
   if (!isEditableEventTarget(event.target)) return true;
-  // AltGraph and prefixes without Cmd/Ctrl can produce ordinary text.
   return (event.metaKey || event.ctrlKey) && !event.getModifierState('AltGraph');
+}
+
+export function typesOutsidePrefixField(event: KeyboardEvent, prefixTarget: EventTarget | null): boolean {
+  if (event.ctrlKey || event.metaKey || event.altKey || !isEditableEventTarget(event.target)) return false;
+  if (prefixTarget === event.target) return false;
+  return !(prefixTarget instanceof HTMLElement) || prefixTarget.isConnected;
 }

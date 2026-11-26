@@ -13,8 +13,8 @@ Object.assign(globalThis, {
   localStorage: browser.localStorage, sessionStorage: browser.sessionStorage,
   ...Object.fromEntries(([
     'Window', 'Node', 'Text', 'Element', 'HTMLElement', 'HTMLInputElement', 'HTMLTextAreaElement',
-    'HTMLFormElement', 'Range', 'Selection', 'DocumentFragment', 'Event', 'KeyboardEvent',
-    'MouseEvent', 'FocusEvent', 'InputEvent', 'CustomEvent', 'MutationObserver',
+    'HTMLFormElement', 'Range', 'Selection', 'DocumentFragment', 'Event', 'KeyboardEvent', 'CompositionEvent',
+    'MouseEvent', 'PointerEvent', 'FocusEvent', 'InputEvent', 'CustomEvent', 'MutationObserver',
     'ResizeObserver', 'IntersectionObserver', 'HTMLDivElement', 'HTMLSpanElement',
     'SVGElement', 'ShadowRoot', 'CSSStyleSheet', 'DOMParser',
   ] satisfies (keyof Window)[]).map((name) => [name, browser[name]])),
@@ -80,6 +80,7 @@ const responseFor = (input: RequestInfo | URL) => {
   });
   if (path === '/api/config') return Response.json([]);
   if (path === '/api/project') return Response.json([]);
+  if (path === '/api/plugin') return Response.json({ location, data: [{ source: { type: 'builtin' }, features: {}, state: { status: 'active' } }] });
   if (path.endsWith('/vcs')) return Response.json({ data: { branch: { current: 'main', default: 'main' } } });
   if (path.endsWith('/session-warming')) return Response.json({ revision: 0, enabled: false, minutes: 60, sessions: [] });
   return Response.json({ location, data: [] });
@@ -90,7 +91,6 @@ spyOn(globalThis, 'fetch').mockImplementation(async (input) => responseFor(input
 plugin({
   name: 'composer-mentions-vite-modules',
   setup(build) {
-    build.onLoad({ filter: /markdown-shiki\.worker\.ts\?worker&url$/ }, () => ({ contents: 'export default "";', loader: 'js' }));
     build.onLoad({ filter: /useProviderLogo\.ts$/ }, ({ path }) => {
       const directory = resolve(dirname(path), '../assets/provider-logos');
       const logos = Object.fromEntries(readdirSync(directory).filter((name) => name.endsWith('.svg')).map((name) => [
@@ -256,9 +256,15 @@ const mountComposer = async (run: (composer: Composer) => Promise<void>, options
 
 afterAll(() => browser.close());
 
+// The client decides the model and agent writes inside its send order; the stub does the same and keeps the result on the call.
+const sendResolvingSelection = async (params: Parameters<typeof opencodeClient.sendMessage>[0]) => {
+  Object.assign(params, await params.resolveSelection?.());
+  return 'msg';
+};
+
 test('a picker choice during attachment preparation survives the composer send', async () => {
   const originalFetch = globalThis.fetch;
-  const send = spyOn(opencodeClient, 'sendMessage').mockResolvedValue('msg');
+  const send = spyOn(opencodeClient, 'sendMessage').mockImplementation(sendResolvingSelection);
   // FileReader is browser-owned; the mention read and composer submit stay real.
   const prepare = spyOn(attachmentInput, 'prepareLocalAttachments').mockImplementation(async (file) => [{
     id: 'shot', file, filename: file.name, mimeType: 'image/png', size: file.size,
@@ -302,7 +308,7 @@ test('a picker choice during attachment preparation survives the composer send',
 });
 
 test('the queued row Send preserves the newer remembered effort', async () => {
-  const send = spyOn(opencodeClient, 'sendMessage').mockResolvedValue('msg');
+  const send = spyOn(opencodeClient, 'sendMessage').mockImplementation(sendResolvingSelection);
   const queued = { id: 'queued-effort', content: 'queued low', text: 'queued low', createdAt: 1, sendConfig: { providerID: 'provider', modelID: 'model', variant: 'low' } };
   const take = spyOn(useMessageQueueStore.getState(), 'takeForSend').mockResolvedValue([queued]);
   try {
@@ -376,6 +382,28 @@ test('click completion survives Escape and ordinary text while fresh @ and refer
     await settle();
     expect(view.state.doc.toString()).toBe('@code sk @cod');
     expect(rows().some((row) => row.textContent?.startsWith('@coder'))).toBe(true);
+  });
+});
+
+// #7000: a keyboard that composes the typed word is still composing when a command row's touch pick runs.
+test('a command tapped while the keyboard still composes the typed word replaces it', async () => {
+  await withComposer(async ({ view, type, rows }) => {
+    await type('/summ');
+    view.focus();
+    await act(async () => view.contentDOM.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true })));
+    expect(view.compositionStarted).toBe(true);
+    const row = rows().find((row) => row.textContent?.includes('/summary'));
+    for (const name of ['pointerdown', 'pointerup']) {
+      await act(async () => row!.dispatchEvent(new PointerEvent(name, { pointerType: 'touch', bubbles: true, cancelable: true })));
+    }
+    await settle();
+    expect(view.state.doc.toString()).toBe('/summary ');
+    expect(view.state.selection.main.head).toBe('/summary '.length);
+    expect(rows().length).toBe(0);
+    await act(async () => view.contentDOM.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true })));
+    await settle();
+    await type('arg');
+    expect(view.state.doc.toString()).toBe('/summary arg');
   });
 });
 

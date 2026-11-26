@@ -18,7 +18,6 @@ import { AutocompleteRowDetail } from './composer/ui/AutocompleteRowParts';
 import { useAutocompleteSelectionScroll } from './composer/ui/useAutocompleteSelectionScroll';
 import { useHeightMorph } from '@/lib/motion/useSizeMorph';
 
-// Skills are not here: they have their own `$` picker.
 type CommandSource = 'openchamber' | 'opencode' | 'extension';
 
 export interface CommandInfo {
@@ -32,7 +31,6 @@ export interface CommandInfo {
   isBuiltIn?: boolean;
   isOpenChamber?: boolean;
   scope?: string;
-  /** Name of the extension that contributed the command; shown as its badge. */
   extensionName?: string;
 }
 
@@ -61,9 +59,6 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
   const isMobile = useUIStore((state) => state.isMobile);
   const canUseReviewHandoffFlow = hasSession && !isMobile && !isVSCodeRuntime();
 
-  // Commands belong to the directory the composer sends to — the session's
-  // own directory, or the Chats root for a chat draft — not to the project
-  // the app was on last.
   const effectiveDirectory = useEffectiveDirectory();
   const commandsTarget = useComposerConfigDirectory(effectiveDirectory);
   const baseCommandsWithMetadata = useCommandsStore((s) => selectCommandsForComposer(s, commandsTarget));
@@ -82,10 +77,7 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
   const itemRefs = React.useRef<(HTMLDivElement | null)[]>([]);
   const { listRef, onKeyboardNavigate } = useAutocompleteSelectionScroll(selectedIndex, itemRefs);
   const containerRef = React.useRef<HTMLDivElement | null>(null);
-  // Narrowing as the user types, the box eases into its new height; the
-  // edge it is anchored to stays put.
   useHeightMorph(containerRef);
-  // A caret placement brings its own max-height.
   const mobileMaxHeight = useMobileAutocompleteMaxHeight(containerRef, style?.maxHeight === undefined);
   const ignoreClickRef = React.useRef(false);
   const pointerStartRef = React.useRef<{ x: number; y: number } | null>(null);
@@ -110,7 +102,6 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
   }, [onClose]);
 
   React.useEffect(() => {
-    // Force refresh to get latest project context when mounting
     void refreshCommands();
   }, [refreshCommands]);
 
@@ -120,8 +111,6 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
   );
   const guestCommands = useGuestCommands(reservedCommandNames);
 
-  // The list depends on the registries, not on what is typed: it is built
-  // once per registry change, and only the ranking follows the query.
   const allCommands = React.useMemo<CommandInfo[]>(() => {
     const customCommands: CommandInfo[] = commandsWithMetadata.filter(isCommandOfferedInComposer).map((cmd, index) => ({
       id: `opencode:${cmd.scope ?? 'global'}:${cmd.name}:${cmd.agent ?? ''}:${cmd.model ?? ''}:${index}`,
@@ -131,7 +120,6 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
       agent: cmd.agent ?? undefined,
       model: cmd.model ?? undefined,
       isBuiltIn: cmd.name === 'init' || cmd.name === 'review',
-      // It reaches OpenCode through our managed config, but it is ours.
       isOpenChamber: cmd.name === 'new-extension',
       scope: cmd.scope,
     }));
@@ -141,7 +129,7 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
         ? [{ id: 'openchamber:init', name: 'init', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.initDescription'), isBuiltIn: true }]
         : []
       ),
-      ...(hasSession  // Show when session exists, not when hasMessages
+      ...(hasSession
         ? [
             { id: 'openchamber:undo', name: 'undo', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.undoDescription'), isBuiltIn: true },
             { id: 'openchamber:redo', name: 'redo', source: 'openchamber' as const, description: t('chat.commandAutocomplete.command.redoDescription'), isBuiltIn: true },
@@ -276,10 +264,6 @@ export const CommandAutocomplete = React.forwardRef<CommandAutocompleteHandle, C
                     "flex items-center gap-2 px-2 py-1.5 cursor-pointer rounded-lg typography-ui-label",
                     index === selectedIndex && "bg-interactive-selection"
                   )}
-                  // Block the focus transfer the tap would perform: the textarea
-                  // must stay focused so selecting a command doesn't dismiss the
-                  // soft keyboard (the blur raced the keyboard-hide trigger and
-                  // won against the deferred refocus).
                   onMouseDown={(event) => event.preventDefault()}
                   onPointerDown={(event) => {
                     if (event.pointerType !== 'touch') {

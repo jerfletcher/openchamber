@@ -24,6 +24,7 @@ import {
   getWorktreeBootstrapGateStatus,
   waitForActiveWorktreeBootstrap,
   getBranches,
+  isExistingBranchAvailableLocally,
   getRepositoryRemoteUrls,
   parseRemoteListing,
   getRepositoryRoot,
@@ -42,6 +43,7 @@ import {
   stashPush,
   stashApply,
   listStashes,
+  countStashFiles,
   getWorktrees,
   setWorktreeTaskTitle,
   setWorktreePinned,
@@ -87,9 +89,11 @@ import {
   validateWorktreeCreate,
   parseBranchCreationSource,
   getRangeFiles,
+  refreshRemoteRef,
   inspectContributorCheckoutActions,
   getConflictDetails,
   continueMerge,
+  abortRebase,
   continueRebase,
   merge,
   rebase,
@@ -310,6 +314,14 @@ describe('resolveBaseRefForLog', () => {
     const checkRef = async () => true;
     expect(await resolveBaseRefForLog('   ', checkRef)).toBeUndefined();
   });
+
+  it('keeps boxed and tagged strings outside the primitive-string boundary', async () => {
+    const checkRef = vi.fn(async () => true);
+    const tagged = { [Symbol.toStringTag]: 'String', trim: () => 'main' };
+    expect(await resolveBaseRefForLog(Object('main'), checkRef)).toBeUndefined();
+    expect(await resolveBaseRefForLog(tagged, checkRef)).toBeUndefined();
+    expect(checkRef).not.toHaveBeenCalled();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -387,6 +399,28 @@ describe.runIf(canRunGit())('configureRepositoryTransport', () => {
     runGit(repo, ['config', '--local', 'core.sshCommand', 'ssh -i ~/.ssh/mine']);
     await configureRepositoryTransport(repo, { sshCommand: null });
     expect(sshCommand(repo)).toBe('ssh -i ~/.ssh/mine');
+  });
+});
+
+describe.runIf(canRunGit() && process.platform !== 'win32')('SSH agent lookup', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('launches a gpg agent that leaves no SSH socket once, not for every Git command', async () => {
+    const home = createTempDir();
+    const bin = path.join(home, 'bin');
+    const calls = path.join(home, 'gpgconf-calls');
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, 'gpgconf'), `#!/bin/sh\necho "$*" >> '${calls}'\n[ "$1" = --list-dirs ] && echo '${path.join(home, 'S.gpg-agent.ssh')}'\nexit 0\n`, { mode: 0o755 });
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('PATH', `${bin}${path.delimiter}${process.env.PATH}`);
+    vi.stubEnv('SSH_AUTH_SOCK', undefined);
+    const { tmpDir } = await createTempRepo();
+
+    await getStatus(tmpDir);
+    await getStatus(tmpDir);
+
+    const launches = fs.readFileSync(calls, 'utf8').split('\n').filter((line) => line === '--launch gpg-agent');
+    expect(launches).toHaveLength(1);
   });
 });
 
@@ -1311,6 +1345,32 @@ describe('getStatus', () => {
     await expect(getStatus(repo)).resolves.toMatchObject({ tracking: null, ahead: 1, aheadBase: 'origin/main' });
   });
 
+  it('counts an upstream-less branch from the branch it was made on, as Changes does', async () => {
+    if (!canRunGit()) return;
+
+    const repo = createTempDir();
+    runGit(repo, ['init', '-b', 'main']);
+    runGit(repo, ['config', 'user.email', 'test@example.com']);
+    runGit(repo, ['config', 'user.name', 'Test User']);
+    runGit(repo, ['commit', '--allow-empty', '-m', 'Initial commit']);
+    runGit(repo, ['update-ref', 'refs/remotes/origin/main', 'HEAD']);
+    runGit(repo, ['checkout', '-q', '-b', 'feat/form']);
+    runGit(repo, ['commit', '--allow-empty', '-m', 'Feature work']);
+    runGit(repo, ['commit', '--allow-empty', '-m', 'More feature work']);
+    runGit(repo, ['checkout', '-q', '-b', 'task']);
+    runGit(repo, ['config', 'branch.task.gh-merge-base', 'feat/form']);
+    runGit(repo, ['commit', '--allow-empty', '-m', 'Task work']);
+
+    // The feature branch's own commits are not this branch's unpublished work.
+    await expect(getStatus(repo)).resolves.toMatchObject({ current: 'task', tracking: null, ahead: 1, aheadBase: 'feat/form' });
+
+    // A revision of its own line is no parent: the commit would be lost with the branch.
+    runGit(repo, ['branch', 'scratch', 'HEAD~0']);
+    runGit(repo, ['checkout', '-q', 'scratch']);
+    runGit(repo, ['commit', '--allow-empty', '-m', 'Scratch work']);
+    await expect(getStatus(repo)).resolves.toMatchObject({ current: 'scratch', tracking: null, ahead: 4, aheadBase: 'origin/main' });
+  });
+
   it('falls back to a local main as the base, but never to the branch itself', async () => {
     if (!canRunGit()) return;
 
@@ -1324,8 +1384,8 @@ describe('getStatus', () => {
     runGit(repo, ['worktree', 'add', '-q', linked, 'main']);
     runGit(linked, ['commit', '--allow-empty', '-m', 'Only on main']);
 
-    // No origin: `main` must not be measured against itself.
-    await expect(getStatus(linked)).resolves.toMatchObject({ current: 'main', tracking: null, aheadBase: null });
+    // No origin: `main` is measured against the branch it was made from, never against itself.
+    await expect(getStatus(linked)).resolves.toMatchObject({ current: 'main', tracking: null, ahead: 1, aheadBase: 'trunk' });
 
     runGit(repo, ['checkout', '-q', '-b', 'feature', 'main']);
     await expect(getStatus(repo)).resolves.toMatchObject({ current: 'feature', tracking: null, ahead: 0, aheadBase: 'main' });
@@ -1586,6 +1646,7 @@ describe('getStatus', () => {
     const invocations = path.join(createTempDir(), 'invocations');
     const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
     fs.writeFileSync(path.join(wrapperDirectory, 'git'), `#!/bin/sh
+if [ "$1" = -C ]; then cd "$2" || exit 128; shift 2; fi
 echo "$*" >> "${invocations}"
 exec "${realGit}" "$@"
 `);
@@ -1612,6 +1673,33 @@ exec "${realGit}" "$@"
       'rev-parse --verify --quiet HEAD',
       'status --porcelain -b -u --null -unormal',
     ]);
+  });
+});
+
+describe.runIf(canRunGit())('isExistingBranchAvailableLocally', () => {
+  it('matches exact refs and never fetches a missing tracking ref, even when a local branch shares its short spelling', async () => {
+    const origin = createTempDir();
+    runGit(origin, ['init', '-b', 'main']);
+    runGit(origin, ['config', 'user.email', 'test@example.com']);
+    runGit(origin, ['config', 'user.name', 'Test User']);
+    fs.writeFileSync(path.join(origin, 'README.md'), 'initial\n');
+    runGit(origin, ['add', 'README.md']);
+    runGit(origin, ['commit', '-m', 'Initial commit']);
+    runGit(origin, ['branch', 'topic']);
+    runGit(origin, ['branch', 'fetched']);
+
+    const repo = path.join(createTempDir(), 'clone');
+    runGit(path.dirname(repo), ['clone', '--single-branch', '-b', 'main', origin, repo]);
+    runGit(repo, ['fetch', 'origin', 'fetched:refs/remotes/origin/fetched']);
+    // A local branch whose `git branch -a` spelling collides with the
+    // missing remote-tracking ref origin/topic.
+    runGit(repo, ['branch', 'remotes/origin/topic']);
+
+    expect(await isExistingBranchAvailableLocally(repo, 'origin/topic')).toBe(false);
+    expect(() => runGit(repo, ['show-ref', '--verify', 'refs/remotes/origin/topic'])).toThrow();
+    expect(await isExistingBranchAvailableLocally(repo, 'origin/fetched')).toBe(true);
+    expect(await isExistingBranchAvailableLocally(repo, 'main')).toBe(true);
+    expect(await isExistingBranchAvailableLocally(repo, 'missing')).toBe(false);
   });
 });
 
@@ -2166,7 +2254,7 @@ describe('createWorktree', () => {
 
     await expect(getWorktreeBootstrapStatus(directory, { bootstrapStore })).resolves.toMatchObject({
       status: 'failed',
-      errorCode: 'UNKNOWN',
+      errorCode: 'OUTCOME_UNKNOWN',
       error: expect.stringContaining('repair'),
     });
     expect(bootstrapStore.write).toHaveBeenCalledOnce();
@@ -2181,7 +2269,7 @@ describe('createWorktree', () => {
 
     await expect(getWorktreeBootstrapStatus(directory, { bootstrapStore })).resolves.toMatchObject({
       status: 'failed',
-      errorCode: 'UNKNOWN',
+      errorCode: 'OUTCOME_UNKNOWN',
     });
   });
 
@@ -2592,6 +2680,70 @@ describe('createWorktree', () => {
     expect(hydrateCheckout).toHaveBeenCalledWith({ directory: created.path, parentRemoteName: 'upstream' });
     // The branch it started from is recorded as its parent.
     expect(readBranchConfig(created.path, 'feature/from-local', 'gh-merge-base')).toBe('main');
+  });
+
+  it('reports a known checkout failure by its cause, not as an unknown outcome', async () => {
+    if (!canRunGit()) return;
+    const repo = createTempDir();
+    runGit(repo, ['init', '-b', 'main']);
+    runGit(repo, ['config', 'user.email', 'test@example.com']);
+    runGit(repo, ['config', 'user.name', 'Test User']);
+    runGit(repo, ['commit', '--allow-empty', '-m', 'init']);
+    const hydrateCheckout = vi.fn(async () => {
+      throw Object.assign(new Error('Git transport remote binding changed'), { code: 'SOURCE_CONTROL_BINDING_STALE' });
+    });
+    const bootstrapStore = createWorktreeBootstrapStore({ filePath: path.join(createTempDir(), 'bootstrap.json') });
+    const created = await createWorktree(repo, { mode: 'new', branchName: 'stale', worktreeName: 'stale' }, { hydrateCheckout, bootstrapStore });
+    await expect.poll(async () => (await getWorktreeBootstrapStatus(created.path, { bootstrapStore })).status, { timeout: 5_000 }).toBe('failed');
+    await expect(getWorktreeBootstrapStatus(created.path, { bootstrapStore })).resolves.toMatchObject({
+      errorCode: 'STALE_BINDING', error: 'Worktree source control binding changed',
+    });
+  });
+
+  it('hydrates a checkout whose remote is a path on disk without naming that remote', async () => {
+    if (!canRunGit()) return;
+    const remote = createTempDir();
+    const repo = createTempDir();
+    runGit(remote, ['init', '--bare', '-b', 'main']);
+    runGit(repo, ['init', '-b', 'main']);
+    runGit(repo, ['config', 'user.email', 'test@example.com']);
+    runGit(repo, ['config', 'user.name', 'Test User']);
+    runGit(repo, ['commit', '--allow-empty', '-m', 'init']);
+    runGit(repo, ['remote', 'add', 'origin', remote]);
+    runGit(repo, ['push', '-q', '-u', 'origin', 'main']);
+    // Source control transport leaves disk remotes out, so naming one fails the whole bootstrap.
+    const hydrateCheckout = vi.fn(async () => ({ status: 'not-needed', submodules: [], lfs: [] }));
+    const bootstrapStore = createWorktreeBootstrapStore({ filePath: path.join(createTempDir(), 'bootstrap.json') });
+    const created = await createWorktree(repo, { mode: 'new', branchName: 'on-disk', worktreeName: 'on-disk' }, { hydrateCheckout, bootstrapStore });
+    await expect.poll(async () => (await getWorktreeBootstrapStatus(created.path, { bootstrapStore })).status, { timeout: 5_000 }).toBe('ready');
+    expect(hydrateCheckout).toHaveBeenCalledWith({ directory: created.path, parentRemoteName: '' });
+
+    // A remote that fetches over HTTPS but pushes to disk is left out the same way.
+    runGit(repo, ['remote', 'set-url', 'origin', 'https://example.com/team/repo.git']);
+    runGit(repo, ['remote', 'set-url', '--push', 'origin', remote]);
+    const pushOnDisk = await createWorktree(repo, { mode: 'new', branchName: 'push-on-disk', worktreeName: 'push-on-disk' }, { hydrateCheckout, bootstrapStore });
+    await expect.poll(async () => (await getWorktreeBootstrapStatus(pushOnDisk.path, { bootstrapStore })).status, { timeout: 5_000 }).toBe('ready');
+    expect(hydrateCheckout).toHaveBeenLastCalledWith({ directory: pushOnDisk.path, parentRemoteName: '' });
+  });
+
+  it('records the parent of a branch started from HEAD or from a full branch ref', async () => {
+    if (!canRunGit()) return;
+    const repo = createTempDir();
+    runGit(repo, ['init', '-b', 'main']);
+    runGit(repo, ['config', 'user.email', 'test@example.com']);
+    runGit(repo, ['config', 'user.name', 'Test User']);
+    runGit(repo, ['commit', '--allow-empty', '-m', 'init']);
+    runGit(repo, ['branch', 'feat/form']);
+    const bootstrapStore = createWorktreeBootstrapStore({ filePath: path.join(createTempDir(), 'bootstrap.json') });
+    // Multi-run, extensions and the agent tool without a startRef all start from the checkout's HEAD.
+    const fromHead = await createWorktree(repo, { mode: 'new', branchName: 'from-head', worktreeName: 'from-head' }, { bootstrapStore });
+    const fromFullRef = await createWorktree(repo, {
+      mode: 'new', branchName: 'from-full-ref', worktreeName: 'from-full-ref', startRef: 'refs/heads/feat/form',
+    }, { bootstrapStore });
+    expect(readBranchConfig(repo, 'from-head', 'gh-merge-base')).toBe('main');
+    expect(readBranchConfig(repo, 'from-full-ref', 'gh-merge-base')).toBe('feat/form');
+    expect(await getBranchBase(fromHead.path, 'from-head')).toEqual({ base: 'main' });
+    expect(await getBranchBase(fromFullRef.path, 'from-full-ref')).toEqual({ base: 'feat/form' });
   });
 
   const installPostCheckoutHook = (repo, script, executable = true) => {
@@ -3030,6 +3182,7 @@ describe('createWorktree', () => {
     const wrapper = path.join(createTempDir(), 'git-de');
     fs.writeFileSync(wrapper, [
       '#!/bin/sh',
+      'if [ "$1" = -C ]; then cd "$2" || exit 128; shift 2; fi',
       `if [ "$1" = worktree ] && [ "$2" = add ]; then echo '${germanDiagnostic}' >&2; exit 128; fi`,
       'exec git "$@"',
       '',
@@ -3087,6 +3240,7 @@ describe('createWorktree', () => {
     const wrapper = path.join(createTempDir(), 'git-occupy');
     fs.writeFileSync(wrapper, [
       '#!/bin/sh',
+      'if [ "$1" = -C ]; then cd "$2" || exit 128; shift 2; fi',
       'if [ "$1" = worktree ] && [ "$2" = add ]; then',
       '  seen=""; for arg in "$@"; do',
       '    if [ "$seen" = name ]; then seen=dir; continue; fi',
@@ -3123,7 +3277,10 @@ describe('createWorktree', () => {
         { timeout: 5_000 },
       ).toBe('failed');
       await waitForActiveWorktreeBootstrap(created.path);
-      await expect(bootstrapStore.read(created.path)).resolves.toMatchObject({ errorCode: 'UNKNOWN' });
+      // Git's own text stays out of the record; the failure is reported as one, not as an unknown outcome.
+      await expect(bootstrapStore.read(created.path)).resolves.toMatchObject({
+        errorCode: 'UNKNOWN', error: 'Worktree setup failed. Git\'s message is in the server log.',
+      });
     } finally {
       if (previousGitBinary === undefined) delete process.env.OPENCHAMBER_GIT_BINARY;
       else process.env.OPENCHAMBER_GIT_BINARY = previousGitBinary;
@@ -3508,6 +3665,44 @@ describe('createWorktree with OpenCode worktree.directory', () => {
     expect(fs.existsSync(created.path)).toBe(false);
   }));
 
+  it('inherits the worktree folder from an ancestor config outside the repository', withDataHome(async () => {
+    if (!canRunGit()) return;
+
+    const workspace = createTempDir();
+    const repo = path.join(workspace, 'repository');
+    fs.mkdirSync(repo);
+    runGit(repo, ['init', '-b', 'main']);
+    runGit(repo, ['config', 'user.email', 'test@example.com']);
+    runGit(repo, ['config', 'user.name', 'Test User']);
+    runGit(repo, ['commit', '--allow-empty', '-m', 'Initial commit']);
+    fs.mkdirSync(path.join(workspace, '.opencode'));
+    fs.writeFileSync(
+      path.join(workspace, '.opencode', 'opencode.jsonc'),
+      '{ // Shared workspace setting\n "worktree": { "directory": "../.worktrees" }\n}',
+    );
+    const customConfig = path.join(workspace, 'custom.json');
+    fs.writeFileSync(customConfig, JSON.stringify({ worktree: { directory: '.custom-trees' } }));
+    vi.stubEnv('OPENCODE_CONFIG', customConfig);
+    try {
+      const input = { mode: 'new', worktreeName: 'inherited-tree', branchName: 'inherited-tree' };
+      const preview = await previewWorktreeCreate(repo, input);
+      const created = await createWorktree(repo, input);
+      const expected = path.join(fs.realpathSync(workspace), '.worktrees', 'inherited-tree');
+      expect(created.path).toBe(expected);
+      expect(preview.path).toBe(expected);
+
+      // A request from the linked checkout still uses its canonical checkout's config.
+      const next = await createWorktree(created.path, {
+        mode: 'new', worktreeName: 'next-tree', branchName: 'next-tree',
+      });
+      expect(next.path).toBe(fs.realpathSync(path.join(workspace, '.worktrees', 'next-tree')));
+      await removeWorktree(repo, { directory: next.path });
+      await removeWorktree(repo, { directory: created.path });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  }));
+
   it('uses an absolute configured folder as-is', withDataHome(async () => {
     if (!canRunGit()) return;
 
@@ -3830,6 +4025,7 @@ describe('createWorktree from a forked GitHub PR', () => {
         const wrapper = path.join(wrapperDirectory, 'git');
         const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
         fs.writeFileSync(wrapper, `#!/bin/sh
+if [ "$1" = -C ]; then cd "$2" || exit 128; shift 2; fi
 if [ "$1" = "remote" ] && [ "$2" = "set-url" ]; then : > "$SET_URL_MARKER"; fi
 exec "$REAL_GIT" "$@"
 `);
@@ -3977,6 +4173,7 @@ exec "$REAL_GIT" "$@"
       const wrapper = path.join(wrapperDirectory, 'git');
       const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
       fs.writeFileSync(wrapper, `#!/bin/sh
+if [ "$1" = -C ]; then cd "$2" || exit 128; shift 2; fi
 if [ "$1" = "worktree" ] && [ "$2" = "add" ] && [ ! -e "$RACE_MARKER" ]; then
   : > "$RACE_MARKER"
   "$REAL_GIT" -C "$RACE_REPOSITORY" update-ref "$RACE_REF" "$RACE_REVISION" || exit $?
@@ -6709,6 +6906,7 @@ describe.runIf(canRunGit())('getRepositoryRemoteUrls', () => {
       const invocations = path.join(wrapperDirectory, 'invocations');
       const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim();
       fs.writeFileSync(path.join(wrapperDirectory, 'git'), `#!/bin/sh
+if [ "$1" = -C ]; then cd "$2" || exit 128; shift 2; fi
 echo "$*" >> "${invocations}"
 if [ "$1" = remote ] && [ "$2" = -v ]; then exit 2; fi
 ${configFailure ? 'if [ "$1" = config ]; then exit 2; fi' : ''}
@@ -6968,6 +7166,7 @@ describe.runIf(canRunGit())('getRangeDiff', () => {
     runGit(repository, ['rebase', 'layer-one']);
     expect(await getBranchBase(repository, 'layer-two')).toEqual({ base: 'layer-one' });
     // A parent that is only a remote branch here still answers.
+    runGit(repository, ['branch', '-D', 'layer-one']);
     runGit(repository, ['config', 'branch.layer-two.gh-merge-base', 'react']);
     expect(await getBranchBase(repository, 'layer-two')).toEqual({ base: 'react' });
     // A parent that no longer exists gives way to the reflog, which here has nothing.
@@ -6975,7 +7174,196 @@ describe.runIf(canRunGit())('getRangeDiff', () => {
     expect(await getBranchBase(repository, 'layer-two')).toEqual({ base: null });
   });
 
-  it('asks for a new base after restacking and compares against the selected parent', async () => {
+  it('moves a stale recorded parent up to the stack layer the branch was restacked onto', async () => {
+    const { repository } = createRepositoryWithRemote();
+    const commit = (name) => {
+      fs.writeFileSync(path.join(repository, `${name}.txt`), `${name}\n`);
+      runGit(repository, ['add', '.']);
+      runGit(repository, ['commit', '-m', name]);
+    };
+    runGit(repository, ['checkout', '-b', 'status-type', 'origin/react']);
+    commit('status');
+    // Stacked the usual way, from the checked-out layer: the reflog says "Created from HEAD".
+    runGit(repository, ['checkout', '-b', 'identity-refresh']);
+    commit('identity');
+    // Made on the bottom layer, then moved onto the middle one by hand.
+    runGit(repository, ['checkout', '-b', 'company-refs', 'status-type']);
+    runGit(repository, ['config', 'branch.company-refs.gh-merge-base', 'status-type']);
+    commit('company');
+    runGit(repository, ['rebase', 'identity-refresh']);
+    expect(await getBranchBase(repository, 'company-refs')).toEqual({ base: 'identity-refresh' });
+
+    // With no commits of its own yet, it sits on the middle layer's tip.
+    runGit(repository, ['reset', '--hard', 'identity-refresh']);
+    expect(await getBranchBase(repository, 'company-refs')).toEqual({ base: 'identity-refresh' });
+
+    // A layer made on top of it (recorded, or only in its reflog) is above it, never its base.
+    commit('company');
+    runGit(repository, ['branch', 'backup', 'company-refs']);
+    runGit(repository, ['branch', 'next-layer', 'company-refs']);
+    runGit(repository, ['config', 'branch.next-layer.gh-merge-base', 'company-refs']);
+    // Made from HEAD, its origin is unknown: no evidence of a layer either.
+    runGit(repository, ['switch', '-c', 'head-backup']);
+    runGit(repository, ['switch', 'company-refs']);
+    // A snapshot of a line (`HEAD~1`) is not a branch it was made on.
+    commit('company-more');
+    runGit(repository, ['branch', 'snapshot', 'HEAD~1']);
+    expect(await getBranchBase(repository, 'company-refs')).toEqual({ base: 'identity-refresh' });
+
+    // Without a record the reflog's creation source is the lower bound, through the rebase.
+    runGit(repository, ['config', '--unset', 'branch.company-refs.gh-merge-base']);
+    expect(await getBranchBase(repository, 'company-refs')).toEqual({ base: 'identity-refresh' });
+
+    // Two layers at the same commit leave nothing to tell them apart: the record stands.
+    runGit(repository, ['config', 'branch.company-refs.gh-merge-base', 'status-type']);
+    runGit(repository, ['branch', 'twin', 'status-type']);
+    runGit(repository, ['branch', '-f', 'twin', 'identity-refresh']);
+    expect(await getBranchBase(repository, 'company-refs')).toEqual({ base: 'status-type' });
+  });
+
+  it('still finds a layer made from HEAD after the whole stack moved onto a newer base', async () => {
+    const { repository } = createRepositoryWithRemote();
+    const commit = (name) => {
+      fs.writeFileSync(path.join(repository, `${name}.txt`), `${name}\n`);
+      runGit(repository, ['add', '.']);
+      runGit(repository, ['commit', '-m', name]);
+    };
+    runGit(repository, ['checkout', '-b', 'lower', 'next']);
+    commit('lower');
+    runGit(repository, ['checkout', '-b', 'middle']);
+    commit('middle');
+    runGit(repository, ['checkout', '-b', 'upper', 'lower']);
+    runGit(repository, ['config', 'branch.upper.gh-merge-base', 'lower']);
+    commit('upper');
+    runGit(repository, ['rebase', 'middle']);
+    expect(await getBranchBase(repository, 'upper')).toEqual({ base: 'middle' });
+
+    runGit(repository, ['checkout', 'next']);
+    commit('main-moves');
+    for (const [branch, onto] of [['lower', 'next'], ['middle', 'lower'], ['upper', 'middle']]) {
+      runGit(repository, ['checkout', branch]);
+      runGit(repository, ['rebase', onto]);
+    }
+    expect(await getBranchBase(repository, 'upper')).toEqual({ base: 'middle' });
+  });
+
+  it('follows a terminal restack onto a branch the recorded parent never was', async () => {
+    const { repository } = createRepositoryWithRemote();
+    const commit = (name) => {
+      fs.writeFileSync(path.join(repository, `${name}.txt`), `${name}\n`);
+      runGit(repository, ['add', '.']);
+      runGit(repository, ['commit', '-m', name]);
+    };
+    commit('base');
+    runGit(repository, ['checkout', '-b', 'feat']);
+    commit('feat');
+    // Made on a feature branch, then moved onto the main line by hand.
+    runGit(repository, ['checkout', '-b', 'task', 'feat']);
+    runGit(repository, ['config', 'branch.task.gh-merge-base', 'feat']);
+    commit('task');
+    runGit(repository, ['checkout', 'next']);
+    commit('next-moves');
+    runGit(repository, ['checkout', 'task']);
+    runGit(repository, ['rebase', '--onto', 'next', 'feat']);
+    expect(await getBranchBase(repository, 'task')).toEqual({ base: 'next' });
+    // The branch it landed on moving on afterwards does not change that.
+    runGit(repository, ['checkout', 'next']);
+    commit('next-moves-again');
+    expect(await getBranchBase(repository, 'task')).toEqual({ base: 'next' });
+    // A branch made later at the commit it landed on never was its target.
+    runGit(repository, ['branch', 'backup', 'next~1']);
+    expect(await getBranchBase(repository, 'task')).toEqual({ base: 'next' });
+    // Neither is a parent that no longer exists.
+    runGit(repository, ['branch', '-D', 'feat']);
+    expect(await getBranchBase(repository, 'task')).toEqual({ base: 'next' });
+    runGit(repository, ['branch', '-D', 'backup']);
+
+    // Made on the main line, then moved onto a layer that branched off before the main line moved.
+    runGit(repository, ['checkout', '-b', 'layer', 'next~2']);
+    commit('layer');
+    runGit(repository, ['checkout', '-b', 'upper', 'next']);
+    runGit(repository, ['config', 'branch.upper.gh-merge-base', 'next']);
+    commit('upper');
+    runGit(repository, ['rebase', '--onto', 'layer', 'next']);
+    expect(await getBranchBase(repository, 'upper')).toEqual({ base: 'layer' });
+
+    // Rebased onto the newer tip of its own parent, the parent stands, with or without a record.
+    runGit(repository, ['checkout', 'next']);
+    commit('next-moves-third');
+    runGit(repository, ['checkout', 'task']);
+    runGit(repository, ['rebase', 'next']);
+    expect(await getBranchBase(repository, 'task')).toEqual({ base: 'next' });
+    runGit(repository, ['checkout', '-b', 'unrecorded', 'next']);
+    commit('unrecorded');
+    runGit(repository, ['checkout', 'next']);
+    commit('next-moves-fourth');
+    runGit(repository, ['checkout', 'unrecorded']);
+    runGit(repository, ['rebase', 'next']);
+    expect(await getBranchBase(repository, 'unrecorded')).toEqual({ base: 'next' });
+  });
+
+  it('keeps the parent of a branch that merged a sibling in from the side', async () => {
+    const { repository } = createRepositoryWithRemote();
+    const commit = (name) => {
+      fs.writeFileSync(path.join(repository, `${name}.txt`), `${name}\n`);
+      runGit(repository, ['add', '.']);
+      runGit(repository, ['commit', '-m', name]);
+    };
+    runGit(repository, ['checkout', '-b', 'sibling', 'origin/react']);
+    commit('sibling');
+    runGit(repository, ['checkout', '-b', 'feature', 'origin/react']);
+    runGit(repository, ['config', 'branch.feature.gh-merge-base', 'react']);
+    commit('feature');
+    runGit(repository, ['merge', '--no-edit', 'sibling']);
+    expect(await getBranchBase(repository, 'feature')).toEqual({ base: 'react' });
+  });
+
+  it('records the parent of a rebase finished after a conflict, and none for an aborted one', async () => {
+    const { repository } = createRepositoryWithRemote();
+    const write = (content) => {
+      fs.writeFileSync(path.join(repository, 'shared.txt'), `${content}\n`);
+      runGit(repository, ['add', '.']);
+      runGit(repository, ['commit', '-m', content]);
+    };
+    runGit(repository, ['checkout', '-b', 'new-parent', 'origin/react']);
+    write('parent');
+    runGit(repository, ['checkout', '-b', 'upper', 'origin/react']);
+    runGit(repository, ['config', 'branch.upper.gh-merge-base', 'react']);
+    write('upper');
+
+    expect(await rebase(repository, { onto: 'new-parent' })).toMatchObject({ conflict: true });
+    await abortRebase(repository);
+    expect(readBranchConfig(repository, 'upper', 'gh-merge-base')).toBe('react');
+
+    expect(await rebase(repository, { onto: 'new-parent' })).toMatchObject({ conflict: true });
+    expect(readBranchConfig(repository, 'upper', 'gh-merge-base')).toBe('react');
+    fs.writeFileSync(path.join(repository, 'shared.txt'), 'resolved\n');
+    runGit(repository, ['add', 'shared.txt']);
+    expect(await continueRebase(repository)).toMatchObject({ success: true });
+    expect(readBranchConfig(repository, 'upper', 'gh-merge-base')).toBe('new-parent');
+  });
+
+  it('records the branch a rebase lands on as the parent, and nothing for a commit', async () => {
+    const { repository } = createRepositoryWithRemote();
+    runGit(repository, ['checkout', '-b', 'lower', 'origin/react']);
+    fs.writeFileSync(path.join(repository, 'lower.txt'), 'lower\n');
+    runGit(repository, ['add', '.']);
+    runGit(repository, ['commit', '-m', 'lower']);
+    runGit(repository, ['checkout', '-b', 'upper', 'origin/react']);
+    runGit(repository, ['config', 'branch.upper.gh-merge-base', 'react']);
+
+    expect(await rebase(repository, { onto: 'lower' })).toMatchObject({ success: true });
+    expect(readBranchConfig(repository, 'upper', 'gh-merge-base')).toBe('lower');
+
+    expect(await rebase(repository, { onto: 'origin/react' })).toMatchObject({ success: true });
+    expect(readBranchConfig(repository, 'upper', 'gh-merge-base')).toBe('react');
+
+    const commit = runGit(repository, ['rev-parse', 'lower']).trim();
+    expect(await rebase(repository, { onto: commit })).toMatchObject({ success: true });
+    expect(readBranchConfig(repository, 'upper', 'gh-merge-base')).toBe('react');
+  });
+
+  it('finds the layer a branch was restacked onto, and compares against the selected parent', async () => {
     const { repository } = createRepositoryWithRemote();
     runGit(repository, ['checkout', '-b', 'child', 'origin/react']);
     fs.writeFileSync(path.join(repository, 'child.txt'), 'child\n');
@@ -6988,7 +7376,11 @@ describe.runIf(canRunGit())('getRangeDiff', () => {
     runGit(repository, ['commit', '-m', 'parent']);
     runGit(repository, ['checkout', 'child']);
     runGit(repository, ['rebase', 'parent']);
+    expect(await getBranchBase(repository, 'child')).toEqual({ base: 'parent' });
+    // Rebased with no branch left between it and its creation source: no answer.
+    runGit(repository, ['branch', '-D', 'parent']);
     expect(await getBranchBase(repository, 'child')).toEqual({ base: null });
+    runGit(repository, ['branch', 'parent', 'HEAD~1']);
     fs.writeFileSync(path.join(repository, 'child.txt'), 'current child\n');
     const options = { base: 'refs/heads/parent', head: 'child', includeWorkingTree: true };
     expect(listed(await getRangeFiles(repository, options))).toEqual([{ path: 'child.txt', status: 'A' }]);
@@ -7252,6 +7644,56 @@ describe.runIf(canRunGit())('getRangeFiles', () => {
     expect(copyEntry).toBeDefined();
     expect(copyEntry.path).toBe('copied destination.md');
   });
+
+  it('refreshes a stale remote base ref, throttles repeats, and honors force', async () => {
+    const { repository, remote } = createRepositoryWithRemote();
+    const peer = createTempDir();
+    runGit(peer, ['clone', '--branch', 'react', remote, '.']);
+    runGit(peer, ['config', 'user.email', 'peer@example.com']);
+    runGit(peer, ['config', 'user.name', 'Peer']);
+    fs.writeFileSync(path.join(peer, 'upstream-pr.txt'), 'merged on remote\n');
+    runGit(peer, ['add', 'upstream-pr.txt']);
+    runGit(peer, ['commit', '-m', 'upstream PR']);
+    runGit(peer, ['push', 'origin', 'react']);
+
+    // Simulate a branch that already includes the newer remote base while local origin/react stayed stale.
+    const staleOriginReact = runGit(repository, ['rev-parse', 'origin/react']).trim();
+    runGit(repository, ['fetch', remote, 'react:refs/heads/tmp-fresh-base']);
+    runGit(repository, ['update-ref', 'refs/remotes/origin/react', staleOriginReact]);
+    runGit(repository, ['checkout', '-B', 'next', 'tmp-fresh-base']);
+    runGit(repository, ['branch', '-D', 'tmp-fresh-base']);
+    fs.writeFileSync(path.join(repository, 'my-feature.txt'), 'mine\n');
+    runGit(repository, ['add', 'my-feature.txt']);
+    runGit(repository, ['commit', '-m', 'my feature']);
+
+    // Add a tag on the remote to confirm single-ref refresh does not pull unrelated tags.
+    runGit(peer, ['tag', 'unrelated-tag']);
+    runGit(peer, ['push', 'origin', 'unrelated-tag']);
+
+    const staleFiles = await getRangeFiles(repository, { base: 'origin/react', head: 'next' });
+    expect(staleFiles.map((file) => file.path)).toEqual(expect.arrayContaining(['upstream-pr.txt', 'my-feature.txt']));
+
+    expect(await refreshRemoteRef(repository, 'refs/heads/react')).toEqual({ updated: false, oid: '' });
+    expect(await refreshRemoteRef(repository, 'origin/bad*ref')).toEqual({ updated: false, oid: '' });
+    const firstRefresh = await refreshRemoteRef(repository, 'origin/react');
+    expect(firstRefresh.updated).toBe(true);
+    expect(firstRefresh.oid).toMatch(/^[0-9a-f]{40}$/);
+    expect(runGit(repository, ['tag', '--list']).trim()).toBe('');
+
+    const freshFiles = await getRangeFiles(repository, { base: 'origin/react', head: 'next' });
+    expect(freshFiles.map((file) => file.path)).toEqual(['my-feature.txt']);
+
+    // Another upstream commit lands right away: throttled without force, fetched with force.
+    fs.writeFileSync(path.join(peer, 'second-pr.txt'), 'second\n');
+    runGit(peer, ['add', 'second-pr.txt']);
+    runGit(peer, ['commit', '-m', 'second PR']);
+    runGit(peer, ['push', 'origin', 'react']);
+
+    expect(await refreshRemoteRef(repository, 'origin/react')).toEqual({ updated: false, oid: firstRefresh.oid });
+    const forcedRefresh = await refreshRemoteRef(repository, 'origin/react', { force: true });
+    expect(forcedRefresh.updated).toBe(true);
+    expect(forcedRefresh.oid).not.toBe(firstRefresh.oid);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -7324,6 +7766,39 @@ describe('getCheckedOutBranch', () => {
 });
 
 describe('carry path validation and stashing', () => {
+  it.each([
+    { name: 'only untracked', tracked: false, untracked: true, staged: false, count: 1 },
+    { name: 'tracked and untracked', tracked: true, untracked: true, staged: false, count: 2 },
+    { name: 'only tracked', tracked: true, untracked: false, staged: false, count: 1 },
+    { name: 'a staged new file', tracked: false, untracked: false, staged: true, count: 1 },
+  ])('counts stash files with $name', async ({ tracked, untracked, staged, count }) => {
+    if (!canRunGit()) return;
+    const repo = createTempDir();
+    runGit(repo, ['init', '-b', 'main']);
+    runGit(repo, ['config', 'user.email', 'test@example.com']);
+    runGit(repo, ['config', 'user.name', 'Test User']);
+    fs.writeFileSync(path.join(repo, 'tracked.txt'), 'original\n');
+    runGit(repo, ['add', '.']);
+    runGit(repo, ['commit', '-m', 'Initial commit']);
+    if (tracked) fs.writeFileSync(path.join(repo, 'tracked.txt'), 'modified\n');
+    if (untracked) fs.writeFileSync(path.join(repo, 'untracked.txt'), 'new\n');
+    if (staged) {
+      fs.writeFileSync(path.join(repo, 'staged.txt'), 'staged\n');
+      runGit(repo, ['add', 'staged.txt']);
+    }
+
+    await stashPush(repo, { message: 'count test' });
+    const [stash] = await listStashes(repo);
+    await expect(countStashFiles(repo, [stash.ref, stash.ref, stash.hash])).resolves.toEqual({
+      [stash.ref]: count,
+      [stash.hash]: count,
+    });
+    await stashApply(repo, { ref: stash.ref });
+    if (tracked) expect(fs.readFileSync(path.join(repo, 'tracked.txt'), 'utf8')).toBe('modified\n');
+    if (untracked) expect(fs.readFileSync(path.join(repo, 'untracked.txt'), 'utf8')).toBe('new\n');
+    if (staged) expect(runGit(repo, ['diff', '--cached', '--name-only']).trim()).toBe('staged.txt');
+  });
+
   it('checks literal paths from the session directory and stashes absolute paths from the root', async () => {
     if (!canRunGit()) return;
     const repo = createTempDir();
@@ -7460,7 +7935,48 @@ describe('getStatus untracked directories', () => {
       expect(httpStatus).toBe(422);
       expect(body).toEqual({ code: 'untracked_directory', error: 'Path is a directory of untracked files: node_modules/' });
     }
+
+    await stageFiles(repo, ['node_modules/']);
+    const staged = (await getStatus(repo)).files.filter((file) => file.path.startsWith('node_modules/'));
+    expect(staged).toHaveLength(1001);
+    expect(staged.every((file) => file.index === 'A')).toBe(true);
   });
+
+  it('commits a staged directory of more than a thousand new files picked by its earlier one entry', async () => {
+    if (!canRunGit()) return;
+
+    const repo = createCommittedRepo();
+    writeFiles(path.join(repo, 'bulk'), 1001);
+    fs.writeFileSync(path.join(repo, 'loose.txt'), 'loose\n');
+    await stageFiles(repo, ['bulk/', 'loose.txt']);
+
+    await commit(repo, 'Add bulk files', { files: ['bulk/'], stageFiles: [] });
+    expect((await getStatus(repo)).files.map((file) => [file.path, file.index])).toEqual([['loose.txt', 'A']]);
+  });
+
+  it('stages the file of a subfolder when the repository root has a new directory of the same name', async () => {
+    if (!canRunGit()) return;
+
+    const repo = fs.realpathSync(createCommittedRepo());
+    writeFiles(path.join(repo, 'bulk'), 2);
+    fs.mkdirSync(path.join(repo, 'project'));
+    fs.writeFileSync(path.join(repo, 'project', 'bulk'), 'file\n');
+
+    await stageFiles(path.join(repo, 'project'), ['bulk']);
+    expect((await getStatus(repo)).files.filter((file) => file.index === 'A').map((file) => file.path)).toEqual(['project/bulk']);
+  });
+
+  it('refuses to stage a directory of new files that holds another repository', async () => {
+    if (!canRunGit()) return;
+
+    const repo = createCommittedRepo();
+    writeFiles(path.join(repo, 'bulk'), 1001);
+    runGit(path.join(repo, 'bulk'), ['init', '-b', 'main', 'child']);
+
+    await expect(stageFiles(repo, ['bulk/'])).rejects.toMatchObject({ code: 'nested_repository' });
+    expect((await getStatus(repo)).files.map((file) => file.path)).toEqual(['bulk/']);
+  });
+
 });
 
 describe('git environment through simple-git', () => {

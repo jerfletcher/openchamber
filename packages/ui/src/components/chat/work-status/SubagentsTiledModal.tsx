@@ -10,6 +10,7 @@ import { SessionActivityDuration } from '@/components/session/SessionActivityDur
 import { useUIStore } from '@/stores/useUIStore';
 import { useWaitingBlink } from '@/hooks/useDurationTicker';
 import type { Session as SessionInfo, ToolPart, Part as MessagePart } from '@/lib/opencode/model';
+import type { SubagentRow } from './useSubagentRows';
 
 interface SubagentTileProps {
   child: SessionInfo;
@@ -183,31 +184,50 @@ const SubagentTile: React.FC<SubagentTileProps> = ({ child, status, directory, o
 interface SubagentsTiledModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  childrenSessions: SessionInfo[];
-  statuses: Record<string, { type?: string }>;
-  observedById: Map<string, string>;
-  permissions: Record<string, unknown[]>;
-  forms: Record<string, unknown[]>;
+  rows?: SubagentRow[];
+  childrenSessions?: SessionInfo[];
+  statuses?: Record<string, { type?: string }>;
+  observedById?: Map<string, string>;
+  permissions?: Record<string, unknown[]>;
+  forms?: Record<string, unknown[]>;
   directory: string | null;
-  onOpenChild: (childId: string, label: string) => void;
+  onOpenChild: (childId: string, label: string, childDirectory?: string) => void;
 }
 
 export const SubagentsTiledModal: React.FC<SubagentsTiledModalProps> = ({
   open,
   onOpenChange,
-  childrenSessions,
-  statuses,
-  observedById,
-  permissions,
-  forms,
+  rows,
+  childrenSessions = [],
+  statuses = {},
+  observedById = new Map<string, string>(),
+  permissions = {},
+  forms = {},
   directory,
   onOpenChild,
 }) => {
-  const activeCount = childrenSessions.filter((c) => {
-    const status = statuses[c.id]?.type;
-    const observed = observedById.get(c.id);
-    return status === 'busy' || status === 'retry' || (!status && observed === 'busy');
-  }).length;
+  const tileEntries = React.useMemo(() => {
+    if (rows) {
+      return rows.map((row) => ({
+        child: row.child,
+        status: (row.blocked || row.asked ? 'blocked' : row.busy ? 'busy' : row.failed ? 'failed' : row.done ? 'done' : 'idle') as 'busy' | 'blocked' | 'done' | 'failed' | 'idle',
+      }));
+    }
+    return childrenSessions.map((child) => {
+      const blocked = (permissions[child.id]?.length ?? 0) > 0;
+      const asked = (forms[child.id]?.length ?? 0) > 0;
+      const statusType = statuses[child.id]?.type;
+      const observed = observedById.get(child.id);
+      const busy = statusType === 'busy' || statusType === 'retry' || (!statusType && observed === 'busy');
+      const failed = !busy && observed === 'failed';
+      const done = !failed && !busy && (statusType === 'idle' || observed === 'settled');
+      const status: 'busy' | 'blocked' | 'done' | 'failed' | 'idle' =
+        blocked || asked ? 'blocked' : busy ? 'busy' : failed ? 'failed' : done ? 'done' : 'idle';
+      return { child, status };
+    });
+  }, [childrenSessions, forms, observedById, permissions, rows, statuses]);
+
+  const activeCount = tileEntries.filter((entry) => entry.status === 'busy').length;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -217,42 +237,29 @@ export const SubagentsTiledModal: React.FC<SubagentsTiledModalProps> = ({
             <div className="flex items-center gap-2">
               <Icon name="layout" className="size-5 text-primary" />
               <DialogTitle className="text-base font-semibold">
-                Subagent Swarm Deck ({childrenSessions.length} total, {activeCount} running)
+                Subagent Swarm Deck ({tileEntries.length} total, {activeCount} running)
               </DialogTitle>
             </div>
           </div>
         </DialogHeader>
 
         <div className="grid max-h-[75vh] grid-cols-1 gap-3 overflow-y-auto p-1 sm:grid-cols-2 lg:grid-cols-3">
-          {childrenSessions.map((child) => {
-            const blocked = (permissions[child.id]?.length ?? 0) > 0;
-            const asked = (forms[child.id]?.length ?? 0) > 0;
-            const statusType = statuses[child.id]?.type;
-            const observed = observedById.get(child.id);
-            const busy = statusType === 'busy' || statusType === 'retry' || (!statusType && observed === 'busy');
-            const failed = !busy && observed === 'failed';
-            const done = !failed && !busy && (statusType === 'idle' || observed === 'settled');
-
-            const status: 'busy' | 'blocked' | 'done' | 'failed' | 'idle' =
-              blocked || asked ? 'blocked' : busy ? 'busy' : failed ? 'failed' : done ? 'done' : 'idle';
-
-            return (
-              <SubagentTile
-                key={child.id}
-                child={child}
-                status={status}
-                directory={directory}
-                onOpenSplit={() => {
-                  useUIStore.getState().openTiledSwarmWithPin(child.id);
-                  onOpenChange(false);
-                }}
-                onOpen={() => {
-                  onOpenChild(child.id, child.title || 'Subagent');
-                  onOpenChange(false);
-                }}
-              />
-            );
-          })}
+          {tileEntries.map(({ child, status }) => (
+            <SubagentTile
+              key={child.id}
+              child={child}
+              status={status}
+              directory={directory}
+              onOpenSplit={() => {
+                useUIStore.getState().openTiledSwarmWithPin(child.id);
+                onOpenChange(false);
+              }}
+              onOpen={() => {
+                onOpenChild(child.id, child.title || 'Subagent', child.directory);
+                onOpenChange(false);
+              }}
+            />
+          ))}
         </div>
       </DialogContent>
     </Dialog>

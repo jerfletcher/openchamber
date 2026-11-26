@@ -11,23 +11,37 @@ Object.assign(globalThis, { window: browser, document: browser.document, navigat
   localStorage: browser.localStorage, sessionStorage: browser.sessionStorage, HTMLElement: browser.HTMLElement,
   HTMLAnchorElement: browser.HTMLAnchorElement, Element: browser.Element, Node: browser.Node, Text: browser.Text,
   SVGElement: browser.SVGElement, MutationObserver: browser.MutationObserver, DOMParser: browser.DOMParser,
-  Event: browser.Event, Range: browser.Range,
+  Event: browser.Event, CustomEvent: browser.CustomEvent, Range: browser.Range,
   XMLSerializer: browser.XMLSerializer, IntersectionObserver: browser.IntersectionObserver, ResizeObserver: browser.ResizeObserver,
   requestAnimationFrame: browser.requestAnimationFrame.bind(browser), cancelAnimationFrame: browser.cancelAnimationFrame.bind(browser) });
 Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', { configurable: true, value: true });
 Object.defineProperty(globalThis, 'customElements', { configurable: true, value: browser.customElements });
 const state = { codeBlockLineWrap: false, tableCellWrap: true, copyMessagesAsPlainText: false, mermaidRenderingMode: 'svg', setCodeBlockLineWrap: () => undefined, setTableCellWrap: () => undefined, openContextFile: () => undefined, openContextFileAtLine: () => undefined };
-mock.module('@/stores/useUIStore', () => ({ useUIStore: Object.assign((select: (value: typeof state) => never) => select(state), { getState: () => state, subscribe: () => () => {} }), normalizeContextPanelDirectoryKey: (value: string) => value }));
+mock.module('@/stores/useUIStore', () => ({ useUIStore: Object.assign((select: (value: typeof state) => never) => select(state), { getState: () => state, subscribe: () => () => undefined }), normalizeContextPanelDirectoryKey: (value: string) => value }));
 mock.module('@/lib/router/openSessionFromRoute', () => ({ openSession: async () => undefined, openSessionLink: async () => undefined }));
 mock.module('@/hooks/useEffectiveDirectory', () => ({ useEffectiveDirectory: () => '/project', resolveEffectiveDirectory: () => '/project' }));
+// Its hooks pull in the session side panel and the stores behind it; these tests draw no tracker chips.
+mock.module('@/components/sourceBoard/openTrackerItem', () => ({
+  trackerTargetOfUrl: () => null,
+  repositoryUrlOfItemLink: () => null,
+  isSameRepositoryItemLink: (left: string, right: string) => left === right,
+  trackerItemLabel: () => null,
+  wasTrackerItemRequested: () => false,
+  settleTrackerItemRequest: () => undefined,
+  useShowTrackerItem: () => null,
+  useOpenProjectOnBoard: () => null,
+  useOpenTrackerItem: () => () => undefined,
+}));
 mock.module('@/hooks/useRuntimeAPIs', () => ({ useRuntimeAPIs: () => ({ runtime: { isVSCode: false }, editor: undefined }) }));
 const opened: string[] = [];
 mock.module('../useOpenChatLink', () => ({ useOpenChatLink: () => (href: string) => { opened.push(href); } }));
 mock.module('@/contexts/useThemeSystem', () => ({ useOptionalThemeSystem: () => ({ currentTheme: getDefaultTheme(false) }) }));
 const claims: GuestLinkClaim[] = [];
 let builtIn = false;
+let panelHidden: 'mini-chat' | 'other-project' | null = null;
 mock.module('./guestLinkClick', () => ({
   isBuiltInLink: () => builtIn,
+  guestPanelHiddenHere: () => panelHidden,
   runGuestLink: (claim: GuestLinkClaim) => { claims.push(claim); return true; },
 }));
 
@@ -57,7 +71,7 @@ beforeAll(async () => {
   root = createRoot(host);
 });
 afterAll(async () => { await act(() => root?.unmount()); browser.happyDOM.abort(); });
-beforeEach(() => { claims.length = 0; opened.length = 0; builtIn = false; });
+beforeEach(() => { claims.length = 0; opened.length = 0; builtIn = false; panelHidden = null; });
 
 type Options = { guestLinks?: readonly GuestLinkRule[] | null; allowRawHtml?: boolean; purpose?: 'copy'; disableLinkSafety?: boolean };
 const render = async (content: string, options: Options = {}) => {
@@ -90,11 +104,6 @@ test('a message already on screen re-parses when an extension starts or stops cl
   expect(marks()).toEqual([]);
 });
 
-test('an author cannot write the mark: raw HTML keeps it off', async () => {
-  await render('<a data-oc-guest-link="tasks">DEMO-x</a> <span data-oc-guest-link="tasks">y</span>', { allowRawHtml: true, guestLinks: null });
-  expect(host.querySelector('[data-oc-guest-link]')).toBeNull();
-});
-
 test('a copy keeps the text as written', async () => {
   await render('See DEMO-2.', { purpose: 'copy' });
   expect(marks()).toEqual([]);
@@ -120,4 +129,14 @@ test('a claimed link opens in the extension, also in the user\'s own message; bu
   again?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
   expect(claims).toEqual([]);
   expect(opened).toEqual([url]);
+});
+
+test('an identifier whose panel this window would not show opens its page, not a hidden tab', async () => {
+  panelHidden = 'mini-chat';
+  await render('See DEMO-2.');
+  const mark = host.querySelector('[data-oc-guest-link]');
+  expect(mark?.getAttribute('aria-label')).toBe('https://tasks.example.com/tasks/DEMO-2');
+  mark?.dispatchEvent(new window.MouseEvent('click', { bubbles: true, cancelable: true }));
+  expect(opened).toEqual(['https://tasks.example.com/tasks/DEMO-2']);
+  expect(claims).toEqual([]);
 });

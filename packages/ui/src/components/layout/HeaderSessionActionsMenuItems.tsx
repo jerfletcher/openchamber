@@ -14,6 +14,7 @@ import { isSessionPinnedInMetadata } from '@/lib/sessionPins';
 import { useSidebarSpaces } from '@/lib/spaces/spaces-store';
 import { useGlobalSessionsStore } from '@/stores/useGlobalSessionsStore';
 import { useProjectsStore } from '@/stores/useProjectsStore';
+import { useSessionDisplayStore } from '@/stores/useSessionDisplayStore';
 import { useUIStore } from '@/stores/useUIStore';
 import { useGlobalSyncStore } from '@/sync/global-sync-store';
 import { isRestorableOnItsOwn } from '@/sync/session-restore-rule';
@@ -30,11 +31,6 @@ type HeaderSessionActionsMenuItemsProps = {
   onDelete: () => void;
 };
 
-/**
- * The sidebar's session menu for a session the header shows (a tab, or the
- * title's menu), with the placement its sidebar row would have: the same
- * project, folders and Track / Done.
- */
 export function HeaderSessionActionsMenuItems({
   sessionId,
   open,
@@ -48,7 +44,6 @@ export function HeaderSessionActionsMenuItems({
   const { t } = useI18n();
   const isVSCode = React.useMemo(() => isVSCodeRuntime(), []);
   const session = useGlobalSessionsStore((state) => state.entityById.get(sessionId));
-  // A subsession under an archived parent comes back only with that parent.
   const restorable = useGlobalSessionsStore((state) => {
     const entry = state.entityById.get(sessionId);
     return !entry || isRestorableOnItsOwn(entry, state.entityById);
@@ -58,6 +53,7 @@ export function HeaderSessionActionsMenuItems({
   const availableWorktreesByProject = useSessionUIStore((state) => state.availableWorktreesByProject);
   const worktreeMetadata = useSessionUIStore((state) => state.worktreeMetadata);
   const sessionWorkEnabled = useUIStore((state) => state.sessionWorkEnabled);
+  const pinnedInWork = useSessionDisplayStore((state) => state.pinnedInWork);
   const projects = useProjectsStore((state) => state.projects);
   const authoritativeProjects = useGlobalSyncStore((state) => state.projects);
   const spaces = useSidebarSpaces(!isVSCode);
@@ -78,8 +74,11 @@ export function HeaderSessionActionsMenuItems({
 
   const archived = Boolean(session.time?.archived);
   const directory = normalizePath(session.directory ?? null);
-  const canTrackWork = sessionWorkEnabled && placement.ownsWork && !archived && !session.parentID
+  const pinned = isSessionPinnedInMetadata(session);
+  const ownsTrackableWork = sessionWorkEnabled && placement.ownsWork && !archived && !session.parentID
     && !isChatDirectoryPath(session.directory);
+  const pinBlocksWork = ownsTrackableWork && pinned && !pinnedInWork;
+  const canTrackWork = ownsTrackableWork && !pinBlocksWork;
   const workSessionsInWork = canTrackWork ? collectNestedWorkInWork(session, activeSessions) : [];
 
   const restore = async () => {
@@ -95,11 +94,11 @@ export function HeaderSessionActionsMenuItems({
       open={open}
       slots={slots}
       archived={archived}
-      pinned={isSessionPinnedInMetadata(session)}
+      pinned={pinned}
       work={canTrackWork ? {
         inWork: workSessionsInWork.length > 0,
         toggle: () => { void toggleSessionWork(session.id, directory, workSessionsInWork, t); },
-      } : null}
+      } : pinBlocksWork ? 'blocked-by-pin' : null}
       projectId={placement.projectId}
       currentWorktree={useSessionUIStore.getState().getWorktreeMetadata(session.id) ?? null}
       descendants={[]}

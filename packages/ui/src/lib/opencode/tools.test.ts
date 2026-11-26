@@ -21,6 +21,7 @@ import {
   executeNamespace,
   renderedPage,
   requestedSecret,
+  requestedSecretForget,
   requestedSecretRun,
   openChamberCallSummary,
   secretRunCommandLine,
@@ -107,6 +108,9 @@ describe("tool row description", () => {
       .toEqual({ kind: "text", value: "usage.read · claude" })
     expect(toolDescription("openchamber_usage", { action: "usage.read", parameters: {} }, undefined))
       .toEqual({ kind: "text", value: "usage.read" })
+    const longLabel = `session.unlink · ${"e".repeat(120)}`
+    expect(toolDescription("openchamber", { action: "session.unlink", parameters: { identifier: "e".repeat(120) } }, undefined))
+      .toEqual({ kind: "text", value: longLabel.slice(0, 100) })
   })
 
   test("shell shows the first line of the command", () => {
@@ -114,6 +118,13 @@ describe("tool row description", () => {
       kind: "text",
       value: "git status",
     })
+    const longCommand = `ls -la ${"a".repeat(210)}`
+    expect(toolDescription("shell", { command: longCommand }, undefined))
+      .toEqual({ kind: "text", value: longCommand })
+    expect(toolDescription("shell", { command: "b".repeat(500) }, undefined))
+      .toEqual({ kind: "text", value: "b".repeat(400) })
+    expect(toolDescription("shell", { command: `${"c".repeat(399)}😀 tail` }, undefined))
+      .toEqual({ kind: "text", value: "c".repeat(399) })
   })
 
   test("subagent shows the 3-5 word label the model wrote", () => {
@@ -248,8 +259,10 @@ describe("tool row description", () => {
   test("execute falls back to the first line of the script while it has called nothing", () => {
     expect(toolDescription("execute", { code: "const issues = await linear.list_issues()\nreturn issues" }, {}))
       .toEqual({ kind: "text", value: "const issues = await linear.list_issues()" })
-    expect(toolDescription("execute", { code: "x".repeat(140) }, undefined))
-      .toEqual({ kind: "text", value: "x".repeat(100) })
+    expect(toolDescription("execute", { code: "x".repeat(500) }, undefined))
+      .toEqual({ kind: "text", value: "x".repeat(400) })
+    expect(toolDescription("execute", { code: `${"y".repeat(399)}😀 tail` }, undefined))
+      .toEqual({ kind: "text", value: "y".repeat(399) })
     expect(toolDescription("execute", {}, undefined)).toBe(null)
   })
 
@@ -316,6 +329,18 @@ describe("renderedPage", () => {
       .toEqual({ html: "<p>nested</p>", title: "T", ask: { kind: "show" } })
   })
 
+  test("reads a shared page's recipients and summary, and draws it only once the server accepted the share", () => {
+    const input = { action: "render.page", parameters: { html: "<p>a</p>", title: "Pick", share: { recipients: ["Yulia", "Denis"], summary: "Pick a layout" } } }
+    expect(renderedPage("openchamber_render", completed(input, accepted)))
+      .toEqual({ html: "<p>a</p>", title: "Pick", ask: { kind: "show" }, share: { recipients: ["Yulia", "Denis"], summary: "Pick a layout" } })
+    // A refused share (enterprise mode without a relay) keeps its ordinary row, and so does a running one.
+    expect(renderedPage("openchamber_render", completed(input, { openchamber: { ok: false } }))).toBeNull()
+    expect(renderedPage("openchamber_render", running(input))).toBeNull()
+    // The server reads a share sent as JSON text, so the chat draws its card too.
+    const asText = { action: "render.page", parameters: { html: "<p>a</p>", title: "Pick", share: JSON.stringify({ recipients: ["Yulia"] }) } }
+    expect(renderedPage("openchamber_render", completed(asText, accepted))?.share).toEqual({ recipients: ["Yulia"] })
+  })
+
   test("shows a page that waits while its call runs, and its answer once it completes", () => {
     const input = { action: "render.page", parameters: { html: "<p>a</p>", title: "Pick", awaitAnswer: true } }
     expect(renderedPage("openchamber_render", running(input))?.ask).toEqual({ kind: "waiting" })
@@ -329,6 +354,14 @@ describe("renderedPage", () => {
       .toEqual({ kind: "declined" })
     const stopped: ToolState = { status: "error", input, error: "aborted", time: { start: 1, end: 2 } }
     expect(renderedPage("openchamber_render", stopped)?.ask).toEqual({ kind: "unanswered" })
+  })
+
+  test("marks a page shown with answerLater once its call completed, whatever the call stored", () => {
+    const input = { action: "render.page", parameters: { ui: "root = Stack([])", title: "Pick", answerLater: "true" } }
+    // Its call ends when the page appears, so the page is not drawn before.
+    expect(renderedPage("openchamber_render", running(input))).toBe(null)
+    expect(renderedPage("openchamber_render", completed(input, accepted))?.ask).toEqual({ kind: "later" })
+    expect(renderedPage("openchamber_render", completed(input, { openchamber: { ok: false } }))).toBe(null)
   })
 
   test("reads a ui page, which waits and is answered like an html page", () => {
@@ -459,6 +492,21 @@ describe("requestedSecret", () => {
     expect(isShownInPlace("openchamber_secret", running(input))).toBe(true)
     expect(openChamberToolCall("openchamber_secret", input)?.awaitsAnswer).toBe(true)
     expect(openChamberToolCall("openchamber_secret", { action: "secret.forget" })?.awaitsAnswer).toBe(false)
+    // Forgetting the project's saved secrets waits for the user's confirmation.
+    expect(openChamberToolCall("openchamber_secret", { action: "secret.forget", parameters: { saved: "true" } })?.awaitsAnswer).toBe(true)
+  })
+})
+
+describe("requestedSecretForget", () => {
+  const running = (input: ToolInput): ToolState => ({ status: "running", input, time: { start: 1 } })
+
+  test("draws the confirmation card only for a running forget of saved secrets", () => {
+    expect(requestedSecretForget("openchamber_secret", running({ action: "secret.forget", saved: true }))).toBe(true)
+    expect(requestedSecretForget("openchamber_secret", running({ action: "forget", parameters: { saved: "true" } }))).toBe(true)
+    expect(isShownInPlace("openchamber_secret", running({ action: "secret.forget", saved: true }))).toBe(true)
+    expect(requestedSecretForget("openchamber_secret", running({ action: "secret.forget" }))).toBe(false)
+    expect(isShownInPlace("openchamber_secret", running({ action: "secret.forget" }))).toBe(false)
+    expect(requestedSecretForget("openchamber_secret", { status: "completed", input: { action: "secret.forget", saved: true }, output: "", time: { start: 1, end: 2 } })).toBe(false)
   })
 })
 

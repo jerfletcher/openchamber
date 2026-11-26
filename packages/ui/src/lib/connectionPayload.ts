@@ -1,13 +1,5 @@
 const MAX_PAIRING_PAYLOAD_LENGTH = 16_384;
 
-// A pairing candidate is one way to reach the host's HTTP API. `type`
-// discriminates the transport:
-//   - lan / tunnel: reach `url` directly (health-check, then redeem over fetch).
-//   - relay: no reachable URL — open the E2EE relay tunnel to `serverId` via
-//     `relayUrl`, trusting `hostEncPubJwk`, then redeem over the tunnel.
-// The one-time pairing `secret` (payload level) is the single auth credential,
-// redeemed over whichever transport connects first. Relay carries no embedded
-// bearer token — that is the v1 sin this format replaces.
 type PairingDirectCandidate = {
   type: 'lan' | 'tunnel';
   url: string;
@@ -19,9 +11,6 @@ type PairingRelayCandidate = {
   relayUrl: string;
   serverId: string;
   hostEncPubJwk: JsonWebKey;
-  // One-time relay-infrastructure authorization. Reserved: the v1 relay worker
-  // ignores it (E2EE + the pairing secret are the actual gates). Plumbed for
-  // future relay-side per-device/traffic control. Never persisted.
   grant?: string;
   priority?: number;
 };
@@ -85,8 +74,6 @@ const normalizeHttpUrl = (value: unknown): string | null => {
   }
 };
 
-// Relay endpoints are WebSocket URLs and keep their path (e.g. `/ws`, `/tunnel`),
-// so only the fragment is stripped — never the trailing path segment.
 const normalizeWsUrl = (value: unknown): string | null => {
   if (typeof value !== 'string') return null;
   const trimmed = value.trim();
@@ -103,8 +90,6 @@ const normalizeWsUrl = (value: unknown): string | null => {
 
 const isNonEmptyString = (value: unknown): value is string => typeof value === 'string' && value.length > 0;
 
-// EC P-256 public JWK (the relay E2EE trust anchor). Strict: only the four
-// public-key members are retained; a private `d` or any other member is dropped.
 const normalizeEcPublicJwk = (value: unknown): JsonWebKey | null => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const jwk = value as Record<string, unknown>;
@@ -196,14 +181,18 @@ export const encodePairingConnectionPayload = (payload: PairingConnectionPayload
   return `openchamber://connect?${params.toString()}`;
 };
 
+const stripTransferNoise = (value: string): string => value.replace(/[\s\p{Cc}\p{Cf}]+/gu, '');
+
+const trimTransferNoise = (value: string): string => value.replace(/^[\s\p{Cc}\p{Cf}]+|[\s\p{Cc}\p{Cf}]+$/gu, '');
+
 export const parsePairingConnectionPayload = (value: string): PairingConnectionPayload | null => {
-  const trimmed = value.trim();
+  const trimmed = trimTransferNoise(value);
   if (!trimmed || trimmed.length > MAX_PAIRING_PAYLOAD_LENGTH) return null;
   try {
     const url = new URL(trimmed);
     if (url.protocol !== 'openchamber:' || url.hostname !== 'connect') return null;
     if (url.searchParams.get('v') !== '2') return null;
-    const encoded = url.searchParams.get('p') || '';
+    const encoded = stripTransferNoise(url.searchParams.get('p') || '');
     if (!encoded || encoded.length > MAX_PAIRING_PAYLOAD_LENGTH) return null;
     const decoded = base64UrlDecode(encoded);
     if (!decoded || decoded.length > MAX_PAIRING_PAYLOAD_LENGTH) return null;
@@ -213,15 +202,8 @@ export const parsePairingConnectionPayload = (value: string): PairingConnectionP
   }
 };
 
-// URL-string-only sibling of parsePairingConnectionPayload. Old Android WebViews
-// (e.g. WebView 114) mis-parse non-special schemes: `new URL('openchamber://connect?...')`
-// yields hostname "" and pathname "//connect", so the URL-based parser above rejects a
-// perfectly valid pairing link. This parser never touches the URL/URLSearchParams APIs —
-// it matches the head with a regex and reads `v`/`p` straight off the query string.
-// Used by the mobile scan and paste paths after the standard parse fails; keeps every existing
-// validation (version, payload length, base64url, candidate normalization).
 export const parsePairingConnectionPayloadString = (value: string): PairingConnectionPayload | null => {
-  const trimmed = value.trim();
+  const trimmed = trimTransferNoise(value);
   if (!trimmed || trimmed.length > MAX_PAIRING_PAYLOAD_LENGTH) return null;
   const question = trimmed.indexOf('?');
   if (question === -1 || !/^openchamber:\/\/connect\/?$/i.test(trimmed.slice(0, question))) return null;
@@ -233,7 +215,7 @@ export const parsePairingConnectionPayloadString = (value: string): PairingConne
     const key = part.slice(0, eq);
     const value_ = part.slice(eq + 1);
     if (key === 'v') version = value_;
-    else if (key === 'p') encoded = value_;
+    else if (key === 'p') encoded = stripTransferNoise(value_);
   }
   if (version !== '2' || !encoded || encoded.length > MAX_PAIRING_PAYLOAD_LENGTH) return null;
   const decoded = base64UrlDecode(encoded);

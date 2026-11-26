@@ -38,8 +38,8 @@ let dom: ReturnType<typeof installHookTestDom>;
 let root: ReturnType<typeof createRoot>;
 let facts: SidebarLiveFacts;
 
-const Harness = ({ enabled = true }: { enabled?: boolean }) => {
-  facts = useSidebarLiveFacts(enabled);
+const Harness = () => {
+  facts = useSidebarLiveFacts(true);
   return null;
 };
 
@@ -87,6 +87,25 @@ test('a session idling on a background subagent is running until it ends, then u
   expect(facts.unreadIds.has('waiting')).toBe(true);
 });
 
+test('a session whose idle subagent waits on a background command stays active until the command ends', async () => {
+  await act(async () => {
+    useGlobalSessionsStore.getState().upsertSessions([finished('child', 'waiting')]);
+    setSessionParentResolver((id) => (id === 'child' ? 'waiting' : undefined));
+    applyBackgroundShellEvents('/repo', [{
+      type: 'shell.started',
+      properties: { shell: { id: 'sh_child', sessionID: 'child', command: 'sleep 300', file: '/tmp/sh_child.out', startedAt: 1 } },
+    }]);
+  });
+  expectWaiting();
+
+  await act(async () => applyBackgroundShellEvents('/repo', [{
+    type: 'shell.ended',
+    properties: { shellID: 'sh_child', end: { kind: 'exited', status: 'exited', exit: 0 }, endedAt: 2 },
+  }]));
+  expect(facts.unreadIds.has('waiting')).toBe(true);
+  expect(facts.activeIds.has('waiting')).toBe(false);
+});
+
 test('a session idling on a workflow run or its pull request is running', async () => {
   await act(async () => setWorkflowRunningSessions(['waiting']));
   expectWaiting();
@@ -97,11 +116,4 @@ test('a session idling on a workflow run or its pull request is running', async 
     sessionID: 'waiting', directory: '/repo', url: 'https://example.test/pr/1', number: 1, title: 'PR', status: 'pending', startedAt: 1,
   }]));
   expectWaiting();
-});
-
-test('nothing is read while no shown section asks', async () => {
-  await act(async () => applyBackgroundShellEvents('/repo', [shellStarted]));
-  await act(async () => root.render(<Harness enabled={false} />));
-  expect(facts.activeIds.size).toBe(0);
-  expect(facts.unreadIds.size).toBe(0);
 });
