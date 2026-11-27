@@ -13,8 +13,7 @@ export interface ConfigApiKeyOptions {
 }
 
 export const ANTIGRAVITY_ACCOUNTS_PATHS = [
-  path.join(OPENCODE_CONFIG_DIR, 'antigravity-accounts.json'),
-  path.join(getOpenCodeDataDir(), 'antigravity-accounts.json')
+  path.join(OPENCODE_CONFIG_DIR, 'antigravity-accounts.json')
 ];
 
 export const ANTIGRAVITY_CLI_TOKEN_PATHS = [
