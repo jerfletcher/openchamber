@@ -1,6 +1,7 @@
 
 import {
   ANTIGRAVITY_ACCOUNTS_PATHS,
+  ANTIGRAVITY_CLI_TOKEN_PATHS,
   readJsonFile,
   asNonEmptyString,
   toNumber
@@ -8,6 +9,16 @@ import {
 import { parseGoogleRefreshToken } from '../google/transforms.js';
 
 export const DEFAULT_PROJECT_ID = 'rising-fact-p41fc';
+
+export interface AntigravityAuth {
+  sourceId: 'antigravity';
+  sourceLabel: 'Antigravity';
+  refreshToken: string | null;
+  accessToken?: string | null;
+  accessTokenExpiry?: string | null;
+  projectId: string | null;
+  email: unknown;
+}
 
 interface AccountsFile {
   accounts?: unknown;
@@ -21,13 +32,30 @@ interface Account {
   email?: unknown;
 }
 
+interface CliTokenFile {
+  id_token_email?: unknown;
+  token?: unknown;
+}
+
+interface CliTokenPayload {
+  access_token?: unknown;
+  refresh_token?: unknown;
+  expiry?: unknown;
+}
+
+const isCliTokenFile = (value: unknown): value is CliTokenFile =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+const isCliTokenPayload = (value: unknown): value is CliTokenPayload =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
 const isAccountsFile = (value: unknown): value is AccountsFile =>
   value !== null && typeof value === 'object';
 
 const isAccount = (value: unknown): value is Account =>
   value !== null && typeof value === 'object';
 
-export const resolveAntigravityAuth = () => {
+export const resolveAntigravityAuth = (): AntigravityAuth | null => {
   for (const filePath of ANTIGRAVITY_ACCOUNTS_PATHS) {
     const input: unknown = readJsonFile(filePath);
     const data = isAccountsFile(input) ? input : null;
@@ -50,6 +78,26 @@ export const resolveAntigravityAuth = () => {
         };
       }
     }
+  }
+
+  for (const filePath of ANTIGRAVITY_CLI_TOKEN_PATHS) {
+    const input: unknown = readJsonFile(filePath);
+    const data = isCliTokenFile(input) ? input : null;
+    const token = isCliTokenPayload(data?.token) ? data.token : null;
+    if (!token) continue;
+    const accessToken = asNonEmptyString(token.access_token);
+    const refreshToken = asNonEmptyString(token.refresh_token);
+    if (!refreshToken && !accessToken) continue;
+
+    return {
+      sourceId: 'antigravity',
+      sourceLabel: 'Antigravity',
+      refreshToken,
+      accessToken,
+      accessTokenExpiry: asNonEmptyString(token.expiry),
+      projectId: null,
+      email: asNonEmptyString(data?.id_token_email) ?? data?.id_token_email
+    };
   }
 
   return null;

@@ -120,3 +120,68 @@ describe('ACP permission endpoints', () => {
     expect(res.status).toBe(400);
   });
 });
+
+describe('ACP question endpoints', () => {
+  const app = express();
+  app.use(express.json());
+  const runtime = new AcpRuntime({ idleTtlMs: 0 });
+  const answers = [];
+  const bridge = {
+    respondToQuestion(sessionID, requestId, answer) {
+      if (sessionID !== 'ses_ui_1' || requestId !== 'qst_1') {
+        throw new AcpError({ code: ACP_ERROR.RESOURCE_NOT_FOUND, message: `Question request '${requestId}' is not pending` });
+      }
+      answers.push({ sessionID, requestId, answer });
+      return { requestId, outcome: answer === null ? 'cancelled' : 'accepted', ...(answer === null ? {} : { answer }) };
+    },
+    listPendingQuestions(sessionID) {
+      if (sessionID !== 'ses_ui_1') return [];
+      return [{
+        requestId: 'qst_1',
+        formId: 'frm_qst_1',
+        sessionID,
+        title: 'Choose option',
+        fields: [{ key: 'env', type: 'string', title: 'Environment', required: true }],
+      }];
+    },
+  };
+  registerAcpRoutes(app, { runtime, bridge });
+
+  afterAll(() => {
+    runtime.closeAll();
+  });
+
+  it('lists pending questions for a session', async () => {
+    const res = await request(app).get('/api/acp/v1/sessions/ses_ui_1/questions');
+    expect(res.status).toBe(200);
+    expect(res.body.questions).toHaveLength(1);
+    expect(res.body.questions[0].requestId).toBe('qst_1');
+  });
+
+  it('submits answer and handles cancellation', async () => {
+    const replyRes = await request(app)
+      .post('/api/acp/v1/sessions/ses_ui_1/questions/qst_1')
+      .send({ answer: { env: 'staging' } });
+    expect(replyRes.status).toBe(200);
+    expect(replyRes.body).toMatchObject({ success: true, outcome: 'accepted', answer: { env: 'staging' } });
+
+    const cancelRes = await request(app)
+      .post('/api/acp/v1/sessions/ses_ui_1/questions/qst_1')
+      .send({ outcome: 'cancelled' });
+    expect(cancelRes.status).toBe(200);
+    expect(cancelRes.body).toMatchObject({ success: true, outcome: 'cancelled' });
+    expect(answers.at(-1)).toEqual({ sessionID: 'ses_ui_1', requestId: 'qst_1', answer: null });
+  });
+
+  it('returns 404 for unknown question request and 400 on missing answer', async () => {
+    const notFound = await request(app)
+      .post('/api/acp/v1/sessions/ses_ui_1/questions/qst_404')
+      .send({ answer: { env: 'staging' } });
+    expect(notFound.status).toBe(404);
+
+    const badReq = await request(app)
+      .post('/api/acp/v1/sessions/ses_ui_1/questions/qst_1')
+      .send({});
+    expect(badReq.status).toBe(400);
+  });
+});

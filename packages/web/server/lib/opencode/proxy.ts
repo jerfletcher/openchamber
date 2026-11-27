@@ -27,6 +27,7 @@ import type { createHiddenSessionRegistry } from './hidden-sessions.js';
 import type { createMcpOAuthSignIn } from './mcp-oauth.js';
 import type { createGlobalMessageStreamHub } from '../event-stream/global-hub.js';
 import type { AcpBridgeEventHub } from '../acp/acp-session-bridge.js';
+import { httpStatusForAcpError, serializeAcpError } from '../acp/acp-protocol.js';
 import type { SessionMetadata } from '../openchamber-sessions/session-metadata-store.js';
 import type { UnreadBaselineOverlay } from '../openchamber-sessions/unread-baseline.js';
 import type { mergeSessionLists } from '../spaces/space-sessions.js';
@@ -87,6 +88,9 @@ export interface AcpSessionBridgeProxy {
   getSession: (sessionID: string) => unknown;
   getMessage: (sessionID: string, messageID: string) => unknown;
   getMessages: (sessionID: string, query: unknown) => unknown;
+  listPendingForms?: (sessionID?: string, directory?: string | null) => unknown[];
+  getPendingForm?: (sessionID: string, formID: string) => unknown | null;
+  respondToQuestion?: (sessionID: string, requestOrFormId: string, answer: Record<string, unknown> | null | undefined) => unknown;
 }
 
 interface ErrorFields {
@@ -1268,6 +1272,32 @@ export const registerOpenCodeProxy = (app: Application, deps: OpenCodeProxyDepen
   app.get('/api/provider', forwardAcpCatalogOverlay('provider'));
   app.get('/api/model', forwardAcpCatalogOverlay('model'));
 
+  app.get('/api/form', async (req, res, next) => {
+    if (!acpSessionBridge || typeof acpSessionBridge.listPendingForms !== 'function') return next();
+    const rawDir = req.query?.location || req.query?.directory || req.get('x-opencode-directory');
+    const directory = isString(rawDir) && rawDir ? rawDir : null;
+    const acpForms = acpSessionBridge.listPendingForms(undefined, directory);
+    try {
+      const signal = createUpstreamReadSignal({ res, timeoutMs: SESSION_UPSTREAM_TIMEOUT_MS });
+      const upstreamPath = await getRequestUpstreamPath(req);
+      const result = await fetchSessionListPayload(upstreamPath, { req, signal });
+      if (!result.isJson || result.parseError || !result.upstream.ok || !isObject(result.payload) || !Array.isArray(result.payload.data)) {
+        if (res.destroyed || res.writableEnded) return;
+        res.status(200).json({ data: acpForms });
+        return;
+      }
+      res.status(result.upstream.status);
+      applyForwardProxyResponseHeaders(result.upstream.headers, res);
+      res.setHeader('content-type', result.contentType);
+      res.json({ ...result.payload, data: [...result.payload.data, ...acpForms] });
+    } catch (error) {
+      const status = sessionRouteErrorStatus(error);
+      if (status === null) return;
+      if (res.headersSent) return next(error);
+      res.status(200).json({ data: acpForms });
+    }
+  });
+
   app.post('/api/session', parseJsonBody as unknown as RequestHandler, (req, res, next) => {
     const body = isObject(req.body) ? req.body : undefined;
     const model = body && isObject(body.model) ? body.model : undefined;
@@ -1453,6 +1483,71 @@ export const registerOpenCodeProxy = (app: Application, deps: OpenCodeProxyDepen
     const sessionID = sessionIdFromRequest(req);
     if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
       return res.json({ data: [] });
+    }
+    next();
+  });
+
+  app.get('/api/session/:sessionID/form', (req, res, next) => {
+    const sessionID = sessionIdFromRequest(req);
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      const forms = typeof acpSessionBridge.listPendingForms === 'function'
+        ? acpSessionBridge.listPendingForms(sessionID)
+        : [];
+      return res.json({ data: forms });
+    }
+    next();
+  });
+
+  app.get('/api/session/:sessionID/form/:formID', (req, res, next) => {
+    const sessionID = sessionIdFromRequest(req);
+    const formID = isString(req.params?.formID) ? req.params.formID : '';
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      const form = typeof acpSessionBridge.getPendingForm === 'function'
+        ? acpSessionBridge.getPendingForm(sessionID, formID)
+        : null;
+      if (!form) return res.status(404).json({ error: 'Form not found' });
+      return res.json({ data: form });
+    }
+    next();
+  });
+
+  app.post('/api/session/:sessionID/form/:formID/reply', (req, res, next) => {
+    const sessionID = sessionIdFromRequest(req);
+    const formID = isString(req.params?.formID) ? req.params.formID : '';
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      return parseJsonBody(req, res, () => {
+        if (typeof acpSessionBridge.respondToQuestion !== 'function') {
+          return res.status(501).json({ error: 'ACP form reply is not supported' });
+        }
+        const body = isObject(req.body) ? req.body : undefined;
+        const answer = body && isObject(body.answer) ? (body.answer as Record<string, unknown>) : undefined;
+        if (!answer) {
+          return res.status(400).json({ error: 'answer object is required' });
+        }
+        try {
+          acpSessionBridge.respondToQuestion(sessionID, formID, answer);
+          return res.status(204).end();
+        } catch (err) {
+          return res.status(httpStatusForAcpError(err)).json(serializeAcpError(err));
+        }
+      });
+    }
+    next();
+  });
+
+  app.delete('/api/session/:sessionID/form/:formID', (req, res, next) => {
+    const sessionID = sessionIdFromRequest(req);
+    const formID = isString(req.params?.formID) ? req.params.formID : '';
+    if (acpSessionBridge && acpSessionBridge.isAcpSession(sessionID)) {
+      if (typeof acpSessionBridge.respondToQuestion !== 'function') {
+        return res.status(501).json({ error: 'ACP form cancel is not supported' });
+      }
+      try {
+        acpSessionBridge.respondToQuestion(sessionID, formID, null);
+        return res.status(204).end();
+      } catch (err) {
+        return res.status(httpStatusForAcpError(err)).json(serializeAcpError(err));
+      }
     }
     next();
   });

@@ -17,6 +17,10 @@ export const ANTIGRAVITY_ACCOUNTS_PATHS = [
   path.join(getOpenCodeDataDir(), 'antigravity-accounts.json')
 ];
 
+export const ANTIGRAVITY_CLI_TOKEN_PATHS = [
+  path.join(os.homedir(), '.gemini', 'antigravity-cli', 'antigravity-oauth-token')
+];
+
 const isObjectEntry = (value: unknown): value is object => typeof value === 'object';
 
 export const readJsonFile = (filePath: string): JsonValue | null => {

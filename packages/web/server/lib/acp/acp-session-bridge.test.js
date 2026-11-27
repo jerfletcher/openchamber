@@ -750,3 +750,107 @@ describe('AcpSessionBridge P0/P1 fixes', () => {
     expect(events.some((e) => e.type === 'openchamber:acp-commands')).toBe(true);
   });
 });
+
+describe('AcpSessionBridge interactive ask_question -> form.created/settled', () => {
+  const makeTestDir = () => `/tmp/acp-q-bridge-test-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
+
+  const questionRequest = (overrides = {}) => ({
+    requestId: 'qst_1',
+    sessionId: 'mock_acp_q',
+    method: 'elicitation/create',
+    title: 'Confirm environment',
+    fields: [
+      {
+        key: 'env',
+        type: 'string',
+        title: 'Environment',
+        required: true,
+        options: [{ value: 'staging', label: 'Staging' }, { value: 'prod', label: 'Prod' }],
+      },
+    ],
+    rawParams: {},
+    createdAt: 1,
+    settle: () => true,
+    ...overrides,
+  });
+
+  it('emits form.created and form.replied wire events that pass UI classifyStreamPayload', async () => {
+    const { classifyStreamPayload } = await import('../../../../ui/src/sync/event-pipeline.ts');
+    const runtime = new MockRuntime();
+    const answers = [];
+    runtime.respondToQuestion = (acpSessionId, requestId, answer) => {
+      answers.push({ acpSessionId, requestId, answer });
+      return { requestId, outcome: answer === null ? 'cancelled' : 'accepted', ...(answer ? { answer } : {}) };
+    };
+    runtime.cancelPendingQuestions = () => 1;
+
+    const bridge = new AcpSessionBridge({ runtime, dataDir: makeTestDir() });
+    const captured = [];
+    bridge.subscribeEvent((evt) => captured.push(evt));
+
+    const ses = bridge.createSession({ id: 'ses_ui_q', directory: '/repo/q', agent: 'antigravity' });
+    ses.acpSessionId = 'mock_acp_q';
+
+    runtime.emit('question_request', questionRequest());
+    expect(bridge.listPendingForms('ses_ui_q')).toHaveLength(1);
+    const form = bridge.listPendingForms('ses_ui_q')[0];
+    expect(form.id.startsWith('frm_')).toBe(true);
+    expect(form.sessionID).toBe('ses_ui_q');
+
+    const createdWire = captured.find((e) => e.type === 'form.created');
+    expect(createdWire).toBeDefined();
+    const classifiedCreated = classifyStreamPayload(createdWire, '/repo/q');
+    expect(classifiedCreated.kind).toBe('events');
+    expect(classifiedCreated.events[0].event.type).toBe('form.created');
+
+    const replyRes = bridge.respondToQuestion('ses_ui_q', form.id, { env: 'staging' });
+    expect(replyRes).toMatchObject({ outcome: 'accepted', answer: { env: 'staging' } });
+    expect(answers).toEqual([{ acpSessionId: 'mock_acp_q', requestId: 'qst_1', answer: { env: 'staging' } }]);
+
+    runtime.emit('question_settled', {
+      requestId: 'qst_1',
+      sessionId: 'mock_acp_q',
+      outcome: { action: 'accept', content: { env: 'staging' } },
+    });
+    expect(bridge.listPendingForms('ses_ui_q')).toEqual([]);
+
+    const repliedWire = captured.find((e) => e.type === 'form.replied');
+    expect(repliedWire).toBeDefined();
+    const classifiedSettled = classifyStreamPayload(repliedWire, '/repo/q');
+    expect(classifiedSettled.events[0].event).toEqual({
+      type: 'form.settled',
+      properties: { sessionID: 'ses_ui_q', formID: form.id, disposition: 'replied' },
+    });
+  });
+
+  it('emits form.cancelled on dismissal and cancels orphaned requests with no UI session', () => {
+    const runtime = new MockRuntime();
+    const cancellations = [];
+    runtime.cancelPendingQuestions = (acpId) => { cancellations.push(acpId); return 1; };
+    runtime.respondToQuestion = (acpSessionId, requestId, answer) => ({
+      requestId,
+      outcome: answer === null ? 'cancelled' : 'accepted',
+    });
+
+    const bridge = new AcpSessionBridge({ runtime, dataDir: makeTestDir() });
+    const captured = [];
+    bridge.subscribeEvent((evt) => captured.push(evt));
+
+    runtime.emit('question_request', questionRequest({ sessionId: 'acp_unknown' }));
+    expect(cancellations).toEqual(['acp_unknown']);
+    expect(bridge.pendingQuestions.size).toBe(0);
+
+    const ses = bridge.createSession({ id: 'ses_ui_q2', directory: '/repo/q2', agent: 'antigravity' });
+    ses.acpSessionId = 'mock_acp_q';
+    runtime.emit('question_request', questionRequest({ requestId: 'qst_2' }));
+    const form = bridge.listPendingForms('ses_ui_q2')[0];
+
+    expect(bridge.respondToQuestion('ses_ui_q2', form.id, null)).toMatchObject({ outcome: 'cancelled' });
+    runtime.emit('question_settled', {
+      requestId: 'qst_2',
+      sessionId: 'mock_acp_q',
+      outcome: { action: 'cancel' },
+    });
+    expect(captured.some((e) => e.type === 'form.cancelled' && e.data?.id === form.id)).toBe(true);
+  });
+});

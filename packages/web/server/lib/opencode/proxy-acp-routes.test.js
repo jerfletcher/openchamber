@@ -81,6 +81,21 @@ const createMockBridge = () => {
       providers: [{ id: 'antigravity', name: 'Antigravity' }],
       models: [{ id: 'antigravity/gemini-3.8-flash', providerID: 'antigravity', modelID: 'gemini-3.8-flash', variants: ['low', 'high'] }],
     })),
+    listPendingForms: vi.fn((sessionID) => (
+      sessionID === 'ses_agy_existing' || !sessionID
+        ? [{ id: 'frm_qst_1', sessionID: 'ses_agy_existing', title: 'Pick env', fields: [{ key: 'env', type: 'string' }] }]
+        : []
+    )),
+    getPendingForm: vi.fn((sessionID, formID) => (
+      sessionID === 'ses_agy_existing' && formID === 'frm_qst_1'
+        ? { id: 'frm_qst_1', sessionID: 'ses_agy_existing', title: 'Pick env', fields: [{ key: 'env', type: 'string' }] }
+        : null
+    )),
+    respondToQuestion: vi.fn((sessionID, formID, answer) => ({
+      requestId: formID,
+      outcome: answer === null ? 'cancelled' : 'accepted',
+      sessionID,
+    })),
   };
 };
 
@@ -291,5 +306,37 @@ describe('proxy ACP routes', () => {
     const acpMatches = fullText.match(/acp_evt_1/g) || [];
     expect(acpMatches).toHaveLength(1);
     expect(fullText).toContain('space_evt_1');
+  });
+
+  it('routes ACP session form list, reply, cancel, and /api/form overlay without hitting upstream', async () => {
+    const bridge = createMockBridge();
+    const app = express();
+    registerOpenCodeProxy(app, {
+      ...createStubProxyDeps('http://127.0.0.1:1'),
+      acpSessionBridge: bridge,
+    });
+
+    const listRes = await request(app).get('/api/session/ses_agy_existing/form');
+    expect(listRes.status).toBe(200);
+    expect(listRes.body.data).toHaveLength(1);
+    expect(listRes.body.data[0].id).toBe('frm_qst_1');
+
+    const globalListRes = await request(app).get('/api/form');
+    expect(globalListRes.status).toBe(200);
+    expect(globalListRes.body.data).toHaveLength(1);
+
+    const getRes = await request(app).get('/api/session/ses_agy_existing/form/frm_qst_1');
+    expect(getRes.status).toBe(200);
+    expect(getRes.body.data.id).toBe('frm_qst_1');
+
+    const replyRes = await request(app)
+      .post('/api/session/ses_agy_existing/form/frm_qst_1/reply')
+      .send({ answer: { env: 'staging' } });
+    expect(replyRes.status).toBe(204);
+    expect(bridge.respondToQuestion).toHaveBeenCalledWith('ses_agy_existing', 'frm_qst_1', { env: 'staging' });
+
+    const cancelRes = await request(app).delete('/api/session/ses_agy_existing/form/frm_qst_1');
+    expect(cancelRes.status).toBe(204);
+    expect(bridge.respondToQuestion).toHaveBeenCalledWith('ses_agy_existing', 'frm_qst_1', null);
   });
 });

@@ -7,6 +7,7 @@ import {
   DEFAULT_ACP_AGENTS,
   type AcpAgentConfig,
   type AcpPendingPermissionRecord,
+  type AcpPendingQuestionRecord,
   type AcpPromptBlock,
   type AcpRuntimeOptions,
 } from './acp-runtime.js';
@@ -192,6 +193,7 @@ export class AcpSessionBridge extends EventEmitter {
   sessions: Map<string, DynamicRecord>;
   activeTurns: Map<string, TurnAbortController>;
   pendingPermissions: Map<string, { sessionID: string; acpSessionId: string; request: AcpPendingPermissionRecord }>;
+  pendingQuestions: Map<string, { sessionID: string; acpSessionId: string; formId: string; form: DynamicRecord; request: AcpPendingQuestionRecord }>;
   eventHub: AcpBridgeEventHub | null;
   uiBroadcaster: ((payload: unknown) => void) | null;
   _eventSeq: number;
@@ -207,6 +209,7 @@ export class AcpSessionBridge extends EventEmitter {
     this.sessions = new Map();
     this.activeTurns = new Map();
     this.pendingPermissions = new Map();
+    this.pendingQuestions = new Map();
     this.eventHub = options.eventHub || null;
     this.uiBroadcaster = typeof options.broadcastUiEvent === 'function' ? options.broadcastUiEvent : null;
     this._eventSeq = 0;
@@ -216,6 +219,8 @@ export class AcpSessionBridge extends EventEmitter {
     if (typeof this.runtime.on === 'function') {
       this.runtime.on('permission_request', (request: AcpPendingPermissionRecord) => this.handlePermissionRequest(request));
       this.runtime.on('permission_settled', (settled: { requestId: string; sessionId: string; outcome: DynamicRecord }) => this.handlePermissionSettled(settled));
+      this.runtime.on('question_request', (request: AcpPendingQuestionRecord) => this.handleQuestionRequest(request));
+      this.runtime.on('question_settled', (settled: { requestId: string; sessionId: string; outcome: DynamicRecord }) => this.handleQuestionSettled(settled));
     }
   }
 
@@ -312,6 +317,128 @@ export class AcpSessionBridge extends EventEmitter {
     const acpSessionId = this.sessions.get(sessionID)?.acpSessionId;
     if (!acpSessionId) return 0;
     return this.runtime.cancelPendingPermissions?.(acpSessionId) || 0;
+  }
+
+  _findPendingQuestionEntry(requestOrFormId: string) {
+    const direct = this.pendingQuestions.get(requestOrFormId);
+    if (direct) return direct;
+    for (const entry of this.pendingQuestions.values()) {
+      if (entry.request.requestId === requestOrFormId) return entry;
+    }
+    return null;
+  }
+
+  handleQuestionRequest(request: AcpPendingQuestionRecord): void {
+    const session = this.findSessionByAcpId(request.sessionId);
+    if (!session) {
+      this.runtime.cancelPendingQuestions?.(request.sessionId);
+      return;
+    }
+    const directory = session.location?.directory || 'global';
+    const formId = request.requestId.startsWith('frm_') ? request.requestId : `frm_${request.requestId}`;
+    const form: DynamicRecord = {
+      id: formId,
+      sessionID: session.id,
+      title: request.title || 'Question',
+      metadata: {
+        acp: true,
+        requestId: request.requestId,
+        method: request.method,
+        ...(request.elicitationId ? { elicitationId: request.elicitationId } : {}),
+        ...(request.message ? { message: request.message } : {}),
+      },
+      fields: request.fields,
+    };
+    this.pendingQuestions.set(formId, {
+      sessionID: session.id,
+      acpSessionId: request.sessionId,
+      formId,
+      form,
+      request,
+    });
+    this.emitEvent({
+      type: 'form.created',
+      data: { form },
+    }, directory);
+  }
+
+  handleQuestionSettled({ requestId, outcome }: { requestId: string; sessionId: string; outcome: DynamicRecord }): void {
+    const entry = this._findPendingQuestionEntry(requestId);
+    if (!entry) return;
+    this.pendingQuestions.delete(entry.formId);
+    const directory = this.sessions.get(entry.sessionID)?.location?.directory || 'global';
+    if (outcome?.action === 'accept') {
+      this.emitEvent({
+        type: 'form.replied',
+        data: {
+          id: entry.formId,
+          sessionID: entry.sessionID,
+          answer: outcome.content && typeof outcome.content === 'object' ? outcome.content : {},
+        },
+      }, directory);
+      return;
+    }
+    this.emitEvent({
+      type: 'form.cancelled',
+      data: {
+        id: entry.formId,
+        sessionID: entry.sessionID,
+      },
+    }, directory);
+  }
+
+  listPendingForms(sessionID?: string, directory?: string | null): DynamicRecord[] {
+    return Array.from(this.pendingQuestions.values())
+      .filter((entry) => {
+        if (sessionID && entry.sessionID !== sessionID) return false;
+        if (directory) {
+          const sessionDir = this.sessions.get(entry.sessionID)?.location?.directory;
+          if (sessionDir && sessionDir !== directory) return false;
+        }
+        return true;
+      })
+      .map((entry) => entry.form);
+  }
+
+  getPendingForm(sessionID: string, formID: string): DynamicRecord | null {
+    const entry = this._findPendingQuestionEntry(formID);
+    if (!entry || entry.sessionID !== sessionID) return null;
+    return entry.form;
+  }
+
+  listPendingQuestions(sessionID: string) {
+    return Array.from(this.pendingQuestions.values())
+      .filter((entry) => entry.sessionID === sessionID)
+      .map((entry) => ({
+        requestId: entry.request.requestId,
+        formId: entry.formId,
+        sessionID: entry.sessionID,
+        title: entry.form.title,
+        fields: entry.form.fields,
+        createdAt: entry.request.createdAt,
+      }));
+  }
+
+  respondToQuestion(
+    sessionID: string,
+    requestOrFormId: string,
+    answer: Record<string, unknown> | null | undefined,
+  ) {
+    const entry = this._findPendingQuestionEntry(requestOrFormId);
+    if (!entry || entry.sessionID !== sessionID) {
+      throw new AcpError({
+        code: ACP_ERROR.RESOURCE_NOT_FOUND,
+        message: `Question request '${requestOrFormId}' is not pending for session '${sessionID}'`,
+        data: { sessionID, requestId: requestOrFormId },
+      });
+    }
+    return this.runtime.respondToQuestion(entry.acpSessionId, entry.request.requestId, answer);
+  }
+
+  cancelQuestions(sessionID: string): number {
+    const acpSessionId = this.sessions.get(sessionID)?.acpSessionId;
+    if (!acpSessionId) return 0;
+    return this.runtime.cancelPendingQuestions?.(acpSessionId) || 0;
   }
 
   setEventHub(hub: AcpBridgeEventHub | null): void {
@@ -1183,6 +1310,8 @@ export class AcpSessionBridge extends EventEmitter {
       const session = this.sessions.get(sessionId);
       const directory = session?.location?.directory || 'global';
       if (session) {
+        this.cancelPermissions(sessionId);
+        this.cancelQuestions(sessionId);
         if (session.acpSessionId && typeof this.runtime.cancel === 'function') {
           this.runtime.cancel(session.acpSessionId).catch(() => {});
         }
@@ -1878,6 +2007,7 @@ export class AcpSessionBridge extends EventEmitter {
       // would show forever and then 404 when answered. `cancelled` is the only
       // honest answer for a request nobody can act on any more.
       this.cancelPermissions(sessionId);
+      this.cancelQuestions(sessionId);
       // Do NOT close acpSession! Keep ACP session alive across turns for conversation memory!
     }
   }

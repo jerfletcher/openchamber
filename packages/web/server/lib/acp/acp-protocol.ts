@@ -673,3 +673,321 @@ export function normalizeNotification(method: string, params: unknown) {
   }
   return null;
 }
+
+export interface AcpQuestionFieldOptionNormalized {
+  value: string;
+  label: string;
+  description?: string;
+}
+
+export interface AcpQuestionFieldNormalized {
+  key: string;
+  type: 'string' | 'number' | 'integer' | 'boolean' | 'multiselect';
+  title?: string;
+  description?: string;
+  required?: boolean;
+  format?: 'email' | 'uri' | 'date' | 'date-time';
+  minLength?: number;
+  maxLength?: number;
+  pattern?: string;
+  placeholder?: string;
+  minimum?: number;
+  maximum?: number;
+  minItems?: number;
+  maxItems?: number;
+  options?: AcpQuestionFieldOptionNormalized[];
+  custom?: boolean;
+  default?: string | number | boolean | string[];
+}
+
+export type AcpQuestionRequestMethod = 'elicitation/create' | 'ask_question';
+
+export interface AcpNormalizedQuestionRequest {
+  sessionId: string;
+  method: AcpQuestionRequestMethod;
+  elicitationId?: string;
+  title: string;
+  message?: string;
+  fields: AcpQuestionFieldNormalized[];
+  rawParams: Record<string, unknown>;
+}
+
+const VALID_STRING_FORMATS = new Set(['email', 'uri', 'date', 'date-time']);
+
+function extractSchemaOptions(schema: Record<string, unknown>, fallbackEnumNames?: unknown[]): AcpQuestionFieldOptionNormalized[] {
+  const options: AcpQuestionFieldOptionNormalized[] = [];
+  const oneOfOrAnyOf = Array.isArray(schema.oneOf)
+    ? schema.oneOf
+    : Array.isArray(schema.anyOf)
+      ? schema.anyOf
+      : null;
+
+  if (oneOfOrAnyOf) {
+    for (const rawEntry of oneOfOrAnyOf) {
+      if (!rawEntry || typeof rawEntry !== 'object') continue;
+      const entry = rawEntry as Record<string, unknown>;
+      const value = typeof entry.const === 'string'
+        ? entry.const
+        : typeof entry.value === 'string'
+          ? entry.value
+          : typeof entry.id === 'string'
+            ? entry.id
+            : '';
+      if (!value) continue;
+      options.push({
+        value,
+        label: typeof entry.title === 'string' && entry.title ? entry.title : (typeof entry.label === 'string' && entry.label ? entry.label : value),
+        ...(typeof entry.description === 'string' && entry.description ? { description: entry.description } : {}),
+      });
+    }
+    return options;
+  }
+
+  if (Array.isArray(schema.enum)) {
+    const names = Array.isArray(schema.enumNames)
+      ? schema.enumNames
+      : Array.isArray(fallbackEnumNames)
+        ? fallbackEnumNames
+        : [];
+    schema.enum.forEach((rawVal, idx) => {
+      if (rawVal === null || rawVal === undefined) return;
+      const value = String(rawVal);
+      if (!value) return;
+      const label = typeof names[idx] === 'string' && names[idx] ? String(names[idx]) : value;
+      options.push({ value, label });
+    });
+  }
+
+  return options;
+}
+
+function schemaPropertyToFormField(
+  key: string,
+  rawSchema: unknown,
+  requiredSet: Set<string>,
+): AcpQuestionFieldNormalized {
+  const prop = rawSchema && typeof rawSchema === 'object' ? (rawSchema as Record<string, unknown>) : {};
+  const title = typeof prop.title === 'string' && prop.title ? prop.title : key;
+  const description = typeof prop.description === 'string' && prop.description ? prop.description : undefined;
+  const required = requiredSet.has(key);
+  const rawType = typeof prop.type === 'string' ? prop.type : 'string';
+
+  if (rawType === 'boolean') {
+    return {
+      key,
+      type: 'boolean',
+      title,
+      ...(description ? { description } : {}),
+      required,
+      ...(typeof prop.default === 'boolean' ? { default: prop.default } : {}),
+    };
+  }
+
+  if (rawType === 'number' || rawType === 'integer') {
+    return {
+      key,
+      type: rawType,
+      title,
+      ...(description ? { description } : {}),
+      required,
+      ...(typeof prop.minimum === 'number' ? { minimum: prop.minimum } : {}),
+      ...(typeof prop.maximum === 'number' ? { maximum: prop.maximum } : {}),
+      ...(typeof prop.default === 'number' ? { default: prop.default } : {}),
+    };
+  }
+
+  if (rawType === 'array') {
+    const items = prop.items && typeof prop.items === 'object' ? (prop.items as Record<string, unknown>) : {};
+    const options = extractSchemaOptions(items, Array.isArray(prop.enumNames) ? prop.enumNames : undefined);
+    const defaultArr = Array.isArray(prop.default) ? prop.default.map((v) => String(v)) : undefined;
+    return {
+      key,
+      type: 'multiselect',
+      title,
+      ...(description ? { description } : {}),
+      required,
+      options,
+      ...(typeof prop.minItems === 'number' ? { minItems: prop.minItems } : {}),
+      ...(typeof prop.maxItems === 'number' ? { maxItems: prop.maxItems } : {}),
+      ...(typeof prop.allowCustom === 'boolean' ? { custom: prop.allowCustom } : {}),
+      ...(defaultArr ? { default: defaultArr } : {}),
+    };
+  }
+
+  const options = extractSchemaOptions(prop);
+  const format = typeof prop.format === 'string' && VALID_STRING_FORMATS.has(prop.format)
+    ? (prop.format as 'email' | 'uri' | 'date' | 'date-time')
+    : undefined;
+  return {
+    key,
+    type: 'string',
+    title,
+    ...(description ? { description } : {}),
+    required,
+    ...(format ? { format } : {}),
+    ...(typeof prop.minLength === 'number' ? { minLength: prop.minLength } : {}),
+    ...(typeof prop.maxLength === 'number' ? { maxLength: prop.maxLength } : {}),
+    ...(typeof prop.pattern === 'string' ? { pattern: prop.pattern } : {}),
+    ...(typeof prop.placeholder === 'string' ? { placeholder: prop.placeholder } : {}),
+    ...(options.length > 0 ? { options } : {}),
+    ...(typeof prop.allowCustom === 'boolean' ? { custom: prop.allowCustom } : {}),
+    ...(typeof prop.default === 'string' ? { default: prop.default } : {}),
+  };
+}
+
+function normalizeQuestionOptions(rawOptions: unknown): AcpQuestionFieldOptionNormalized[] {
+  if (!Array.isArray(rawOptions)) return [];
+  const options: AcpQuestionFieldOptionNormalized[] = [];
+  for (const rawOption of rawOptions) {
+    if (typeof rawOption === 'string') {
+      if (rawOption) options.push({ value: rawOption, label: rawOption });
+      continue;
+    }
+    if (!rawOption || typeof rawOption !== 'object') continue;
+    const opt = rawOption as Record<string, unknown>;
+    const value = firstString(opt.value, opt.optionId, opt.id, opt.label, opt.name);
+    if (!value) continue;
+    const label = firstString(opt.label, opt.name, opt.title) || value;
+    options.push({
+      value,
+      label,
+      ...(typeof opt.description === 'string' && opt.description ? { description: opt.description } : {}),
+    });
+  }
+  return options;
+}
+
+/**
+ * Normalize either an ACP `elicitation/create` or `ask_question` request into
+ * OpenChamber form fields so `FormDock` can render and answer it natively.
+ */
+export function normalizeQuestionRequest(
+  params: unknown,
+  method: AcpQuestionRequestMethod = 'elicitation/create',
+): AcpNormalizedQuestionRequest {
+  if (!params || typeof params !== 'object') {
+    throw new AcpError({
+      code: ACP_ERROR.INVALID_PARAMS,
+      message: `${method} requires a params object`,
+    });
+  }
+  const p = params as Record<string, unknown>;
+  const sessionId = typeof p.sessionId === 'string' ? p.sessionId : '';
+  if (!sessionId) {
+    throw new AcpError({
+      code: ACP_ERROR.INVALID_PARAMS,
+      message: `${method} requires a sessionId`,
+    });
+  }
+
+  const elicitationId = firstString(p.elicitationId, p.elicitation_id) || undefined;
+  const message = typeof p.message === 'string' && p.message.trim() ? p.message.trim() : undefined;
+  const fields: AcpQuestionFieldNormalized[] = [];
+
+  const requestedSchema = p.requestedSchema && typeof p.requestedSchema === 'object'
+    ? (p.requestedSchema as Record<string, unknown>)
+    : null;
+
+  if (requestedSchema && requestedSchema.properties && typeof requestedSchema.properties === 'object') {
+    const requiredSet = new Set(
+      Array.isArray(requestedSchema.required)
+        ? requestedSchema.required.filter((k): k is string => typeof k === 'string')
+        : [],
+    );
+    for (const [key, propSchema] of Object.entries(requestedSchema.properties as Record<string, unknown>)) {
+      if (!key) continue;
+      fields.push(schemaPropertyToFormField(key, propSchema, requiredSet));
+    }
+  } else if (Array.isArray(p.questions)) {
+    p.questions.forEach((rawQ, idx) => {
+      if (!rawQ || typeof rawQ !== 'object') return;
+      const q = rawQ as Record<string, unknown>;
+      const key = firstString(q.key, q.id, q.header) || `question_${idx + 1}`;
+      const qTitle = firstString(q.question, q.title, q.header, q.prompt) || key;
+      const qDesc = typeof q.description === 'string' && q.description ? q.description : undefined;
+      const options = normalizeQuestionOptions(q.options);
+      const multi = q.multiSelect === true || q.multi_select === true || q.multiple === true;
+      const allowCustom = q.allowCustom === true || q.allow_custom === true || q.custom === true;
+      const required = typeof q.required === 'boolean' ? q.required : true;
+      if (multi && options.length > 0) {
+        fields.push({
+          key,
+          type: 'multiselect',
+          title: qTitle,
+          ...(qDesc ? { description: qDesc } : {}),
+          required,
+          options,
+          ...(allowCustom ? { custom: true } : {}),
+        });
+      } else {
+        fields.push({
+          key,
+          type: 'string',
+          title: qTitle,
+          ...(qDesc ? { description: qDesc } : {}),
+          required,
+          ...(options.length > 0 ? { options } : {}),
+          ...(allowCustom ? { custom: true } : {}),
+        });
+      }
+    });
+  } else if (typeof p.question === 'string' && p.question.trim()) {
+    const options = normalizeQuestionOptions(p.options);
+    const multi = p.multiSelect === true || p.multi_select === true || p.multiple === true;
+    const allowCustom = p.allowCustom === true || p.allow_custom === true || p.custom === true;
+    const key = firstString(p.key, p.id) || 'answer';
+    if (multi && options.length > 0) {
+      fields.push({
+        key,
+        type: 'multiselect',
+        title: p.question.trim(),
+        required: true,
+        options,
+        ...(allowCustom ? { custom: true } : {}),
+      });
+    } else {
+      fields.push({
+        key,
+        type: 'string',
+        title: p.question.trim(),
+        required: true,
+        ...(options.length > 0 ? { options } : {}),
+        ...(allowCustom ? { custom: true } : {}),
+      });
+    }
+  }
+
+  const title = firstString(p.title, message, fields[0]?.title) || 'Question';
+  if (fields.length === 0) {
+    fields.push({
+      key: 'answer',
+      type: 'string',
+      title,
+      required: true,
+    });
+  }
+
+  return {
+    sessionId,
+    method,
+    ...(elicitationId ? { elicitationId } : {}),
+    title,
+    ...(message ? { message } : {}),
+    fields,
+    rawParams: p,
+  };
+}
+
+export function buildQuestionAcceptedOutcome(method: AcpQuestionRequestMethod, content: Record<string, unknown>) {
+  if (method === 'ask_question') {
+    return { action: 'accept' as const, content, answers: content };
+  }
+  return { action: 'accept' as const, content };
+}
+
+export function buildQuestionCancelledOutcome(method: AcpQuestionRequestMethod) {
+  if (method === 'ask_question') {
+    return { action: 'cancel' as const, skipped: true };
+  }
+  return { action: 'cancel' as const };
+}

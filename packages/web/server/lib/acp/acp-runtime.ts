@@ -11,18 +11,23 @@ import {
   AcpProtocolVersionMismatchError,
   buildPermissionCancelledOutcome,
   buildPermissionSelectedOutcome,
+  buildQuestionAcceptedOutcome,
+  buildQuestionCancelledOutcome,
   configOptionValue,
   isMethodNotFoundError,
   normalizeAgentCapabilities,
   normalizeConfigOptions,
   normalizeNotification,
   normalizePermissionRequest,
+  normalizeQuestionRequest,
   normalizeSessionConfig,
   normalizeSessionUpdate,
   type AcpCommandNormalized,
   type AcpConfigOptionNormalized,
   type AcpPermissionOptionNormalized,
   type AcpPlanEntryNormalized,
+  type AcpQuestionFieldNormalized,
+  type AcpQuestionRequestMethod,
 } from './acp-protocol.js';
 
 export interface AcpAgentModelSpec {
@@ -51,6 +56,7 @@ export interface AcpAgentConfig {
 export interface AcpRuntimeOptions {
   agents?: AcpAgentConfig[];
   idleTtlMs?: number;
+  resolveSalContext?: (cwd: string) => string | null;
 }
 
 export interface AcpPendingPermissionRecord {
@@ -58,6 +64,19 @@ export interface AcpPendingPermissionRecord {
   sessionId: string;
   toolCall: Record<string, unknown>;
   options: AcpPermissionOptionNormalized[];
+  createdAt: number;
+  settle: (outcome: unknown) => boolean;
+}
+
+export interface AcpPendingQuestionRecord {
+  requestId: string;
+  sessionId: string;
+  method: AcpQuestionRequestMethod;
+  elicitationId?: string;
+  title: string;
+  message?: string;
+  fields: AcpQuestionFieldNormalized[];
+  rawParams: Record<string, unknown>;
   createdAt: number;
   settle: (outcome: unknown) => boolean;
 }
@@ -105,8 +124,27 @@ export interface AcpSessionRecord {
   busy?: boolean;
   messages: Array<Record<string, unknown>>;
   pendingPermissions: Map<string, AcpPendingPermissionRecord>;
+  pendingQuestions: Map<string, AcpPendingQuestionRecord>;
   unregisterPermissionHandler?: () => void;
+  poolKey?: string;
+  poolRef?: symbol;
   emitter: EventEmitter;
+}
+
+interface InitializedAcpMetadata {
+  capabilities: ReturnType<typeof normalizeAgentCapabilities>;
+  agentCapabilities: Record<string, unknown>;
+  agentInfo: { name?: string; [key: string]: unknown } | undefined;
+  authMethods: unknown[];
+}
+
+interface PooledAcpConnection {
+  key: string | null;
+  conn: AcpConnection;
+  initPromise: Promise<InitializedAcpMetadata>;
+  refs: Set<symbol>;
+  sessionsById: Map<string, AcpSessionRecord>;
+  inFlightSessions: Set<AcpSessionRecord>;
 }
 
 /**
@@ -157,6 +195,28 @@ export function checkBinaryExists(command: string): boolean {
   } catch {
     return false;
   }
+}
+
+/**
+ * Resolve SAL session-start context for agents (such as `agy acp`) that do not
+ * execute workspace `SessionStart` hooks directly.
+ */
+export function resolveSalContext(cwd: string, command = 'sal'): string | null {
+  for (const subcommand of ['context', 'self']) {
+    try {
+      const output = execFileSync(command, [subcommand, 'render', '--target', 'gemini'], {
+        cwd,
+        encoding: 'utf8',
+        timeout: 2000,
+        stdio: ['ignore', 'pipe', 'ignore'],
+      });
+      const trimmed = output.trim();
+      if (trimmed.length > 0) return trimmed;
+    } catch {
+      // Try next fallback
+    }
+  }
+  return null;
 }
 
 /**
@@ -219,18 +279,24 @@ export const DEFAULT_ACP_AGENTS: AcpAgentConfig[] = [
 export class AcpRuntime extends EventEmitter {
   customAgents: AcpAgentConfig[];
   activeSessions: Map<string, AcpSessionRecord>;
+  connectionPool: Map<string, PooledAcpConnection>;
   idleTtlMs: number;
   nextPermissionId: number;
+  nextQuestionId: number;
+  salContextResolver: (cwd: string) => string | null;
   reaper?: ReturnType<typeof setInterval>;
 
   constructor(options: AcpRuntimeOptions = {}) {
     super();
     this.customAgents = options.agents || [];
     this.activeSessions = new Map(); // sessionId -> { conn, agentId, cwd, models, currentModelId }
+    this.connectionPool = new Map(); // `${agentId}:${effectiveCwd}` -> PooledAcpConnection
     this.idleTtlMs = options.idleTtlMs ?? 20 * 60 * 1000;
-    // Permission ids are ours, not the agent's JSON-RPC id: they travel through
-    // a URL and must stay opaque and URL-safe.
+    this.salContextResolver = options.resolveSalContext ?? resolveSalContext;
+    // Permission and question ids are ours, not the agent's JSON-RPC id: they
+    // travel through a URL and must stay opaque and URL-safe.
     this.nextPermissionId = 1;
+    this.nextQuestionId = 1;
     if (this.idleTtlMs > 0) {
       this.reaper = setInterval(() => this.reapIdle(), Math.min(60_000, this.idleTtlMs));
       this.reaper.unref?.();
@@ -250,6 +316,252 @@ export class AcpRuntime extends EventEmitter {
     return this.getRegisteredAgents().filter((a) => checkBinaryExists(a.command));
   }
 
+  private applySessionUpdate(
+    sessionData: AcpSessionRecord,
+    normalized: NonNullable<ReturnType<typeof normalizeSessionUpdate>>,
+    rawUpdate: unknown,
+  ): void {
+    switch (normalized.type) {
+      case 'text_delta':
+        sessionData.emitter.emit('text_delta', normalized.text);
+        break;
+      case 'thought_delta':
+        sessionData.emitter.emit('thought_delta', normalized.text);
+        break;
+      case 'user_message_chunk':
+        sessionData.emitter.emit('user_message_chunk', normalized.text);
+        break;
+      case 'tool_call':
+        sessionData.emitter.emit('tool_call', normalized.toolCall);
+        break;
+      case 'tool_call_update':
+        sessionData.emitter.emit('tool_update', rawUpdate);
+        break;
+      case 'plan':
+        // The agent MUST send the complete plan each time, so replace, never merge.
+        sessionData.plan = normalized.entries;
+        sessionData.emitter.emit('plan', normalized.entries);
+        break;
+      case 'current_mode':
+        sessionData.currentModeId = normalized.modeId || sessionData.currentModeId;
+        sessionData.emitter.emit('mode', sessionData.currentModeId);
+        break;
+      case 'config_options':
+        sessionData.configOptions = normalized.configOptions;
+        sessionData.emitter.emit('config_options', normalized.configOptions);
+        break;
+      case 'available_commands':
+        sessionData.availableCommands = normalized.availableCommands;
+        sessionData.emitter.emit('commands', normalized.availableCommands);
+        break;
+      case 'session_info':
+        if (normalized.title) {
+          sessionData.title = normalized.title;
+          sessionData.emitter.emit('title', normalized.title);
+        }
+        break;
+      case 'usage':
+        sessionData.usage = normalized.usage;
+        sessionData.emitter.emit('usage', normalized.usage);
+        break;
+      default:
+        break;
+    }
+
+    sessionData.updatedAt = Date.now();
+    sessionData.emitter.emit('update', rawUpdate);
+  }
+
+  private resolveNotificationTarget(entry: PooledAcpConnection, params: unknown): AcpSessionRecord | null {
+    const sid = params && typeof params === 'object' ? (params as { sessionId?: unknown }).sessionId : undefined;
+    if (typeof sid === 'string' && sid) {
+      const matched = entry.sessionsById.get(sid);
+      if (matched) return matched;
+      if (entry.inFlightSessions.size === 1) return Array.from(entry.inFlightSessions)[0] || null;
+      return null;
+    }
+    if (entry.sessionsById.size === 1 && entry.inFlightSessions.size === 0) {
+      return Array.from(entry.sessionsById.values())[0] || null;
+    }
+    if (entry.sessionsById.size === 0 && entry.inFlightSessions.size === 1) {
+      return Array.from(entry.inFlightSessions)[0] || null;
+    }
+    return null;
+  }
+
+  private resolveRequestTarget(entry: PooledAcpConnection, method: string, params: unknown): AcpSessionRecord {
+    const sid = params && typeof params === 'object' ? (params as { sessionId?: unknown }).sessionId : undefined;
+    if (typeof sid === 'string' && sid) {
+      const matched = entry.sessionsById.get(sid);
+      if (matched) return matched;
+      if (entry.sessionsById.size === 1) {
+        return Array.from(entry.sessionsById.values())[0]!;
+      }
+      throw new AcpError({
+        code: ACP_ERROR.INVALID_PARAMS,
+        message: `${method} named unknown session '${sid}' for this connection`,
+      });
+    }
+    if (entry.sessionsById.size === 1) {
+      return Array.from(entry.sessionsById.values())[0]!;
+    }
+    throw new AcpError({
+      code: ACP_ERROR.INVALID_PARAMS,
+      message: `${method} requires a sessionId`,
+    });
+  }
+
+  private createConnectionEntry(agent: AcpAgentConfig, effectiveCwd: string, poolKey: string | null): PooledAcpConnection {
+    const resolvedCommand = resolveBinaryPath(agent.command);
+    const conn = new AcpConnection(resolvedCommand, buildAgentArgs(agent), { cwd: effectiveCwd });
+    const entry: PooledAcpConnection = {
+      key: poolKey,
+      conn,
+      initPromise: null as unknown as Promise<InitializedAcpMetadata>,
+      refs: new Set(),
+      sessionsById: new Map(),
+      inFlightSessions: new Set(),
+    };
+
+    conn.on('error', (err: Error) => {
+      console.error(`[AcpRuntime] Connection error for ${agent.id}:`, err.message);
+      if (poolKey && this.connectionPool.get(poolKey) === entry) {
+        this.connectionPool.delete(poolKey);
+      }
+    });
+
+    conn.on('close', () => {
+      if (poolKey && this.connectionPool.get(poolKey) === entry) {
+        this.connectionPool.delete(poolKey);
+      }
+      for (const sessionData of Array.from(entry.sessionsById.values())) {
+        this.cancelPendingPermissions(sessionData.sessionId);
+        this.cancelPendingQuestions(sessionData.sessionId);
+      }
+    });
+
+    conn.on('session/update', (params: unknown) => {
+      const p = params && typeof params === 'object' ? (params as { update?: unknown }) : undefined;
+      if (!p?.update) return;
+      const target = this.resolveNotificationTarget(entry, params);
+      if (!target) return;
+      const normalized = normalizeSessionUpdate(p.update);
+      if (!normalized) return;
+      this.applySessionUpdate(target, normalized, p.update);
+    });
+
+    for (const method of Object.values(ACP_EXTENSION_NOTIFICATION)) {
+      conn.on(method, (params: unknown) => {
+        const target = this.resolveNotificationTarget(entry, params);
+        if (!target) return;
+        const normalized = normalizeNotification(method, params);
+        if (!normalized) return;
+        this.applySessionUpdate(target, normalized, params);
+      });
+    }
+
+    conn.registerRequestHandler('session/request_permission', (params) => {
+      const target = this.resolveRequestTarget(entry, 'session/request_permission', params);
+      return this.handlePermissionRequest(target, params);
+    });
+
+    conn.registerRequestHandler('elicitation/create', (params) => {
+      const target = this.resolveRequestTarget(entry, 'elicitation/create', params);
+      return this.handleQuestionRequest(target, params, 'elicitation/create');
+    });
+
+    conn.registerRequestHandler('ask_question', (params) => {
+      const target = this.resolveRequestTarget(entry, 'ask_question', params);
+      return this.handleQuestionRequest(target, params, 'ask_question');
+    });
+
+    conn.start();
+
+    entry.initPromise = (async () => {
+      const initResult = (await conn.request('initialize', {
+        protocolVersion: ACP_PROTOCOL_VERSION,
+        clientCapabilities: {
+          elicitation: { form: {} },
+        },
+        clientInfo: { name: 'openchamber', title: 'OpenChamber', version: '2.6.1' },
+      })) as Record<string, unknown> | null;
+
+      if (initResult?.protocolVersion !== ACP_PROTOCOL_VERSION) {
+        const received = initResult?.protocolVersion as number | string | null | undefined;
+        conn.close();
+        throw new AcpProtocolVersionMismatchError({
+          requested: ACP_PROTOCOL_VERSION,
+          ...(received !== undefined ? { received } : {}),
+        });
+      }
+
+      const capabilities = normalizeAgentCapabilities(initResult.agentCapabilities);
+      const agentCapabilities = initResult.agentCapabilities && typeof initResult.agentCapabilities === 'object'
+        ? (initResult.agentCapabilities as Record<string, unknown>)
+        : {};
+      const agentInfo = initResult.agentInfo && typeof initResult.agentInfo === 'object'
+        ? (initResult.agentInfo as { name?: string; [key: string]: unknown })
+        : undefined;
+      const authMethods = Array.isArray(initResult.authMethods) ? initResult.authMethods : [];
+
+      return { capabilities, agentCapabilities, agentInfo, authMethods };
+    })().catch((err) => {
+      if (poolKey && this.connectionPool.get(poolKey) === entry) {
+        this.connectionPool.delete(poolKey);
+      }
+      try {
+        conn.close();
+      } catch { /* ignore */ }
+      throw err;
+    });
+
+    if (poolKey) {
+      this.connectionPool.set(poolKey, entry);
+    }
+    return entry;
+  }
+
+  private async acquireConnection(agent: AcpAgentConfig, effectiveCwd: string): Promise<{
+    entry: PooledAcpConnection;
+    poolKey: string | undefined;
+    poolRef: symbol;
+    init: InitializedAcpMetadata;
+  }> {
+    const poolKey = agent.id === 'antigravity' ? `${agent.id}:${effectiveCwd}` : null;
+    let entry = poolKey ? this.connectionPool.get(poolKey) : undefined;
+    if (entry && (entry.conn.closed || !entry.conn.isAlive())) {
+      this.connectionPool.delete(poolKey!);
+      entry = undefined;
+    }
+    if (!entry) {
+      entry = this.createConnectionEntry(agent, effectiveCwd, poolKey);
+    }
+    const poolRef = Symbol(poolKey || agent.id);
+    entry.refs.add(poolRef);
+    try {
+      const init = await entry.initPromise;
+      return { entry, poolKey: poolKey ?? undefined, poolRef, init };
+    } catch (err) {
+      entry.refs.delete(poolRef);
+      if (poolKey && this.connectionPool.get(poolKey) === entry && entry.refs.size === 0) {
+        this.connectionPool.delete(poolKey);
+      }
+      throw err;
+    }
+  }
+
+  private releaseConnectionRef(entry: PooledAcpConnection, poolKey: string | undefined, poolRef: symbol): void {
+    entry.refs.delete(poolRef);
+    if (!poolKey || entry.refs.size === 0) {
+      if (poolKey && this.connectionPool.get(poolKey) === entry) {
+        this.connectionPool.delete(poolKey);
+      }
+      try {
+        entry.conn.close();
+      } catch { /* ignore */ }
+    }
+  }
+
   async createSession({ agentId = 'antigravity', cwd = process.cwd(), resumeSessionId = null }: { agentId?: string; cwd?: string; resumeSessionId?: string | null } = {}) {
     const agent = this.getAvailableAgents().find((a) => a.id === agentId);
     if (!agent) {
@@ -260,35 +572,10 @@ export class AcpRuntime extends EventEmitter {
     if (!effectiveCwd || !fs.existsSync(effectiveCwd)) {
       effectiveCwd = process.env.HOME || '/home/jeremy';
     }
-    const resolvedCommand = resolveBinaryPath(agent.command);
-    const conn = new AcpConnection(resolvedCommand, buildAgentArgs(agent), { cwd: effectiveCwd });
-    conn.on('error', (err: Error) => {
-      console.error(`[AcpRuntime] Connection error for ${agentId}:`, err.message);
-    });
-    conn.start();
 
-    const initResult = (await conn.request('initialize', {
-      protocolVersion: ACP_PROTOCOL_VERSION,
-      clientCapabilities: {},
-      clientInfo: { name: 'openchamber', title: 'OpenChamber', version: '2.6.1' },
-    })) as Record<string, unknown> | null;
-
-    if (initResult?.protocolVersion !== ACP_PROTOCOL_VERSION) {
-      const received = initResult?.protocolVersion as number | string | null | undefined;
-      conn.close();
-      throw new AcpProtocolVersionMismatchError({
-        requested: ACP_PROTOCOL_VERSION,
-        ...(received !== undefined ? { received } : {}),
-      });
-    }
-
-    const capabilities = normalizeAgentCapabilities(initResult.agentCapabilities);
-    const agentCapabilities = initResult.agentCapabilities && typeof initResult.agentCapabilities === 'object'
-      ? (initResult.agentCapabilities as Record<string, unknown>)
-      : {};
-    const agentInfo = initResult.agentInfo && typeof initResult.agentInfo === 'object'
-      ? (initResult.agentInfo as { name?: string; [key: string]: unknown })
-      : undefined;
+    const { entry, poolKey, poolRef, init } = await this.acquireConnection(agent, effectiveCwd);
+    const { conn } = entry;
+    const { capabilities, agentCapabilities, agentInfo, authMethods } = init;
 
     const sessionData: AcpSessionRecord = {
       sessionId: '',
@@ -297,7 +584,7 @@ export class AcpRuntime extends EventEmitter {
       agentCapabilities,
       capabilities,
       promptCapabilities: capabilities.promptCapabilities,
-      authMethods: Array.isArray(initResult.authMethods) ? initResult.authMethods : [],
+      authMethods,
       cwd,
       conn,
       availableModels: [],
@@ -314,106 +601,56 @@ export class AcpRuntime extends EventEmitter {
       updatedAt: Date.now(),
       messages: [],
       pendingPermissions: new Map(),
+      pendingQuestions: new Map(),
+      ...(poolKey ? { poolKey, poolRef } : {}),
       emitter: new EventEmitter(),
     };
 
-    const applyUpdate = (normalized: NonNullable<ReturnType<typeof normalizeSessionUpdate>>, rawUpdate: unknown) => {
-      switch (normalized.type) {
-        case 'text_delta':
-          sessionData.emitter.emit('text_delta', normalized.text);
-          break;
-        case 'thought_delta':
-          sessionData.emitter.emit('thought_delta', normalized.text);
-          break;
-        case 'user_message_chunk':
-          sessionData.emitter.emit('user_message_chunk', normalized.text);
-          break;
-        case 'tool_call':
-          sessionData.emitter.emit('tool_call', normalized.toolCall);
-          break;
-        case 'tool_call_update':
-          sessionData.emitter.emit('tool_update', rawUpdate);
-          break;
-        case 'plan':
-          // The agent MUST send the complete plan each time, so replace, never merge.
-          sessionData.plan = normalized.entries;
-          sessionData.emitter.emit('plan', normalized.entries);
-          break;
-        case 'current_mode':
-          sessionData.currentModeId = normalized.modeId || sessionData.currentModeId;
-          sessionData.emitter.emit('mode', sessionData.currentModeId);
-          break;
-        case 'config_options':
-          sessionData.configOptions = normalized.configOptions;
-          sessionData.emitter.emit('config_options', normalized.configOptions);
-          break;
-        case 'available_commands':
-          sessionData.availableCommands = normalized.availableCommands;
-          sessionData.emitter.emit('commands', normalized.availableCommands);
-          break;
-        case 'session_info':
-          if (normalized.title) {
-            sessionData.title = normalized.title;
-            sessionData.emitter.emit('title', normalized.title);
-          }
-          break;
-        case 'usage':
-          sessionData.usage = normalized.usage;
-          sessionData.emitter.emit('usage', normalized.usage);
-          break;
-        default:
-          break;
-      }
-
-      sessionData.updatedAt = Date.now();
-      sessionData.emitter.emit('update', rawUpdate);
-    };
-
-    const matchesSession = (params: unknown) => {
-      const sid = params && typeof params === 'object' ? (params as { sessionId?: unknown }).sessionId : undefined;
-      return !sid || !sessionData.sessionId || sid === sessionData.sessionId;
-    };
-
-    conn.on('session/update', (params: unknown) => {
-      const p = params && typeof params === 'object' ? (params as { update?: unknown }) : undefined;
-      if (!p?.update || !matchesSession(params)) return;
-      const normalized = normalizeSessionUpdate(p.update);
-      if (!normalized) return;
-      applyUpdate(normalized, p.update);
-    });
-
-    for (const method of Object.values(ACP_EXTENSION_NOTIFICATION)) {
-      conn.on(method, (params: unknown) => {
-        if (!matchesSession(params)) return;
-        const normalized = normalizeNotification(method, params);
-        if (!normalized) return;
-        applyUpdate(normalized, params);
-      });
-    }
-
+    entry.inFlightSessions.add(sessionData);
     let sessionResult: Record<string, unknown> | null = null;
-    if (resumeSessionId && capabilities.loadSession) {
-      try {
-        sessionResult = (await conn.request('session/load', { sessionId: resumeSessionId, cwd: effectiveCwd })) as Record<string, unknown> | null;
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.warn(`[AcpRuntime] session/load failed for ${resumeSessionId}, starting fresh:`, message);
+    try {
+      if (resumeSessionId && capabilities.loadSession) {
+        try {
+          sessionResult = (await conn.request('session/load', { sessionId: resumeSessionId, cwd: effectiveCwd })) as Record<string, unknown> | null;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn(`[AcpRuntime] session/load failed for ${resumeSessionId}, starting fresh:`, message);
+        }
       }
-    }
-    if (!sessionResult && resumeSessionId && capabilities.resume) {
-      try {
-        sessionResult = (await conn.request('session/resume', { sessionId: resumeSessionId, cwd: effectiveCwd })) as Record<string, unknown> | null;
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.warn(`[AcpRuntime] session/resume failed for ${resumeSessionId}, starting fresh:`, message);
+      if (!sessionResult && resumeSessionId && capabilities.resume) {
+        try {
+          sessionResult = (await conn.request('session/resume', { sessionId: resumeSessionId, cwd: effectiveCwd })) as Record<string, unknown> | null;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.warn(`[AcpRuntime] session/resume failed for ${resumeSessionId}, starting fresh:`, message);
+        }
       }
+      if (!sessionResult) {
+        const sessionNewParams: Record<string, unknown> = { cwd: effectiveCwd };
+        if (agentId === 'antigravity') {
+          const salContext = this.salContextResolver(effectiveCwd);
+          if (salContext) {
+            sessionNewParams._meta = {
+              antigravity: {
+                systemPrompt: {
+                  append: salContext,
+                },
+              },
+            };
+          }
+        }
+        sessionResult = (await conn.request('session/new', sessionNewParams)) as Record<string, unknown> | null;
+      }
+    } catch (err) {
+      entry.inFlightSessions.delete(sessionData);
+      this.releaseConnectionRef(entry, poolKey, poolRef);
+      throw err;
     }
-    if (!sessionResult) {
-      sessionResult = (await conn.request('session/new', { cwd: effectiveCwd })) as Record<string, unknown> | null;
-    }
+
+    entry.inFlightSessions.delete(sessionData);
     const sessionId = (typeof sessionResult?.sessionId === 'string' && sessionResult.sessionId) || resumeSessionId;
     if (!sessionId) {
-      conn.close();
+      this.releaseConnectionRef(entry, poolKey, poolRef);
       throw new AcpError({
         code: ACP_ERROR.INTERNAL_ERROR,
         message: 'ACP agent did not return a session id for session/new',
@@ -428,11 +665,7 @@ export class AcpRuntime extends EventEmitter {
     sessionData.currentModeId = config.currentModeId;
     sessionData.configOptions = config.configOptions;
 
-    sessionData.unregisterPermissionHandler = conn.registerRequestHandler(
-      'session/request_permission',
-      (params) => this.handlePermissionRequest(sessionData, params),
-    );
-
+    entry.sessionsById.set(sessionId, sessionData);
     const meta = sessionResult?._meta && typeof sessionResult._meta === 'object'
       ? (sessionResult._meta as { antigravity?: { tier?: unknown } })
       : undefined;
@@ -823,10 +1056,112 @@ export class AcpRuntime extends EventEmitter {
     return answered;
   }
 
+  handleQuestionRequest(
+    sessionData: AcpSessionRecord,
+    params: unknown,
+    method: AcpQuestionRequestMethod = 'elicitation/create',
+  ): Promise<unknown> {
+    const normalized = normalizeQuestionRequest(params, method);
+    if (normalized.sessionId !== sessionData.sessionId) {
+      throw new AcpError({
+        code: ACP_ERROR.INVALID_PARAMS,
+        message: `${method} named session '${normalized.sessionId}', but this connection is bound to '${sessionData.sessionId}'`,
+      });
+    }
+
+    const requestId = `qst_${this.nextQuestionId++}`;
+    return new Promise((resolve) => {
+      const settle = (outcome: unknown) => {
+        if (!sessionData.pendingQuestions.has(requestId)) return false;
+        sessionData.pendingQuestions.delete(requestId);
+        resolve(outcome);
+        const settled = { requestId, sessionId: sessionData.sessionId, method, outcome };
+        this.emit('question_settled', settled);
+        sessionData.emitter.emit('question_settled', settled);
+        return true;
+      };
+
+      const record: AcpPendingQuestionRecord = {
+        requestId,
+        sessionId: sessionData.sessionId,
+        method: normalized.method,
+        ...(normalized.elicitationId ? { elicitationId: normalized.elicitationId } : {}),
+        title: normalized.title,
+        ...(normalized.message ? { message: normalized.message } : {}),
+        fields: normalized.fields,
+        rawParams: normalized.rawParams,
+        createdAt: Date.now(),
+        settle,
+      };
+      sessionData.pendingQuestions.set(requestId, record);
+      sessionData.updatedAt = Date.now();
+      this.emit('question_request', record);
+      sessionData.emitter.emit('question_request', record);
+    });
+  }
+
+  getPendingQuestions(sessionId: string) {
+    const session = this.activeSessions.get(sessionId);
+    if (!session?.pendingQuestions) return [];
+    return Array.from(session.pendingQuestions.values()).map((request) => ({
+      requestId: request.requestId,
+      sessionId: request.sessionId,
+      method: request.method,
+      ...(request.elicitationId ? { elicitationId: request.elicitationId } : {}),
+      title: request.title,
+      ...(request.message ? { message: request.message } : {}),
+      fields: request.fields,
+      createdAt: request.createdAt,
+    }));
+  }
+
+  respondToQuestion(
+    sessionId: string,
+    requestId: string,
+    answer: Record<string, unknown> | null | undefined,
+  ) {
+    const session = this.activeSessions.get(sessionId);
+    const pending = session?.pendingQuestions?.get(requestId);
+    if (!pending) {
+      throw new AcpError({
+        code: ACP_ERROR.RESOURCE_NOT_FOUND,
+        message: `Question request '${requestId}' is not pending for session '${sessionId}'`,
+        data: { sessionId, requestId },
+      });
+    }
+
+    if (answer === null || answer === undefined) {
+      pending.settle(buildQuestionCancelledOutcome(pending.method));
+      return { requestId, outcome: 'cancelled' as const };
+    }
+
+    if (typeof answer !== 'object' || Array.isArray(answer)) {
+      throw new AcpError({
+        code: ACP_ERROR.INVALID_PARAMS,
+        message: `Question answer for '${requestId}' must be an object`,
+        data: { sessionId, requestId },
+      });
+    }
+
+    pending.settle(buildQuestionAcceptedOutcome(pending.method, answer));
+    return { requestId, outcome: 'accepted' as const, answer };
+  }
+
+  cancelPendingQuestions(sessionId: string): number {
+    const session = this.activeSessions.get(sessionId);
+    if (!session?.pendingQuestions) return 0;
+    let answered = 0;
+    for (const request of Array.from(session.pendingQuestions.values())) {
+      if (request.settle(buildQuestionCancelledOutcome(request.method))) answered += 1;
+    }
+    return answered;
+  }
+
   async cancel(sessionId: string): Promise<void> {
     const session = this.activeSessions.get(sessionId);
     if (!session || !session.conn) return;
     this.cancelPendingPermissions(sessionId);
+    this.cancelPendingQuestions(sessionId);
     try {
       session.conn.notify('session/cancel', { sessionId });
     } catch { /* ignore */ }
@@ -836,12 +1171,26 @@ export class AcpRuntime extends EventEmitter {
     const session = this.activeSessions.get(sessionId);
     if (!session) return;
     this.cancelPendingPermissions(sessionId);
+    this.cancelPendingQuestions(sessionId);
     try {
       session.unregisterPermissionHandler?.();
     } catch { /* ignore */ }
     this.activeSessions.delete(sessionId);
-    const { conn } = session;
+
+    const { conn, poolKey, poolRef } = session;
+    const poolEntry = poolKey ? this.connectionPool.get(poolKey) : undefined;
+    if (poolEntry) {
+      poolEntry.sessionsById.delete(sessionId);
+      if (poolRef) poolEntry.refs.delete(poolRef);
+    }
+
+    const shouldCloseConn = !poolKey || !poolEntry || poolEntry.refs.size === 0;
+    if (shouldCloseConn && poolKey && this.connectionPool.get(poolKey) === poolEntry) {
+      this.connectionPool.delete(poolKey);
+    }
+
     const finish = () => {
+      if (!shouldCloseConn) return;
       try {
         conn.close();
       } catch { /* ignore */ }
@@ -851,7 +1200,7 @@ export class AcpRuntime extends EventEmitter {
       && conn.isAlive();
     if (remoteClose) {
       conn.request('session/close', { sessionId }, 2000).then(finish, finish);
-    } else {
+    } else if (shouldCloseConn) {
       setTimeout(finish, 0);
     }
   }
@@ -865,8 +1214,18 @@ export class AcpRuntime extends EventEmitter {
   }
 
   closeAll(): void {
-    for (const [id] of this.activeSessions.entries()) {
+    for (const [id] of Array.from(this.activeSessions.entries())) {
       this.closeSession(id);
+    }
+    for (const [key, entry] of Array.from(this.connectionPool.entries())) {
+      this.connectionPool.delete(key);
+      try {
+        entry.conn.close();
+      } catch { /* ignore */ }
+    }
+    if (this.reaper) {
+      clearInterval(this.reaper);
+      delete this.reaper;
     }
   }
 }

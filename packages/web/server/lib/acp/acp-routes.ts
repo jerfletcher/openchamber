@@ -50,6 +50,29 @@ export function registerAcpRoutes(app: Application, options: RegisterAcpRoutesOp
     return runtime.getPendingPermissions(sessionId);
   };
 
+  const respondToQuestion = (
+    sessionId: string,
+    requestId: string,
+    answer: Record<string, unknown> | null | undefined,
+  ) => {
+    if (bridge) {
+      try {
+        return bridge.respondToQuestion(sessionId, requestId, answer);
+      } catch (err) {
+        if ((err as { code?: unknown })?.code !== ACP_ERROR.RESOURCE_NOT_FOUND) throw err;
+      }
+    }
+    return runtime.respondToQuestion(sessionId, requestId, answer);
+  };
+
+  const listPendingQuestions = (sessionId: string) => {
+    if (bridge) {
+      const pending = bridge.listPendingQuestions(sessionId);
+      if (pending.length > 0) return pending;
+    }
+    return runtime.getPendingQuestions(sessionId);
+  };
+
   const sendAcpError = (res: Parameters<RequestHandler>[1], err: unknown) => {
     if (res.headersSent) return;
     res.status(httpStatusForAcpError(err)).json(serializeAcpError(err));
@@ -361,6 +384,40 @@ export function registerAcpRoutes(app: Application, options: RegisterAcpRoutesOp
     }
     try {
       const result = respondToPermission(sessionId, requestId, dismissed ? null : (optionId as string));
+      res.json({ success: true, ...result });
+    } catch (err) {
+      sendAcpError(res, err);
+    }
+  });
+
+  app.get('/api/acp/v1/sessions/:sessionId/questions', (req, res) => {
+    try {
+      const questions = listPendingQuestions(req.params.sessionId ?? '');
+      res.json({ questions });
+    } catch (err) {
+      sendAcpError(res, err);
+    }
+  });
+
+  app.post('/api/acp/v1/sessions/:sessionId/questions/:requestId', (req, res) => {
+    const sessionId = req.params.sessionId ?? '';
+    const requestId = req.params.requestId ?? '';
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as {
+      outcome?: unknown;
+      action?: unknown;
+      answer?: unknown;
+      content?: unknown;
+    };
+    const dismissed = body.outcome === 'cancelled'
+      || body.action === 'cancel'
+      || body.action === 'decline'
+      || body.answer === null;
+    const answer = dismissed ? null : (body.answer ?? body.content);
+    if (!dismissed && (!answer || typeof answer !== 'object' || Array.isArray(answer))) {
+      return res.status(400).json({ error: 'answer object is required (or outcome: "cancelled")' });
+    }
+    try {
+      const result = respondToQuestion(sessionId, requestId, dismissed ? null : (answer as Record<string, unknown>));
       res.json({ success: true, ...result });
     } catch (err) {
       sendAcpError(res, err);
