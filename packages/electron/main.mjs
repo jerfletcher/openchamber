@@ -80,6 +80,8 @@ import {
   sanitizeClientTokenForStorage,
   sanitizeHostRelayForStorage,
 } from './desktop-hosts-storage.mjs';
+import { createBrowserPanelAgentActions } from './browser-panel-agent-actions.mjs';
+import { createBrowserPanelWindowOpen } from './browser-panel-window-open.mjs';
 import { COMMANDS_SAFE_FOR_REMOTE, isSplashColor, parseTrayLocale, redactHostsConfigForRemote } from './remote-page-policy.mjs';
 import { connectDefaultSshInstanceAtStartup, resolveDefaultSshInstanceId } from './startup-ssh.mjs';
 import { findReusableHostWindowIndex, normalizeNotificationInput, readTrimmedString, resolveHostEntryForRuntimeKey, resolveWindowHostId, runtimeKeyForDeepLinkHost, stampForwardedNotification } from './notification-host-routing.mjs';
@@ -142,13 +144,12 @@ import { keepSessionCookies } from './browser-panel-cookies.mjs';
 import {
   applyBrowserPanelUserAgent,
   browserPanelPermissionAuditDetails,
-  browserPanelWindowOpenTarget,
   shouldAllowBrowserPanelCertificateError,
   shouldAllowBrowserPanelPermission,
 } from './browser-panel-security.mjs';
 import { browserPanelKeyAction, browserPanelMouseAction, runBrowserPanelAction } from './browser-panel-navigation.mjs';
 import { isSpaceId, spaceIdOfPreviewPartition, spacePreviewPartition, spacePreviewProxyConfig } from './space-preview.mjs';
-import { shouldBlockGuestFrameNavigation } from './guest-frame-navigation.mjs';
+import { attachWindowNavigationGuards } from './window-navigation-guards.mjs';
 import { createRelayDevTunnelBridge } from './relay-dev-tunnel.mjs';
 import { parsePairingDeepLink } from './pairing-deep-link.mjs';
 import { attachRendererRecovery, takeSafeStart } from './renderer-recovery.mjs';
@@ -983,6 +984,11 @@ const resolveBrowserPanelContents = (rawId) => {
 };
 
 const browserPanelDriver = createBrowserPanelDriver();
+
+const browserPanelAgentActions = createBrowserPanelAgentActions();
+const browserPanelWindowOpen = createBrowserPanelWindowOpen({ BrowserWindow, log, isBrowsingSession, agentActions: browserPanelAgentActions });
+const isBrowserPanelPopup = browserPanelWindowOpen.isBrowserPanelPopup;
+const browserAgentActionSchema = z.object({ active: z.boolean(), sessionId: z.string().min(1).max(256).nullable().optional() });
 
 const BROWSER_UPLOAD_ROOT = path.join(app.getPath('temp'), 'openchamber-browser-uploads');
 const BROWSER_UPLOAD_MAX_BYTES = 25 * 1024 * 1024;
@@ -2510,55 +2516,16 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {}, 
     }
   });
 
-  const isAllowedNavigationUrl = (raw, { includeHosts = true } = {}) => {
-    try {
-      const url = new URL(raw);
-      if (url.protocol === 'devtools:') return true;
-      if (url.protocol === `${UI_PROTOCOL}:`) return true;
-      if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
-      try {
-        if (new URL(browserWindow.webContents.getURL()).origin === url.origin) return true;
-      } catch {
-      }
-      if (state.localOrigin) {
-        try {
-          if (new URL(state.localOrigin).origin === url.origin) return true;
-        } catch {
-        }
-      }
-      if (state.sidecarUrl) {
-        try {
-          if (new URL(state.sidecarUrl).origin === url.origin) return true;
-        } catch {
-        }
-      }
-      return includeHosts && findConfiguredHostForUrl(raw) !== null;
-    } catch {
-      return false;
-    }
-  };
-
-  browserWindow.webContents.setWindowOpenHandler(({ url }) => {
-    const host = findConfiguredHostForUrl(url);
-    if (host) {
-      void openHostWindow(host, sessionRouteFromUrl(url), { reuseOpenWindow: true }).catch((error) => {
-        log.warn('[electron] failed to open host window from link:', error);
-      });
-      return { action: 'deny' };
-    }
-    if (isAllowedNavigationUrl(url, { includeHosts: false })) {
-      const route = sessionRouteFromUrl(url);
-      if (route) emitToWindow(browserWindow, 'openchamber:open-session', route);
-      return { action: 'deny' };
-    }
-    void shell.openExternal(url).catch(() => {});
-    return { action: 'deny' };
-  });
-
-  browserWindow.webContents.on('will-navigate', (event, url) => {
-    if (isAllowedNavigationUrl(url)) return;
-    event.preventDefault();
-    void shell.openExternal(url).catch(() => {});
+  attachWindowNavigationGuards({
+    webContents: browserWindow.webContents,
+    uiProtocol: UI_PROTOCOL,
+    getAllowedOrigins: () => [state.localOrigin, state.sidecarUrl],
+    findConfiguredHostForUrl,
+    sessionRouteFromUrl,
+    openHostWindow,
+    onOpenSession: (route) => emitToWindow(browserWindow, 'openchamber:open-session', route),
+    openExternal: (target) => shell.openExternal(target),
+    log,
   });
 
   browserWindow.webContents.on('did-navigate', (_event, url) => {
@@ -2569,32 +2536,6 @@ const createBrowserWindow = ({ label, restoreGeometry, url, runtimeConfig = {}, 
     if (browserWindow === state.mainWindow && details.isMainFrame && !details.isSameDocument) {
       mainWindowTrayActionsReady = false;
     }
-  });
-
-  browserWindow.webContents.on('will-frame-navigate', (details) => {
-    let frameOrigin;
-    try {
-      frameOrigin = details.frame?.origin;
-    } catch {
-      frameOrigin = undefined;
-    }
-    if (!shouldBlockGuestFrameNavigation({
-      isMainFrame: details.isMainFrame,
-      frameOrigin,
-      frame: details.frame,
-      initiator: details.initiator,
-      mainFrame: browserWindow.webContents.mainFrame,
-      url: details.url,
-      isAppOrigin: isAllowedNavigationUrl,
-    })) return;
-    details.preventDefault();
-    let host = '';
-    try {
-      host = new URL(details.url).host;
-    } catch {
-      host = '';
-    }
-    log.warn(`[guests] refused an extension frame navigating to ${host || 'an invalid URL'}`);
   });
 
   browserWindow.webContents.setZoomMode('disabled');
@@ -3020,19 +2961,17 @@ const createMiniChatWindow = async ({ mode, sessionId = '', directory = '', proj
     browserWindow.on('focus', refreshTrafficLights);
   }
 
-  browserWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url).catch(() => {});
-    return { action: 'deny' };
-  });
-  browserWindow.webContents.on('will-navigate', (event, url) => {
-    try {
-      const target = new URL(url);
-      const local = new URL(shouldUsePackagedUi() ? packagedUiOrigin() : (state.localOrigin || state.sidecarUrl || ''));
-      if (target.origin === local.origin) return;
-    } catch {
-    }
-    event.preventDefault();
-    void shell.openExternal(url).catch(() => {});
+  attachWindowNavigationGuards({
+    webContents: browserWindow.webContents,
+    uiProtocol: UI_PROTOCOL,
+    getAllowedOrigins: () => [shouldUsePackagedUi() ? packagedUiOrigin() : (state.localOrigin || state.sidecarUrl)],
+    findConfiguredHostForUrl,
+    sessionRouteFromUrl,
+    openHostWindow,
+    onOpenSession: () => {},
+    openExternal: (target) => shell.openExternal(target),
+    log,
+    routeLinks: false,
   });
   browserWindow.webContents.on('dom-ready', () => {
     const initScript = browserWindow.__ocInitScript;
@@ -3985,6 +3924,15 @@ const handleInvoke = async (browserWindow, command, args = {}) => {
         return { focused: false };
       }
       return { focused: true };
+    }
+
+    case 'desktop_browser_agent_action': {
+      const target = resolveBrowserPanelContents(args.webContentsId);
+      const request = browserAgentActionSchema.safeParse(args);
+      if (!request.success) throw new Error('An agent action mark needs active and a session id or null');
+      if (request.data.active) browserPanelAgentActions.start(target, request.data.sessionId ?? null);
+      else browserPanelAgentActions.end(target);
+      return { active: request.data.active };
     }
 
     case 'desktop_browser_drive': {
@@ -5125,74 +5073,6 @@ contextMenu({
   showCopyLink: true,
 });
 
-const loadUrlInsideWebContents = (contents, rawUrl, loadOptions) => {
-  try {
-    const url = new URL(rawUrl);
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
-    if (contents.isDestroyed()) return false;
-    void contents.loadURL(url.toString(), loadOptions).catch((error) => {
-      log.warn('[webview] failed to load popup URL in place:', error);
-    });
-    return true;
-  } catch {
-    return false;
-  }
-};
-
-const browserPanelPopups = new WeakSet();
-const isBrowserPanelPopup = (browserWindow) => browserPanelPopups.has(browserWindow);
-
-const BROWSER_PANEL_POPUP_WEB_PREFERENCES = {
-  sandbox: true,
-  contextIsolation: true,
-  nodeIntegration: false,
-};
-
-const openBrowserPanelTab = (contents, { url, background, referrer }) => {
-  const host = contents.hostWebContents;
-  if (!host || host.isDestroyed()) {
-    loadUrlInsideWebContents(contents, url, { httpReferrer: referrer });
-    return;
-  }
-  host.send('openchamber:emit', {
-    event: 'openchamber:browser-panel-open-tab',
-    detail: { webContentsId: contents.id, url, background, referrer },
-  });
-};
-
-const trackBrowserPanelPopup = (contents, popup) => {
-  browserPanelPopups.add(popup);
-  popup.webContents.setWindowOpenHandler(({ url }) => {
-    loadUrlInsideWebContents(popup.webContents, url);
-    return { action: 'deny' };
-  });
-  const hostWindow = contents.hostWebContents ? BrowserWindow.fromWebContents(contents.hostWebContents) : null;
-  if (!hostWindow) return;
-  const closePopup = () => {
-    if (!popup.isDestroyed()) popup.close();
-  };
-  hostWindow.once('closed', closePopup);
-  popup.once('closed', () => {
-    if (!hostWindow.isDestroyed()) hostWindow.removeListener('closed', closePopup);
-  });
-};
-
-// external: https://github.com/electron/electron/issues/45897 Restart non-POST popup navigation from main so it uses the panel session user agent.
-const loadBrowserPanelPopupWithPanelUserAgent = (popup, { url, referrer }) => {
-  const contents = popup.webContents;
-  contents.once('will-navigate', (event, navigationUrl) => {
-    if (navigationUrl !== url) return;
-    event.preventDefault();
-    setImmediate(() => {
-      if (contents.isDestroyed()) return;
-      loadUrlInsideWebContents(contents, url, {
-        userAgent: contents.session.getUserAgent(),
-        httpReferrer: referrer,
-      });
-    });
-  });
-};
-
 app.on('web-contents-created', (_event, contents) => {
   if (contents.getType() === 'window') {
     guardAttachedWebviews(contents);
@@ -5217,36 +5097,7 @@ app.on('web-contents-created', (_event, contents) => {
     if (mouse.type === 'mouseUp') runBrowserPanelAction(contents, action);
   });
 
-  const isBrowsingPage = () => isBrowsingSession(contents.session);
-
-  contents.setWindowOpenHandler(({ url, disposition, postBody, referrer }) => {
-    const target = isBrowsingPage()
-      ? browserPanelWindowOpenTarget({ url, disposition, hasPostBody: Boolean(postBody) })
-      : 'in-place';
-    if (target === 'popup') {
-      const hostWindow = contents.hostWebContents ? BrowserWindow.fromWebContents(contents.hostWebContents) : null;
-      return {
-        action: 'allow',
-        overrideBrowserWindowOptions: {
-          parent: hostWindow ?? undefined,
-          autoHideMenuBar: true,
-          webPreferences: BROWSER_PANEL_POPUP_WEB_PREFERENCES,
-        },
-        createWindow: (options) => {
-          const popup = new BrowserWindow(options);
-          trackBrowserPanelPopup(contents, popup);
-          if (!postBody) loadBrowserPanelPopupWithPanelUserAgent(popup, { url, referrer });
-          return popup.webContents;
-        },
-      };
-    }
-    if (target === 'tab' || target === 'background-tab') {
-      openBrowserPanelTab(contents, { url, background: target === 'background-tab', referrer });
-    } else if (target === 'in-place') {
-      loadUrlInsideWebContents(contents, url, { httpReferrer: referrer });
-    }
-    return { action: 'deny' };
-  });
+  browserPanelWindowOpen.attach(contents);
 });
 
 const isLocalSender = (webContents) => {

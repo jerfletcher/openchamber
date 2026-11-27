@@ -19,10 +19,14 @@ const fixture = async ({ onChange, readFile = fs.readFile } = {}) => {
     darkThemeId: { value: 'first', updatedAt: 1 },
   } }));
   let reads = 0;
+  let validations = 0;
   const state = createSettingsFileState({
     fsPromises: { ...fs, readFile: (...args) => { reads++; return readFile(...args); } },
     path, settingsFilePath, preferencesFilePath,
-    sanitizeSettingsUpdate: (document) => Object.fromEntries(Object.entries(document).filter(([, value]) => typeof value === 'string')),
+    sanitizeSettingsUpdate: (document) => {
+      validations++;
+      return Object.fromEntries(Object.entries(document).filter(([, value]) => typeof value === 'string'));
+    },
     logger: { warn: () => {} },
   });
   const clock = folderWatchHarness();
@@ -34,10 +38,24 @@ const fixture = async ({ onChange, readFile = fs.readFile } = {}) => {
     await fs.rm(root, { recursive: true, force: true });
   });
   const settle = async () => { await watch.check(); await watch.check(); };
-  return { root, settingsFilePath, preferencesFilePath, state, watch, clock, changes, reads: () => reads, settle };
+  return { root, settingsFilePath, preferencesFilePath, state, watch, clock, changes, reads: () => reads, validations: () => validations, settle };
 };
 
 describe('settings file state', () => {
+  it('validates a settings file once per content and still rejects a changed invalid one', async () => {
+    const { settingsFilePath, state, validations } = await fixture();
+    const first = await state.read('settings');
+    first.document.lightThemeId = 'mutated by a caller';
+    const before = validations();
+    for (let index = 0; index < 5; index++) {
+      const again = await state.read('settings');
+      expect(again).toMatchObject({ status: 'ok', document: { lightThemeId: 'first' } });
+    }
+    expect(validations()).toBe(before);
+    await fs.writeFile(settingsFilePath, '{"lightThemeId":7}');
+    expect((await state.read('settings')).status).toBe('failed');
+  });
+
   it('does not let a late publication acknowledgment replace a newer externally read snapshot', async () => {
     const { state, settingsFilePath, settle, changes } = await fixture();
     const revision = state.getRevision('settings');
@@ -193,5 +211,72 @@ describe('settings file state', () => {
     await watch.check();
     await watch.check();
     expect(changes).toEqual([]);
+  });
+});
+
+describe('settings file state with the real sanitizer', () => {
+  // #7582: sanitizeSettingsUpdate folds the legacy queueModeEnabled switch into
+  // followUpBehavior and never echoes the input key, so a file that still held
+  // it was reported unreadable, its projects vanished and every save was refused.
+  const realSanitizer = async () => {
+    const { createSettingsHelpers } = await import('./settings-helpers.js');
+    return createSettingsHelpers({
+      normalizePathForPersistence: (value) => value,
+      normalizeDirectoryPath: (value) => value,
+      normalizeTunnelBootstrapTtlMs: (value) => value,
+      normalizeTunnelSessionTtlMs: (value) => value,
+      normalizeTunnelProvider: (value) => value,
+      normalizeTunnelMode: (value) => value,
+      normalizeOptionalPath: (value) => value,
+      normalizeManagedRemoteTunnelHostname: (value) => value,
+      normalizeManagedRemoteTunnelPresets: () => undefined,
+      normalizeManagedRemoteTunnelPresetTokens: () => undefined,
+      sanitizeTypographySizesPartial: () => undefined,
+      normalizeStringArray: (input) => input,
+      sanitizeModelRefs: () => undefined,
+      sanitizeSkillCatalogs: () => undefined,
+      sanitizeProjects: () => undefined,
+    }).sanitizeSettingsUpdate;
+  };
+  const legacyFixture = async ({ settings, preferences }) => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'oc-settings-legacy-'));
+    cleanups.push(() => fs.rm(root, { recursive: true, force: true }));
+    const settingsFilePath = path.join(root, 'settings.json');
+    const preferencesFilePath = path.join(root, 'preferences.json');
+    await fs.writeFile(settingsFilePath, JSON.stringify(settings));
+    await fs.writeFile(preferencesFilePath, JSON.stringify(preferences));
+    return createSettingsFileState({
+      fsPromises: fs, path, settingsFilePath, preferencesFilePath,
+      sanitizeSettingsUpdate: await realSanitizer(),
+      logger: { warn: () => {} },
+    });
+  };
+
+  it('reads and writes a settings.json that still holds the legacy queueModeEnabled', async () => {
+    const state = await legacyFixture({
+      settings: { queueModeEnabled: false, lightThemeId: 'first' },
+      preferences: { version: 1, fields: {} },
+    });
+    const read = await state.read('settings');
+    expect(read.status).toBe('ok');
+    expect(read.document.lightThemeId).toBe('first');
+    expect((await state.readForWrite('settings')).status).toBe('ok');
+  });
+
+  it('reads and writes a preferences.json that still holds the legacy queueModeEnabled', async () => {
+    const state = await legacyFixture({
+      settings: {},
+      preferences: { version: 1, fields: { queueModeEnabled: { value: false, updatedAt: 0 } } },
+    });
+    expect((await state.read('preferences')).status).toBe('ok');
+    expect((await state.readForWrite('preferences')).status).toBe('ok');
+  });
+
+  it('still refuses a legacy queueModeEnabled that is not a boolean', async () => {
+    const state = await legacyFixture({
+      settings: { queueModeEnabled: 'yes' },
+      preferences: { version: 1, fields: {} },
+    });
+    expect((await state.read('settings')).status).toBe('failed');
   });
 });

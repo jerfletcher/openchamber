@@ -75,6 +75,12 @@ export function useComposerControls({
         }));
     }, [composerFormRef]);
 
+    const startDictation = React.useCallback(() => {
+        window.dispatchEvent(new CustomEvent('openchamber:dictation-toggle', {
+            detail: { composer: composerFormRef.current, startOnly: true },
+        }));
+    }, [composerFormRef]);
+
     const openMobileAttachSheet = React.useCallback(() => {
         setMobileAttachMenuOpen(true);
         composerRef.current?.blur();
@@ -255,7 +261,7 @@ export function useComposerControls({
 
     return {
         pillText, footerIconButtonClass, iconSizeClass, sendIconSizeClass, stopIconSizeClass,
-        openMobileAttachSheet, toggleDictation, desktopDictating, iconButtonBaseClass, goalObjectiveLength,
+        openMobileAttachSheet, toggleDictation, startDictation, desktopDictating, iconButtonBaseClass, goalObjectiveLength,
     footerPaddingClass, footerGapClass, abortShortcutReaches, shownPermissionMode,
     isPermissionAutoAcceptInteractive, acpMode,
         handlePermissionModeCycle, setDesktopDictating, waitingForOpenCode,

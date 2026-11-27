@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as vscode from 'vscode';
 import { BUILT_IN_SKILL_LOCATION, type DiscoveredSkill, type SkillScope, type SkillSource } from './opencodeConfig';
+import { checkOpenCodeDirectoryTrust, openCodeTrust, type OpenCodeTrustGuard } from './opencodeTrust';
 import type { BridgeContext } from './bridge';
 import { filterPersistableSettingsChanges, withoutSecretSettings } from './settings-registry-gate';
 import { createProjectSetupStore } from './bridge-project-setup-runtime';
@@ -129,10 +130,36 @@ const inferSkillScopeAndSourceFromLocation = (location: string, workingDirectory
   return { scope: 'user', source };
 };
 
+export const loadSkillBody = async (
+  ctx: BridgeContext | undefined,
+  skill: DiscoveredSkill,
+  workingDirectory?: string,
+  trust: OpenCodeTrustGuard = openCodeTrust,
+): Promise<DiscoveredSkill> => {
+  const apiUrl = ctx?.manager?.getApiUrl();
+  if (skill.path !== BUILT_IN_SKILL_LOCATION || skill.content || !apiUrl) return skill;
+  const route = `/api/experimental/skill/${encodeURIComponent(skill.id ?? skill.name)}/file/SKILL.md`;
+  if (await checkOpenCodeDirectoryTrust(workingDirectory, { path: route, trust })) return skill;
+  const headers = new Headers(ctx?.manager?.getOpenCodeAuthHeaders());
+  if (workingDirectory) headers.set('x-opencode-directory', encodeURIComponent(workingDirectory));
+  try {
+    const response = await fetch(new URL(route, apiUrl).toString(), { headers, signal: AbortSignal.timeout(8_000) });
+    return response.ok ? { ...skill, content: await response.text() } : skill;
+  } catch {
+    return skill;
+  }
+};
+
 export const fetchOpenCodeSkillsFromApi = async (
   ctx: BridgeContext | undefined,
   workingDirectory?: string,
+  trust: OpenCodeTrustGuard = openCodeTrust,
 ): Promise<DiscoveredSkill[] | null> => {
+  const refusal = await checkOpenCodeDirectoryTrust(workingDirectory, { path: '/api/skill', trust });
+  if (refusal) {
+    return null;
+  }
+
   const apiUrl = ctx?.manager?.getApiUrl();
   if (!apiUrl) {
     return null;

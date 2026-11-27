@@ -131,10 +131,15 @@ PDF iframes also start with an opaque origin under the packaged UI protocol. The
 
 The preload bridge exposes desktop-only APIs to the web UI through `window.__OPENCHAMBER_DESKTOP__`. Privileged commands are checked in `main.mjs`, not only in the UI.
 
-Confirmed chat application links use the local-page-gated `desktop_open_external_url`
-command and the OS protocol handler. `external-url-policy.mjs` validates schemes
-again in main, with the same exclusions as the shared UI classifier. Native
-opening failures do not fall back to a browser window for application links.
+Confirmed chat application links and mail links clicked in chat use the local-page-gated
+`desktop_open_external_url` command and the OS protocol handler. Preload exposes
+`openExternal` only on local pages, so remote-served pages cannot reach it.
+`external-url-policy.mjs` validates schemes again in main, with the same exclusions
+as the shared UI classifier, and admits `mailto:` only with RFC 6068 compose headers.
+Native opening failures do not fall back to a browser window for application or mail links.
+Automatic popup and navigation fallbacks in main and Mini Chat windows
+(`window-navigation-guards.mjs`) open only normalized `http:` and `https:` URLs
+externally; every other scheme is refused without calling `shell.openExternal`.
 
 Native menu actions reach the renderer as one DOM event per click. Main must not also send them over IPC: preload turns every IPC emit into a call to its bridge listeners and a DOM event, so the action would run again. Update-check notifications go over IPC only, for the same reason.
 
@@ -601,7 +606,13 @@ The server (`packages/web/server/lib/fs/ripgrep.js`) looks for ripgrep in this o
   form posted into a new window is not repeated and keeps Electron's agent.
   Chromium reports `window.open(url)` without window features as a new tab, the
   same as a target=_blank link, so the session's preload (`browser-panel-preload.cjs`, exposes nothing) marks every
-  `window.open` that keeps its opener as a popup. A link aimed at a new tab is
+  `window.open` that keeps its opener as a popup. A popup that is not a POST
+  and opens while an agent's click, hover, typing or dialog answer runs on
+  the page, or within 5 seconds after that action (`browser-panel-agent-actions.mjs`), becomes a background panel tab
+  owned by the acting session instead, without `window.opener`, so the agent
+  can drive and close it; it keeps the sign-ins of the page that opened it; the user's own key, mouse or touch press on the page ends
+  that window early. The panel tells main which session acts through
+  `desktop_browser_agent_action`. A link aimed at a new tab is
   noopener by default and becomes a panel tab
   (`openchamber:browser-panel-open-tab` to the renderer). The event carries
   Electron's referrer URL and policy for the new tab's first load; a renderer

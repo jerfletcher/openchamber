@@ -64,6 +64,7 @@ export type ContextPanelTab = {
   diffScope: PendingDiffScope | null;
   preview: boolean;
   ownerSessionId: string | null;
+  usesUserLogins?: boolean;
   touchedAt: number;
 };
 
@@ -79,6 +80,7 @@ export type ContextPanelTabDescriptor = {
   diffScope?: PendingDiffScope | null;
   preview?: boolean;
   ownerSessionId?: string | null;
+  usesUserLogins?: boolean;
 };
 
 export type ContextPanelDirectoryState = {
@@ -398,7 +400,7 @@ export interface UIStore {
   openContextPreview: (directory: string, url: string) => void;
   openContextBrowser: (directory: string, url?: string, options?: { reveal?: boolean }) => void;
   openNewContextBrowserTab: (directory: string) => void;
-  openAgentBrowserTab: (directory: string, url: string, ownerSessionId: string | null) => string | null;
+  openAgentBrowserTab: (directory: string, url: string, ownerSessionId: string | null, options?: { usesUserLogins?: boolean }) => string | null;
   setContextPanelTabTargetPath: (directory: string, tabID: string, targetPath: string) => void;
   moveContextFilePaths: (directory: string, fromPath: string, toPath: string, filesRoot?: string) => void;
   setActiveContextPanelTab: (directory: string, tabID: string) => void;

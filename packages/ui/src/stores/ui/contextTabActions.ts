@@ -322,7 +322,7 @@ export const createContextTabActions: UIStoreSlice<
     });
   },
 
-  openAgentBrowserTab: (directory, url, ownerSessionId) => {
+  openAgentBrowserTab: (directory, url, ownerSessionId, options) => {
     const normalizedDirectory = normalizeDirectoryPath((directory || '').trim());
     if (!normalizedDirectory || isVSCodeRuntime()) return null;
     browserTabSequence += 1;
@@ -334,6 +334,7 @@ export const createContextTabActions: UIStoreSlice<
       dedupeKey,
       label: null,
       ownerSessionId,
+      usesUserLogins: options?.usesUserLogins === true,
     }, { reveal: false });
     return buildContextPanelTabID('browser', dedupeKey);
   },
@@ -547,9 +548,6 @@ export const createContextTabActions: UIStoreSlice<
         }
       }
 
-      const fileView = getZoneView(next, zoneOfMode(placement, 'file'));
-      const activeTab = next.tabs.find((tab) => tab.id === fileView.activeTabId);
-      const returnedToTree = fileView.isOpen && activeTab?.mode === 'file' && !activeTab.targetPath;
       const byDirectory = {
         ...state.contextPanelByDirectory,
         [normalizedDirectory]: next,
@@ -559,7 +557,6 @@ export const createContextTabActions: UIStoreSlice<
       return {
         contextPanelByDirectory: clamped,
         contextZoneReturnStack: pruneContextZoneReturnStacks(contextZoneReturnStack, clamped),
-        contextEditorTreeVisible: returnedToTree || state.contextEditorTreeVisible,
       };
     });
 

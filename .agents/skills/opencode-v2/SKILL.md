@@ -226,6 +226,12 @@ gap.
   registry, `automation.list` in Code Mode) and session tools sit under
   `opencode.session` (`opencode_session_rename`, `opencode.session.rename`).
   `opencodeNamespaceTool` reads every form; plugin IDs did not change.
+- **MCP skills** (2.4.2, flag `mcp_skills`, off in releases): `skill.list`
+  returns a server's skill as `<server>:<skill>` with path
+  `skill://<id>/SKILL.md` and an empty `content`; the body comes from
+  `experimental.skill.file`, and a prompt that attaches one can fail with
+  `SkillLoadError` (502). OpenCode caches a read body per digest for the life
+  of the process, so testing a failing read needs a fresh OpenCode.
 - **Tool results carry no structured output on the wire.** The UI reads
   `content` text and `metadata`; a tool's `output` schema change (2.3.0 made
   edit/write strings and patch `{}`) does not reach it.
@@ -332,3 +338,10 @@ tag's entry:
   hash, because it uses OpenCode's nixpkgs and Bun, not ours. An Apple Silicon
   Mac cannot compute x86_64-linux at all: `nixos/nix` under Rosetta or qemu
   fails on the pty, and Bun crashes under qemu (no AVX).
+
+The Linux half is part of the bump, not a separate decision: once the bump is
+committed and the local darwin build passes, push the branch and run
+`nix-eval` without asking, then fix the hashes, commit, push and rerun until
+all three jobs pass. The bump is done only then. A darwin mismatch means the
+Linux hashes are stale too, so run `nix-eval` even when you cannot see them fail
+locally.

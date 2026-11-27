@@ -1,7 +1,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { getOpenCodeDataDir, OPENCODE_CONFIG_DIR } from '../../opencode/config-files.js';
+import { OPENCODE_CONFIG_DIR } from '../../opencode/config-files.js';
 import { isString } from '../../shared/object-guards.js';
 import { asNonEmptyString } from './transformers.js';
 import type { JsonValue } from './contracts.js';
@@ -20,7 +20,6 @@ export const ANTIGRAVITY_ACCOUNTS_PATHS = [
 export const ANTIGRAVITY_CLI_TOKEN_PATHS = [
   path.join(os.homedir(), '.gemini', 'antigravity-cli', 'antigravity-oauth-token')
 ];
-
 const isObjectEntry = (value: unknown): value is object => typeof value === 'object';
 
 export const readJsonFile = (filePath: string): JsonValue | null => {

@@ -46,6 +46,7 @@ import { isCheckoutRoot } from "@/lib/worktrees/integrateCheckouts"
 import type { ReadOnlySessionAssociation } from "@/lib/worktrees/readOnlySessionAssociation"
 import { admitSession, confirmNestedSessionTrust, isSessionAdmitted, nestedLineageProject, resolveAdmittedSessionProject, resolveProjectRefForWorktreeDirectory, withAdmittedLineage } from "./session-admission"
 import { isSessionDirectoryAdmitted } from "./session-admission-rule"
+import { revertAndReportFiles } from "./revert-outcome"
 import {
   getSyncSessions,
   getAllSyncSessions,
@@ -157,6 +158,7 @@ export async function routeMessage(params: Pick<SendMessageOptions, "isCurrentRu
   agent?: string
   agentMentionName?: string
   variant?: string | null
+  keepSessionModel?: boolean; keepSessionAgent?: boolean
   inputMode?: "normal" | "shell"
   files?: Array<{ type: "file"; mime: string; url: string; filename: string }>
   additionalParts?: Array<{ text: string; synthetic?: boolean; metadata?: ContextPartMetadata; files?: Array<{ type: "file"; mime: string; url: string; filename: string }> }>
@@ -177,12 +179,7 @@ export async function routeMessage(params: Pick<SendMessageOptions, "isCurrentRu
   assertRuntimeCurrent()
   const requestDirectory = params.directory ?? undefined
   const sendDirectory = () => getAuthoritativeSessionDirectory(params.sessionId) ?? requestDirectory
-  const sendSelection = () => resolveCheckedSendSelection(params.sessionId, sendDirectory(), {
-    providerID: params.providerID,
-    modelID: params.modelID,
-    variant: params.variant,
-    agent: params.agent,
-  })
+  const sendSelection = () => resolveCheckedSendSelection(params.sessionId, sendDirectory(), params)
   const contextItems = (params.additionalParts ?? [])
     .filter((part) => part.text.trim().length > 0)
     .map((part) => ({ text: part.text, metadata: part.metadata }))
@@ -274,7 +271,7 @@ export async function routeMessage(params: Pick<SendMessageOptions, "isCurrentRu
     files: sendFiles,
     context: contextItems,
     ready: params.ready,
-    markBusy: params.markBusy,
+    markBusy: params.markBusy, steer: params.delivery === 'steer',
     appendSubmissions: params.appendSubmissions,
     onOptimisticInsert: params.onMessageMinted,
     send: async (messageID, context, commitRevert) => {
@@ -440,7 +437,7 @@ export type SessionUIState = {
   unarchiveSession: (id: string) => Promise<boolean>
   unarchiveSessions: (ids: string[], options?: UnarchiveSessionsOptions) => Promise<{ restoredIds: string[]; failedIds: string[] }>
   updateSessionTitle: (sessionId: string, title: string) => Promise<void>
-  revertToMessage: (sessionId: string, messageId: string, options?: { skipRedoPush?: boolean }) => Promise<void>
+  revertToMessage: (sessionId: string, messageId: string) => Promise<{ filesUnchanged: boolean }>
   forkFromMessage: (sessionId: string, messageId: string) => Promise<void>
   forkAfterMessage: (sessionId: string, messageId: string) => Promise<void>
   handleSlashUndo: (sessionId: string) => Promise<void>
@@ -1962,7 +1959,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       }
 
       const targetSessionId = capturedTarget?.sessionId ?? options?.sessionId ?? get().currentSessionId
-      const settleModelPick = targetSessionId
+      const settleModelPick = targetSessionId && !options?.keepSessionModel
         ? useSelectionStore.getState().captureSessionModelPickSettlement(targetSessionId, providerID, modelID, capturedRuntimeKey)
         : undefined
       const resumeAfterSend = options?.userInitiated && inputMode !== 'shell' && targetSessionId
@@ -1978,7 +1975,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
         useSelectionStore.getState().saveSessionModelSelection(targetSessionId, providerID, modelID)
       }
 
-      if (targetSessionId && effectiveAgent) {
+      if (targetSessionId && effectiveAgent && !options?.keepSessionAgent) {
         useSelectionStore.getState().saveSessionAgentSelection(targetSessionId, effectiveAgent)
         useSelectionStore.getState().saveAgentModelVariantForSession(
           targetSessionId,
@@ -2042,13 +2039,14 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
         ? () => useInputHistoryStore.getState().appendSubmissions(historyIdentity, historySubmissions)
         : undefined
 
-      const carriedPick = inputMode !== "shell" && targetSessionId && effectiveAgent
+      const carriedPick = inputMode !== "shell" && targetSessionId && effectiveAgent && !options?.keepSessionAgent
         && useSelectionStore.getState().getSessionAgentPick(targetSessionId) === effectiveAgent
         ? { sessionId: targetSessionId, agent: effectiveAgent }
         : null
+      const keep = { model: options?.keepSessionModel === true, agent: options?.keepSessionAgent === true }
       if (carriedPick) useSelectionStore.getState().settleSessionAgentPick(carriedPick.sessionId, carriedPick.agent)
       const settleSentSelection = targetSessionId
-        ? useSelectionStore.getState().captureSessionSelectionSentSettlement(targetSessionId, providerID, modelID, effectiveAgent, variant)
+        ? useSelectionStore.getState().captureSessionSelectionSentSettlement(targetSessionId, providerID, modelID, effectiveAgent, variant, keep)
         : undefined
       const routed = await routeMessage({
         runtimeKey: capturedRuntimeKey, isCurrentRuntime: isCurrentRuntimeInstance,
@@ -2060,6 +2058,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
         agent: effectiveAgent,
         agentMentionName,
         variant,
+        keepSessionModel: keep.model, keepSessionAgent: keep.agent,
         inputMode,
         files,
         appendSubmissions,
@@ -2123,9 +2122,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     await updateSessionTitleAction(sessionId, title, { byUser: true })
   },
 
-  revertToMessage: async (sessionId, messageId) => {
-    await revertToMessageAction(sessionId, messageId, { refresh: true })
-  },
+  revertToMessage: (sessionId, messageId) => revertAndReportFiles(sessionId, messageId),
 
   handleSlashUndo: async (sessionId) => {
     const messages = getSyncMessages(sessionId)
@@ -2152,7 +2149,8 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
       ? String(textPart.text).slice(0, 50) + (textPart.text.length > 50 ? "..." : "")
       : "[No text]"
 
-    await get().revertToMessage(sessionId, targetMessage.id)
+    const { filesUnchanged } = await get().revertToMessage(sessionId, targetMessage.id)
+    if (filesUnchanged) return
 
     const { toast } = await import("sonner")
     const { useI18nStore, formatMessage } = await import("@/lib/i18n/store")
@@ -2173,7 +2171,7 @@ export const useSessionUIStore = create<SessionUIState>()((set, get) => ({
     const targetMessage = revertIndex >= 0 ? userMessages[revertIndex + 1] : undefined
 
     if (targetMessage) {
-      await get().revertToMessage(sessionId, targetMessage.id, { skipRedoPush: true })
+      await revertToMessageAction(sessionId, targetMessage.id, { refresh: true })
       const { toast } = await import("sonner")
       const { useI18nStore, formatMessage } = await import("@/lib/i18n/store")
       const { dictionary } = useI18nStore.getState()

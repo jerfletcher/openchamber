@@ -298,6 +298,9 @@
     "sttEndpointPath": {
       "scope": "instance"
     },
+    "sttKeyProvider": {
+      "scope": "instance"
+    },
     "sttModel": {
       "scope": "instance"
     },
@@ -540,6 +543,12 @@
       "scope": "profile"
     },
     "diffHideWhitespace": {
+      "scope": "profile"
+    },
+    "referencePreviewNewestFirst": {
+      "scope": "profile"
+    },
+    "referencePreviewCollapseDescription": {
       "scope": "profile"
     },
     "gitChangesViewMode": {

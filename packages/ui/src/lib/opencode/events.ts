@@ -125,7 +125,7 @@ export type SyncEvent =
   | { type: "message.part.updated"; properties: { sessionID: string; part: Part } }
   | { type: "message.part.delta"; properties: { sessionID: string; messageID: string; partID: string; field: "text" | "raw"; delta: string } }
   | { type: "message.tool.transition"; properties: { sessionID: string; messageID: string; partID: string; transition: ToolTransition } }
-  | { type: "message.parts.replaced"; properties: { sessionID: string; messageID: string; parts: Part[] } }
+  | { type: "message.parts.replaced"; properties: { sessionID: string; messageID: string; parts: Part[]; whilePending?: true } }
   | { type: "message.compaction.delta"; properties: { sessionID: string; delta: string } }
   | { type: "permission.asked"; properties: PermissionRequest }
   | { type: "permission.replied"; properties: { sessionID: string; requestID: string } }
@@ -381,7 +381,7 @@ export function translateWireEvent(event: OpenCodeEvent): SyncEvent[] {
         updated,
         {
           type: "message.parts.replaced",
-          properties: { sessionID: event.data.sessionID, messageID: event.data.inboxID, parts: projected.parts },
+          properties: { sessionID: event.data.sessionID, messageID: event.data.inboxID, parts: projected.parts, whilePending: true },
         },
       ]
     }
@@ -835,7 +835,7 @@ export function translateWireEvent(event: OpenCodeEvent): SyncEvent[] {
       return []
 
     default: {
-      const remaining: `rpc.${string}` = event.type
+      const remaining: `rpc.${string}` | "experimental.push.updated" = event.type
       void remaining
       return []
     }

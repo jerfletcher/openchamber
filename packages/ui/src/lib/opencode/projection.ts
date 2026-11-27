@@ -256,10 +256,11 @@ function fileAttachmentUrl(file: PromptFileAttachment): string {
   return `data:${file.mime};base64,${file.data}`
 }
 
-export type InboxMessageItem =
+export type InboxMessageItem = (
   | { type: "user"; payload: SessionInboxUserPayload }
   | { type: "synthetic"; payload: SessionInboxSyntheticPayload }
   | { type: "compaction" | "move" }
+) & { delivery?: string }
 
 export function projectInboxMessage(
   item: InboxMessageItem,
@@ -275,6 +276,7 @@ export function projectInboxMessage(
         skills: projectUserSkills(item.payload),
         metadata: item.payload.metadata,
         pending: true,
+        steer: item.delivery === "steer" ? true : undefined,
       }),
       parts: projectUserParts(item.payload, owner),
     }

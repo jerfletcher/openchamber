@@ -147,7 +147,8 @@ type BooleanSettingsKey =
   | 'expandCommandsByDefault' | 'expandEditsByDefault' | 'expandSubagentsByDefault' | 'expandSearchesByDefault'
   | 'codeBlockLineWrap' | 'tableCellWrap' | 'copyMessagesAsPlainText' | 'autoSaveEnabled' | 'fileEditorWrapLines'
   | 'confirmFileTreeMove' | 'layoutAnimations' | 'openLinksInBrowserPanel' | 'agentBrowserSharesLogins'
-  | 'openTrackerLinksOnBoard' | 'diffWrapLines' | 'diffHideWhitespace' | 'allowPromptingSubagentSessions'
+  | 'openTrackerLinksOnBoard' | 'diffWrapLines' | 'diffHideWhitespace' | 'allowPromptingSubagentSessions' | 'referencePreviewNewestFirst'
+  | 'referencePreviewCollapseDescription'
   | 'savePastedImagesAsFiles' | 'showOpenCodeRestartConfirm' | 'sessionTabsEnabled' | 'sessionTabsPerWorkspace'
   | 'terminalCloseOnExit' | 'terminalOpenOnProjectAction' | 'sessionRecapEnabled' | 'sessionSuggestionEnabled'
   | 'sessionWorkEnabled' | 'sessionWorkIncludesPinned' | 'sessionReviewOfferEnabled' | 'sessionGoalEnabled' | 'sessionGoalDefaultBudgetEnabled' | 'sessionCostAlertsEnabled'
@@ -170,7 +171,7 @@ type StringSettingsKey =
   | 'pwaAppName' | 'pwaOrientation' | 'mobileKeyboardMode' | 'browserProvider' | 'agentMemoryDreamingModel'
   | 'agentMemoryDreamingVariant' | 'agentImageModel' | 'isolatedSpacesSshHost' | 'openCodeUpdateToastDismissedVersion'
   | 'terminalShell' | 'openInAppId' | 'globalBehaviorPrompt' | 'responseStylePreset' | 'responseStyleCustomInstructions'
-  | 'sttServerUrl' | 'sttModel' | 'sttEndpointPath' | 'sttLocalModel' | 'sttLanguage' | 'sttPrompt' | 'sidebarProjectDisplayMode'
+  | 'sttServerUrl' | 'sttModel' | 'sttEndpointPath' | 'sttKeyProvider' | 'sttLocalModel' | 'sttLanguage' | 'sttPrompt' | 'sidebarProjectDisplayMode'
   | 'sidebarViewMode' | 'sidebarListSessionGrouping' | 'sidebarGrouping' | 'sidebarProjectSortOrder'
   | 'selectionApprovalText';
 
@@ -734,12 +735,6 @@ export const createSettingsHelpers = (dependencies: SettingsHelpersDependencies)
     if (candidate.fileTreeSide === 'left' || candidate.fileTreeSide === 'right') {
       result.fileTreeSide = candidate.fileTreeSide;
     }
-    if (isBoolean(candidate.diffWrapLines)) {
-      result.diffWrapLines = candidate.diffWrapLines;
-    }
-    if (isBoolean(candidate.diffHideWhitespace)) {
-      result.diffHideWhitespace = candidate.diffHideWhitespace;
-    }
     if (isBoolean(candidate.allowPromptingSubagentSessions)) {
       result.allowPromptingSubagentSessions = candidate.allowPromptingSubagentSessions;
     }
@@ -994,7 +989,7 @@ export const createSettingsHelpers = (dependencies: SettingsHelpersDependencies)
     if (candidate.mobileReturnKeySends === true || candidate.mobileReturnKeySends === false) {
       result.mobileReturnKeySends = candidate.mobileReturnKeySends;
     }
-    for (const key of ['showOpenCodeUpdateNotifications', 'useGlobalOpenCodeService', 'agentWebToolEnabled'] as const) {
+    for (const key of ['showOpenCodeUpdateNotifications', 'useGlobalOpenCodeService', 'agentWebToolEnabled', 'diffWrapLines', 'diffHideWhitespace', 'referencePreviewNewestFirst', 'referencePreviewCollapseDescription'] as const) {
       if (isBoolean(candidate[key])) result[key] = candidate[key];
     }
     if (isString(candidate.browserProvider) && candidate.browserProvider.trim()) {

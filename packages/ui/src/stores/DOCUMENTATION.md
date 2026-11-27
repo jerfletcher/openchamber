@@ -507,13 +507,28 @@ Work Status panel showed (`packages/web/server/lib/session-todos/DOCUMENTATION.m
 An entry is `loading` until the first answer, `off` while OpenCode's
 `todowrite` tool is off in its directory, else `ready`. One read per session at
 a time; a demand during it earns one read after it. A failed read keeps what is
-shown. `sync/session-todos-sync.ts` applies each broadcast list, reads a
-session again when the server announces it with `todos: null` (a revert) and
-every session of a directory announced with `sessionId: null` (its config
-changed; with no directory as well, OpenCode's stream had a gap), and reads
-every entry again when the control stream reconnects. Reads an event starts
-carry the subscription's runtime guard. A
-runtime switch resets the store. VS Code keeps it empty: it has no OpenChamber
+shown. `sync/session-todos-sync.ts` applies each broadcast list and reads a
+session again when the server announces it with `todos: null` (a revert; its
+location is already running). The sessions of a directory announced with
+`sessionId: null` (its config changed; with no directory as well, OpenCode's
+stream had a gap) and every entry when the control stream reconnects are read
+again only while their Tasks are on screen (`showSessionTodos`): a Work Status
+panel or the mobile Status pane is visible with Tasks enabled in its section
+layout. `useLoadSessionTodos` holds that demand and releases it, cancelling a
+pending retry, when the panel closes or Tasks is hidden. Such a re-read that
+arrives during a read queues its follow-up only while the Tasks are still
+shown when that read ends; a revert queues it regardless. The others are marked
+stale and read as soon as their Tasks are shown again, without waiting out an
+earlier failed read's retry delay. Starting a read ends the stale mark, so a
+read that fails retries with the usual delay, and a read that started before
+the reconnect cannot clear a mark the reconnect set. Each read goes to
+OpenCode under the session's directory and starts its location, so re-reading
+every session the panel ever showed started one location, with its MCP
+servers, per idle chat after each reconnect; that is the measured cause this
+rule fixes (#7541 has the history). Config-file saves that wake every chat
+directory through the catalog are a separate path (#7628). Reads an event
+starts carry the subscription's runtime guard. A runtime switch resets the
+store. VS Code keeps it empty: it has no OpenChamber
 server and no panel.
 
 `messageQueueStore.ts` has two owners, decided by `isServerOwnedMessageQueue()`.
@@ -745,6 +760,21 @@ switches the session to the unsent model pick at once
 (`sync/session-actions.ts` `applyModelPickToRetry`, driven by
 `hooks/useRetryModelPick.ts`), because OpenCode reloads the session's model
 before every attempt.
+
+### Why only a pick moves an open session to another model
+
+The unsent model pick (`useSelectionStore.pickSessionModel`, held per runtime
+and session for the page's life) and an unsent agent pick, which brings its model, are what
+a send from the composer, a queued message, `/compact` and a form reply switch
+the session to. Choosing an effort makes a model pick too, because the effort is
+part of the model sent. The model the composer merely keeps, such as one saved
+in this browser before another client switched the session, never outranks the
+session record: `ModelControls` shows the record's model unless an unsent pick
+holds another, and a switch made elsewhere after the pick replaces it. Comparing
+the composer's model with the server's, as sends did before, could not tell a
+pick from a kept selection, so a stale tab switched the session back (#7456).
+Writing the model at pick time was rejected for the same reason agent picks wait
+for the send: every switch is a record in the transcript.
 
 ### Why a pick reaches a retrying turn and waits during plain generation
 
@@ -1419,7 +1449,7 @@ After meaningful Git/PR store changes, verify manually:
 
 - Settings retains switched-off skills absent from OpenCode's inventory, including built-ins absent from disk scans, so the user can turn them back on. An exact-denied id retains a known row or a noneditable id-only row until its rule disappears.
 - A skill switch cannot lift a wildcard deny or remove a deny without an editable file. Its recheck ultimately uses OpenCode's statements even if another rule overrides the accepted switch write. Skill policy ids derive from the containing folder or loose filename and can differ from display names.
-- Skill discovery uses server-reported environment flags because the browser cannot read them and the upstream list omits project skills the agent can use. External-skill disable excludes `.claude` and `.agents`; Claude-specific disable excludes only `.claude`. Name collisions prefer `.agents`, including symlinked copies. Unknown flags preserve the list, and Windows paths normalize before root matching.
+- Skill discovery uses server-reported environment flags because the browser cannot read them and the upstream list omits project skills the agent can use. The one flag OpenCode still reads, `OPENCODE_DISABLE_CLAUDE_CODE` or `OPENCODE_DISABLE_CLAUDE_CODE_SKILLS`, excludes `.claude`; `.agents` is always loaded, since OpenCode 2 dropped `OPENCODE_DISABLE_EXTERNAL_SKILLS`. Name collisions prefer `.agents`, including symlinked copies. Unknown flags preserve the list, and Windows paths normalize before root matching.
 - A disk-only skill response is incomplete. It preserves previously known built-ins and config-discovered skills, while absence of a managed-root skill is authoritative.
 - The server's skill-catalog list is authoritative even when empty because machine policy can hide every built-in catalog. Freshness alone governs empty-list reuse.
 - MCP forms rebuild config objects, so an emptied field removes its key. Entries require `type`; startup timeout applies only to spawned local servers. Code Mode Default and legacy negotiation remove their keys so OpenCode's per-server defaults apply.
@@ -1468,7 +1498,7 @@ After meaningful Git/PR store changes, verify manually:
 - Deep-link trust is device-local security state and never roams through server settings.
 - Favicons cache per origin so same-site navigation and additional tabs avoid placeholder flicker. Data URLs stay in memory because persisting them costs more storage than the saved request warrants; insertion-order eviction is sufficient for a cheap refetch. Requests use the reporting view's session so isolated-space icons traverse that space's proxy. Failure retains the placeholder silently. Browser history includes runtime and directory because equal paths on different hosts expose different servers.
 - Context-panel tab budgets apply per surface because each surface has its own strip. The tab being opened or viewed survives even if protection leaves 1 extra tab. Each zone closes and selects independently; closing its last tab does not jump to an unrelated surface.
-- File preview replacement removes the old editor entry too, and closing files keeps panel tabs and editor state aligned. Closing the last real file retains the empty editor/tree placeholder; closing that placeholder closes the surface. A move rebuilds path-derived ids and replaces stale destination tabs. The tree and editor can each hide, but at least 1 remains, and selecting a file shows its editor.
+- File preview replacement removes the old editor entry too, and closing files keeps panel tabs and editor state aligned. Closing the last real file retains the empty editor/tree placeholder; closing that placeholder closes the surface. Closing files never changes tree visibility, because a tree the user hid stays hidden until they show it; only opening the empty file surface from the rail reveals a hidden tree. A move rebuilds path-derived ids and replaces stale destination tabs. The tree and editor can each hide, but at least 1 remains, and selecting a file shows its editor.
 - Terminals, pinned chats, tracker items and PR comparisons can target other directories without changing app navigation. Cross-project Changes and walkthrough targets persist as the panel's own directory because their requested PR selection is memory-only. The rail returns to the panel's project when opening those surfaces.
 - Agent browser tabs always allocate in the background, even when another tab has the same URL, preserving the user's panel visibility and selection. User-requested new tabs also preserve existing tabs; labels follow navigation. Tracker item tabs retain the branch tab beside them, including after the last item closes.
 - Context-panel persistence drops modes the runtime cannot render, including browser tabs in VS Code. A saved-plan tab requires its owner; an unowned legacy saved-plan descriptor cannot revive as an openable plan. Zone sizes migrate from the last-used directory, and preview-to-browser migration rebuilds mode-derived ids and resolves URL collisions.

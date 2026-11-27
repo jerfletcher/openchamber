@@ -19,6 +19,9 @@ extensions.
     origin, so fetch and WebSocket calls to plain-http LAN servers (`http://192.168.x.x`) are
     blocked as mixed content even with cleartext allowed in the manifest. LAN transport is a core
     feature; iOS (`capacitor://`) has no such issue, and relay and tunnel traffic is TLS anyway.
+    The setting does not cover images, audio or video: the WebView still blocks those from an
+    `http:` server, so chat images and Files previews read their bytes through `runtimeFetch`
+    there (`runtimeAssetsNeedFetch` in `packages/ui/src/lib/runtime-asset.ts`).
   - Keyboard `resize: 'none'`: the WebView keeps its full height and the UI follows the keyboard
     itself from `keyboardWillShow` (`apps/mobileNativeChrome.ts`): layouts take the keyboard once,
     where the change is invisible, and what sits above it rides it on a compositor transform
@@ -209,6 +212,12 @@ iOS Simulator helpers: `mobile:sim:{boot,install,launch,run,serve,list,kill}` (s
   `App.xcodeproj/project.pbxproj` and embedded via a copy phase.
 - App Group `group.com.openchamber.app` in all four targets' entitlements (app + widget + NSE +
   share extension).
+- Android: `res/xml/shortcuts.xml` holds the same actions, and `android.app.shortcuts` must be
+  declared on the launcher activity — the shortcut service ignores an application-level copy, which
+  silently yields an empty long-press menu with no error anywhere. `MainActivity` needs the
+  `openchamber` VIEW intent filter for New session to arrive. Dictate targets the unexported
+  `DictateShortcut` activity alias instead, so no other app can start the microphone; the
+  launcher may, because it starts shortcuts as this app.
 - `Info.plist`: `CFBundleURLTypes` scheme `openchamber`, `NSCameraUsageDescription`.
 - Push entitlement (aps-environment) required.
 - APNs `mutable-content: 1` (set server/relay side) wakes the NSE to refresh widgets.

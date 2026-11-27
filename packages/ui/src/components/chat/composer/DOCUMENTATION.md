@@ -693,6 +693,21 @@ first: the citation is inserted into the editor's document, which still holds
 the text from before the commit, and that document overwrites `composerText` on
 the next edit, so text set first is lost.
 
+### Why the Dictate quick action waits for its draft and starts through the mic event
+
+The app icon's Dictate action (a native shortcut request, never a link) opens
+a new-session draft and leaves `input-store.pendingDraftDictation`, addressed
+by that draft's id. `usePendingDraftDictation` starts recording from the
+unpinned composer only once it renders that draft: the request is set in the
+same turn the draft opens, so the composer can still be showing the session
+the user left, and recording there would make that session the dictation's
+origin. A request is taken once, and only by the composer showing its draft; a
+draft the user leaves before it renders never records. It sends the mic
+button's `openchamber:dictation-toggle` event marked `startOnly`, so it goes
+through the same capture owner, permission prompt and settings checks as a tap
+on the mic instead of a second way into `useDictation`, and it never confirms
+or sends a recording that is already running.
+
 ### Why the draft text lives outside React state
 
 As `ChatInput` state, every keystroke rendered the whole composer: about
@@ -1114,7 +1129,12 @@ copy.
   authority**, not the pattern. An unknown `/token` or `$token` stays plain
   prose, so `$5` is just money. The skill sigil also matches the yen and
   full-width dollar signs a CJK IME types for the Shift+4 key, so `¥5` is
-  money for the same reason.
+  money for the same reason. A skill name, and only a skill name, may carry
+  one `:` and dot-joined parts after it, because a skill an MCP server serves
+  is named `<server>:<skill>` (`docs:team.pdf`). A `:` or `.` with no letter
+  or digit after it ends the name, and a scanned `<a>:<b>` that is not a known
+  skill falls back to a known `<a>` (`resolveKnownName`), so `$deploy:prod`,
+  `$deploy.sh` and `/plan:details` keep meaning what they meant before.
 - `triggers.ts` — which picker a caret position asks for. Exactly one can be
   active, with precedence `command > skill > snippet > mention > emoji`. Commands open
   only on a `/` in the first column; skills open on `$` or its IME spellings at
@@ -1817,6 +1837,18 @@ A pasted link to an issue, change request or tracker item (`referenceLinks.ts`)
 is read the way the picker reads a chosen item (`resolveReferenceLink` in
 `components/references/resolveComposerReferences.ts`), through the project the
 picker uses, and then draws as a chip where it stands: its number and title.
+
+What the picker lists and a link is read through is the board's default for
+the session's folder (`useReferenceScope` in
+`components/references/useAttachReferences.ts`, over `useBoardRepository`):
+the folder itself when it is a repository, or every repository under it when it
+is not. In such a folder the picker lists them all together, as the board's
+**All repositories** does, and attaches each item through the repository it was
+listed from; a pasted link is read through the repository whose remote names it
+(`useFolderOfRepository`, the rule the board's links use), else through one on
+the link's host, the way a single repository reads an item of another one
+(`linkReadContext`). A folder that is a repository is never scanned for others:
+its submodules' links already read through it.
 
 - The text decides what is sent, as with session links: each linked item once,
   as the same context part the picker sends, and the session records it as a

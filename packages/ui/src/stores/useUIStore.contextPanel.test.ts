@@ -935,7 +935,7 @@ describe('useUIStore closeContextPanelTab surface stability', () => {
     expect(state?.tabs.map((tab) => tab.mode)).toEqual(['terminal']);
   });
 
-  test('closing the last file tab keeps the file surface on its empty editor tab', () => {
+  test('closing the last file tab keeps the file surface on its empty editor tab and the tree as the user left it', () => {
     useUIStore.getState().openContextPanelTab(directory, { mode: 'terminal' });
     useUIStore.getState().openContextFile(directory, '/repo/a.ts');
     useUIStore.setState({ contextEditorTreeVisible: false });
@@ -951,7 +951,10 @@ describe('useUIStore closeContextPanelTab surface stability', () => {
     expect(activeTab?.mode).toBe('file');
     expect(activeTab?.targetPath).toBe(null);
     expect(state?.tabs.map((tab) => tab.mode)).toEqual(['terminal', 'file']);
-    expect(useUIStore.getState().contextEditorTreeVisible).toBe(true);
+    expect(useUIStore.getState().contextEditorTreeVisible).toBe(false);
+
+    useUIStore.getState().openContextFile(directory, '/repo/b.ts');
+    expect(useUIStore.getState().contextEditorTreeVisible).toBe(false);
   });
 
   test('closing the empty editor tab itself still closes the file surface', () => {
@@ -1014,7 +1017,7 @@ describe('useUIStore closeContextPanelTabs bulk', () => {
     expect(activeTab?.mode).toBe('file');
     expect(activeTab?.targetPath).toBe(null);
     expect(state?.tabs.some((tab) => tab.mode === 'terminal')).toBe(true);
-    expect(useUIStore.getState().contextEditorTreeVisible).toBe(true);
+    expect(useUIStore.getState().contextEditorTreeVisible).toBe(false);
   });
 
   test('closing only inactive-mode tabs leaves the active tab and panel intact', () => {
@@ -1271,11 +1274,14 @@ describe('useUIStore openAgentBrowserTab', () => {
   test("records the session that opened the tab and keeps it through the persisted state's sanitizer", () => {
     useUIStore.getState().openContextBrowser(directory, 'https://mine.test');
     const agentId = useUIStore.getState().openAgentBrowserTab(directory, 'https://a.test', 'ses_1');
+    const popupId = useUIStore.getState().openAgentBrowserTab(directory, 'https://report.test', 'ses_1', { usesUserLogins: true });
     // Any later open re-reads the tabs through the sanitizer rehydration uses.
     useUIStore.getState().openContextPanelTab(directory, { mode: 'diff' });
 
     const tabs = useUIStore.getState().contextPanelByDirectory[directory]?.tabs ?? [];
     expect(tabs.find((tab) => tab.id === agentId)?.ownerSessionId).toBe('ses_1');
+    expect(tabs.find((tab) => tab.id === agentId)?.usesUserLogins).toBe(false);
+    expect(tabs.find((tab) => tab.id === popupId)?.usesUserLogins).toBe(true);
     expect(tabs.find((tab) => tab.targetPath === 'https://mine.test')?.ownerSessionId).toBeNull();
   });
 
