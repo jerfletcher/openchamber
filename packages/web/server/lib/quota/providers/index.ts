@@ -17,6 +17,7 @@ interface QuotaProviderRegistry {
   [providerId: string]: QuotaProvider;
 }
 
+import * as antigravity from './antigravity/index.js';
 import * as claude from './claude/index.js';
 import * as clinePass from './cline-pass.js';
 import * as codex from './codex.js';
@@ -45,6 +46,12 @@ import * as opencode from './opencode.js';
 import * as xai from './xai.js';
 
 const registry: QuotaProviderRegistry = {
+  antigravity: {
+    providerId: antigravity.providerId,
+    providerName: antigravity.providerName,
+    isConfigured: antigravity.isConfigured,
+    fetchQuota: antigravity.fetchQuota
+  },
   claude: {
     providerId: claude.providerId,
     providerName: claude.providerName,

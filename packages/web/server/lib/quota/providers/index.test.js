@@ -68,10 +68,8 @@ describe('quota provider registry', () => {
     vi.stubGlobal('fetch', network);
     const configured = await listConfiguredQuotaProviders();
     expect(configured).not.toContain('google');
-    expect(configured).not.toContain('antigravity');
-    for (const providerId of ['google', 'antigravity']) {
-      await expect(fetchQuotaForProvider(providerId)).resolves.toMatchObject({ ok: false, configured: false, error: 'Unsupported provider' });
-    }
+    expect(configured).toContain('antigravity');
+    await expect(fetchQuotaForProvider('google')).resolves.toMatchObject({ ok: false, configured: false, error: 'Unsupported provider' });
     expect(network).not.toHaveBeenCalledWith(expect.stringContaining('googleapis.com'), expect.anything());
   });
 
