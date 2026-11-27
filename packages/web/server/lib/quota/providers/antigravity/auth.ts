@@ -6,7 +6,19 @@ import {
   asNonEmptyString,
   toNumber
 } from '../../utils/index.js';
-import { parseGoogleRefreshToken } from '../google/transforms.js';
+
+const parseGoogleRefreshToken = (rawRefreshToken: unknown) => {
+  const refreshToken = asNonEmptyString(rawRefreshToken);
+  if (!refreshToken) {
+    return { refreshToken: null, projectId: null, managedProjectId: null };
+  }
+  const [rawToken = '', rawProject = '', rawManagedProject = ''] = refreshToken.split('|');
+  return {
+    refreshToken: asNonEmptyString(rawToken),
+    projectId: asNonEmptyString(rawProject),
+    managedProjectId: asNonEmptyString(rawManagedProject)
+  };
+};
 
 export const DEFAULT_PROJECT_ID = 'rising-fact-p41fc';
 

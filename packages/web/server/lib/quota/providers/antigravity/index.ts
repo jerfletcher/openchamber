@@ -2,9 +2,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { buildResult, toTimestamp, toUsageWindow } from '../../utils/index.js';
 import type { UsageWindow } from '../../utils/contracts.js';
-import { resolveAntigravityAuth } from './auth.js';
 
-export { isConfigured } from './auth.js';
+export const isConfigured = () => true;
 
 export const providerId = 'antigravity';
 export const providerName = 'Antigravity';
@@ -69,17 +68,6 @@ export const transformAgyUsagePayload = (payload: unknown): Record<string, Usage
 };
 
 export const fetchQuota = async () => {
-  const auth = resolveAntigravityAuth();
-  if (!auth) {
-    return buildResult({
-      providerId,
-      providerName,
-      ok: false,
-      configured: false,
-      error: 'Not configured'
-    });
-  }
-
   try {
     const { stdout } = await execFileAsync('agy', ['--print=/usage', '--output-format=json'], {
       cwd: '/tmp',
